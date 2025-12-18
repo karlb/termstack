@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 
@@ -30,10 +30,7 @@ pub enum PtyError {
 /// PTY manager for a single terminal
 pub struct Pty {
     /// Master side of PTY (for reading/writing)
-    master: OwnedFd,
-
-    /// File wrapper for master (for io traits)
-    master_file: File,
+    master: File,
 
     /// Child shell process
     child: Child,
@@ -77,21 +74,35 @@ impl Pty {
         // Set window size on master
         tcsetwinsize(&master_fd, winsize).map_err(PtyError::Winsize)?;
 
-        // Open slave
+        // Open slave and transfer ownership to raw fd
         let slave = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(slave_path)
             .map_err(PtyError::Open)?;
 
-        let slave_fd = slave.as_raw_fd();
+        // Transfer ownership from File to raw fd (File won't close it)
+        let slave_fd = slave.into_raw_fd();
 
-        // Spawn shell
+        // Dup the fd for stdout and stderr so each Stdio owns a unique fd
+        let slave_fd_out = unsafe { libc::dup(slave_fd) };
+        let slave_fd_err = unsafe { libc::dup(slave_fd) };
+
+        if slave_fd_out < 0 || slave_fd_err < 0 {
+            // Clean up on failure
+            unsafe {
+                libc::close(slave_fd);
+                if slave_fd_out >= 0 { libc::close(slave_fd_out); }
+            }
+            return Err(PtyError::Open(std::io::Error::last_os_error()));
+        }
+
+        // Spawn shell - each Stdio now owns a unique fd
         let child = unsafe {
             Command::new(shell)
                 .stdin(Stdio::from_raw_fd(slave_fd))
-                .stdout(Stdio::from_raw_fd(slave_fd))
-                .stderr(Stdio::from_raw_fd(slave_fd))
+                .stdout(Stdio::from_raw_fd(slave_fd_out))
+                .stderr(Stdio::from_raw_fd(slave_fd_err))
                 .pre_exec(move || {
                     // Create new session and set controlling terminal
                     libc::setsid();
@@ -102,14 +113,12 @@ impl Pty {
                 .map_err(PtyError::Spawn)?
         };
 
-        let master_file = unsafe { File::from_raw_fd(master_fd.as_raw_fd()) };
-        // Prevent double-close by forgetting the OwnedFd
+        // Transfer ownership from OwnedFd to File
+        let master = unsafe { File::from_raw_fd(master_fd.as_raw_fd()) };
         std::mem::forget(master_fd);
-        let master = unsafe { OwnedFd::from_raw_fd(master_file.as_raw_fd()) };
 
         Ok(Self {
             master,
-            master_file,
             child,
             winsize,
         })
@@ -124,7 +133,7 @@ impl Pty {
             ws_ypixel: 0,
         };
 
-        tcsetwinsize(&self.master, self.winsize).map_err(PtyError::Winsize)?;
+        tcsetwinsize(self.master.as_fd(), self.winsize).map_err(PtyError::Winsize)?;
 
         // Send SIGWINCH to shell
         unsafe {
@@ -137,15 +146,15 @@ impl Pty {
     /// Read available data from PTY (non-blocking)
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, PtyError> {
         // Set non-blocking
-        let flags = rustix::fs::fcntl_getfl(&self.master)
+        let flags = rustix::fs::fcntl_getfl(self.master.as_fd())
             .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
-        rustix::fs::fcntl_setfl(&self.master, flags | rustix::fs::OFlags::NONBLOCK)
+        rustix::fs::fcntl_setfl(self.master.as_fd(), flags | rustix::fs::OFlags::NONBLOCK)
             .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
 
-        let result = self.master_file.read(buf);
+        let result = self.master.read(buf);
 
         // Restore blocking
-        rustix::fs::fcntl_setfl(&self.master, flags)
+        rustix::fs::fcntl_setfl(self.master.as_fd(), flags)
             .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
 
         match result {
@@ -157,7 +166,7 @@ impl Pty {
 
     /// Write data to PTY
     pub fn write(&mut self, data: &[u8]) -> Result<usize, PtyError> {
-        self.master_file.write(data).map_err(PtyError::Io)
+        self.master.write(data).map_err(PtyError::Io)
     }
 
     /// Get the raw FD for polling

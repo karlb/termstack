@@ -9,6 +9,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::state::ColumnCompositor;
+use crate::terminal_manager::TerminalManager;
 
 /// Scroll amount per key press (pixels)
 const SCROLL_STEP: f64 = 50.0;
@@ -17,10 +18,10 @@ const SCROLL_STEP: f64 = 50.0;
 const SCROLL_WHEEL_MULTIPLIER: f64 = 15.0;
 
 impl ColumnCompositor {
-    /// Process an input event
+    /// Process an input event (legacy, no terminal support)
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
-            InputEvent::Keyboard { event } => self.handle_keyboard_event(event),
+            InputEvent::Keyboard { event } => self.handle_keyboard_event(event, None),
             InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
             InputEvent::PointerMotionAbsolute { event } => {
                 self.handle_pointer_motion_absolute(event)
@@ -31,31 +32,107 @@ impl ColumnCompositor {
         }
     }
 
-    fn handle_keyboard_event<I: InputBackend>(&mut self, event: impl KeyboardKeyEvent<I>) {
+    /// Process an input event with terminal support
+    pub fn process_input_event_with_terminals<I: InputBackend>(
+        &mut self,
+        event: InputEvent<I>,
+        terminals: &mut TerminalManager,
+    ) {
+        match event {
+            InputEvent::Keyboard { event } => self.handle_keyboard_event(event, Some(terminals)),
+            InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
+            InputEvent::PointerMotionAbsolute { event } => {
+                self.handle_pointer_motion_absolute(event)
+            }
+            InputEvent::PointerButton { event } => self.handle_pointer_button(event),
+            InputEvent::PointerAxis { event } => self.handle_pointer_axis(event),
+            _ => {}
+        }
+    }
+
+    fn handle_keyboard_event<I: InputBackend>(
+        &mut self,
+        event: impl KeyboardKeyEvent<I>,
+        terminals: Option<&mut TerminalManager>,
+    ) {
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time_msec(&event);
         let keycode = event.key_code();
-        let state = event.state();
+        let key_state = event.state();
 
         let keyboard = self.seat.get_keyboard().unwrap();
 
-        // Process through keyboard for modifier tracking and client delivery
-        keyboard.input::<(), _>(
+        // Process through keyboard for modifier tracking
+        let result = keyboard.input::<(bool, Option<Vec<u8>>), _>(
             self,
             keycode,
-            state,
+            key_state,
             serial,
             time,
             |state, modifiers, keysym| {
                 // Handle compositor keybindings
-                if state.handle_compositor_binding(modifiers, keysym.modified_sym(), event.state())
+                if state.handle_compositor_binding_with_terminals(modifiers, keysym.modified_sym(), key_state)
                 {
-                    FilterResult::Intercept(())
+                    FilterResult::Intercept((true, None))
+                } else if key_state == KeyState::Pressed {
+                    // Convert keysym to bytes for terminal
+                    let bytes = keysym_to_bytes(keysym.modified_sym(), modifiers);
+                    if !bytes.is_empty() {
+                        FilterResult::Intercept((false, Some(bytes)))
+                    } else {
+                        FilterResult::Forward
+                    }
                 } else {
                     FilterResult::Forward
                 }
             },
         );
+
+        // Forward to focused terminal if we got bytes
+        if let Some((handled, Some(bytes))) = result {
+            if !handled {
+                if let Some(terminals) = terminals {
+                    // Get focused terminal (first one for now)
+                    let ids = terminals.ids();
+                    if let Some(&id) = ids.first() {
+                        if let Some(terminal) = terminals.get_mut(id) {
+                            let _ = terminal.write(&bytes);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle compositor-level keybindings with terminal spawning
+    fn handle_compositor_binding_with_terminals(
+        &mut self,
+        modifiers: &ModifiersState,
+        keysym: Keysym,
+        state: KeyState,
+    ) -> bool {
+        // Use the regular binding handler first
+        if self.handle_compositor_binding(modifiers, keysym, state) {
+            return true;
+        }
+
+        // Additional bindings for terminal management
+        if state != KeyState::Pressed {
+            return false;
+        }
+
+        if modifiers.logo {
+            match keysym {
+                // Super+Return: Signal to spawn new terminal (handled in main loop)
+                Keysym::Return => {
+                    self.spawn_terminal_requested = true;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        false
     }
 
     /// Handle compositor-level keybindings
@@ -256,5 +333,110 @@ impl ColumnCompositor {
             .window
             .surface_under(relative_point, smithay::desktop::WindowSurfaceType::ALL)
             .map(|(surface, pt)| (surface, Point::from((pt.x as f64, pt.y as f64))))
+    }
+}
+
+/// Convert a keysym to bytes for sending to a terminal
+fn keysym_to_bytes(keysym: Keysym, modifiers: &ModifiersState) -> Vec<u8> {
+    // Handle control characters
+    if modifiers.ctrl {
+        let c = match keysym {
+            Keysym::a | Keysym::A => Some(1),   // Ctrl+A
+            Keysym::b | Keysym::B => Some(2),   // Ctrl+B
+            Keysym::c | Keysym::C => Some(3),   // Ctrl+C
+            Keysym::d | Keysym::D => Some(4),   // Ctrl+D
+            Keysym::e | Keysym::E => Some(5),   // Ctrl+E
+            Keysym::f | Keysym::F => Some(6),   // Ctrl+F
+            Keysym::g | Keysym::G => Some(7),   // Ctrl+G
+            Keysym::h | Keysym::H => Some(8),   // Ctrl+H (backspace)
+            Keysym::i | Keysym::I => Some(9),   // Ctrl+I (tab)
+            Keysym::j | Keysym::J => Some(10),  // Ctrl+J (newline)
+            Keysym::k | Keysym::K => Some(11),  // Ctrl+K
+            Keysym::l | Keysym::L => Some(12),  // Ctrl+L
+            Keysym::m | Keysym::M => Some(13),  // Ctrl+M (carriage return)
+            Keysym::n | Keysym::N => Some(14),  // Ctrl+N
+            Keysym::o | Keysym::O => Some(15),  // Ctrl+O
+            Keysym::p | Keysym::P => Some(16),  // Ctrl+P
+            Keysym::q | Keysym::Q => Some(17),  // Ctrl+Q
+            Keysym::r | Keysym::R => Some(18),  // Ctrl+R
+            Keysym::s | Keysym::S => Some(19),  // Ctrl+S
+            Keysym::t | Keysym::T => Some(20),  // Ctrl+T
+            Keysym::u | Keysym::U => Some(21),  // Ctrl+U
+            Keysym::v | Keysym::V => Some(22),  // Ctrl+V
+            Keysym::w | Keysym::W => Some(23),  // Ctrl+W
+            Keysym::x | Keysym::X => Some(24),  // Ctrl+X
+            Keysym::y | Keysym::Y => Some(25),  // Ctrl+Y
+            Keysym::z | Keysym::Z => Some(26),  // Ctrl+Z
+            Keysym::bracketleft => Some(27),    // Ctrl+[ (escape)
+            Keysym::backslash => Some(28),      // Ctrl+\
+            Keysym::bracketright => Some(29),   // Ctrl+]
+            Keysym::asciicircum => Some(30),    // Ctrl+^
+            Keysym::underscore => Some(31),     // Ctrl+_
+            _ => None,
+        };
+        if let Some(byte) = c {
+            return vec![byte];
+        }
+    }
+
+    // Handle special keys
+    match keysym {
+        Keysym::Return => vec![b'\r'],
+        Keysym::BackSpace => vec![0x7f],  // DEL
+        Keysym::Tab => vec![b'\t'],
+        Keysym::Escape => vec![0x1b],
+        Keysym::space => vec![b' '],
+
+        // Arrow keys (send escape sequences)
+        Keysym::Up => vec![0x1b, b'[', b'A'],
+        Keysym::Down => vec![0x1b, b'[', b'B'],
+        Keysym::Right => vec![0x1b, b'[', b'C'],
+        Keysym::Left => vec![0x1b, b'[', b'D'],
+
+        // Home/End
+        Keysym::Home => vec![0x1b, b'[', b'H'],
+        Keysym::End => vec![0x1b, b'[', b'F'],
+
+        // Page Up/Down
+        Keysym::Page_Up => vec![0x1b, b'[', b'5', b'~'],
+        Keysym::Page_Down => vec![0x1b, b'[', b'6', b'~'],
+
+        // Insert/Delete
+        Keysym::Insert => vec![0x1b, b'[', b'2', b'~'],
+        Keysym::Delete => vec![0x1b, b'[', b'3', b'~'],
+
+        // Function keys
+        Keysym::F1 => vec![0x1b, b'O', b'P'],
+        Keysym::F2 => vec![0x1b, b'O', b'Q'],
+        Keysym::F3 => vec![0x1b, b'O', b'R'],
+        Keysym::F4 => vec![0x1b, b'O', b'S'],
+        Keysym::F5 => vec![0x1b, b'[', b'1', b'5', b'~'],
+        Keysym::F6 => vec![0x1b, b'[', b'1', b'7', b'~'],
+        Keysym::F7 => vec![0x1b, b'[', b'1', b'8', b'~'],
+        Keysym::F8 => vec![0x1b, b'[', b'1', b'9', b'~'],
+        Keysym::F9 => vec![0x1b, b'[', b'2', b'0', b'~'],
+        Keysym::F10 => vec![0x1b, b'[', b'2', b'1', b'~'],
+        Keysym::F11 => vec![0x1b, b'[', b'2', b'3', b'~'],
+        Keysym::F12 => vec![0x1b, b'[', b'2', b'4', b'~'],
+
+        // Regular characters
+        _ => {
+            // Try to get the UTF-8 representation
+            let raw = keysym.raw();
+            if raw >= 0x20 && raw < 0x7f {
+                // ASCII printable
+                vec![raw as u8]
+            } else if raw >= 0x100 {
+                // Unicode - convert to UTF-8
+                if let Some(c) = char::from_u32(raw) {
+                    let mut buf = [0u8; 4];
+                    c.encode_utf8(&mut buf).as_bytes().to_vec()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        }
     }
 }

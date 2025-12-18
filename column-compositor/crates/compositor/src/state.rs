@@ -71,6 +71,9 @@ pub struct ColumnCompositor {
 
     /// Running state
     pub running: bool,
+
+    /// Flag to spawn a new terminal (set by input handler)
+    pub spawn_terminal_requested: bool,
 }
 
 /// A window entry in our column
@@ -158,6 +161,7 @@ impl ColumnCompositor {
             output_size,
             seat,
             running: true,
+            spawn_terminal_requested: false,
         }
     }
 

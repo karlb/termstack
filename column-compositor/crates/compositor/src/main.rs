@@ -7,20 +7,22 @@ mod config;
 mod input;
 mod layout;
 mod state;
+mod terminal_manager;
 
 use std::time::Duration;
 
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Color32F, Frame, Renderer};
+use smithay::backend::renderer::{Color32F, Frame, Renderer, Texture};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use smithay::utils::{Physical, Rectangle, Size, Transform};
+use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
 use config::Config;
 use state::{ClientState, ColumnCompositor};
+use terminal_manager::TerminalManager;
 
 fn main() -> anyhow::Result<()> {
     // Initialize logging
@@ -101,6 +103,14 @@ fn main() -> anyhow::Result<()> {
         config.background_color[3],
     );
 
+    // Create terminal manager
+    let mut terminal_manager = TerminalManager::new();
+
+    // Spawn initial terminal
+    if let Err(e) = terminal_manager.spawn() {
+        tracing::error!("failed to spawn initial terminal: {}", e);
+    }
+
     // Main event loop
     while compositor.running {
         // Dispatch winit events
@@ -118,7 +128,7 @@ fn main() -> anyhow::Result<()> {
                 compositor.output_size = Size::from((size.w, size.h));
                 compositor.recalculate_layout();
             }
-            WinitEvent::Input(event) => compositor.process_input_event(event),
+            WinitEvent::Input(event) => compositor.process_input_event_with_terminals(event, &mut terminal_manager),
             WinitEvent::Focus(_) => {}
             WinitEvent::Redraw => {}
             WinitEvent::CloseRequested => {
@@ -128,6 +138,27 @@ fn main() -> anyhow::Result<()> {
 
         if !compositor.running {
             break;
+        }
+
+        // Handle terminal spawn requests
+        if compositor.spawn_terminal_requested {
+            compositor.spawn_terminal_requested = false;
+            if let Err(e) = terminal_manager.spawn() {
+                tracing::error!("failed to spawn terminal: {}", e);
+            }
+        }
+
+        // Process terminal PTY output
+        terminal_manager.process_all();
+
+        // Cleanup dead terminals
+        let dead = terminal_manager.cleanup();
+        if !dead.is_empty() {
+            // If all terminals died, quit
+            if terminal_manager.count() == 0 {
+                tracing::info!("all terminals exited, shutting down");
+                break;
+            }
         }
 
         // Get window size before binding
@@ -145,6 +176,13 @@ fn main() -> anyhow::Result<()> {
             let (renderer, mut framebuffer) = backend.bind()
                 .map_err(|e| anyhow::anyhow!("bind error: {e:?}"))?;
 
+            // Pre-render all terminal textures
+            for id in terminal_manager.ids() {
+                if let Some(terminal) = terminal_manager.get_mut(id) {
+                    terminal.render(renderer);
+                }
+            }
+
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;
 
@@ -152,7 +190,32 @@ fn main() -> anyhow::Result<()> {
             frame.clear(bg_color, &[damage])
                 .map_err(|e| anyhow::anyhow!("clear error: {e:?}"))?;
 
-            // Note: Window rendering will be added later
+            // Render terminals
+            let mut y_offset: i32 = -(compositor.scroll_offset as i32);
+            for id in terminal_manager.ids() {
+                if let Some(terminal) = terminal_manager.get(id) {
+                    if let Some(texture) = terminal.get_texture() {
+                        let tex_size = texture.size();
+
+                        // Only render if visible
+                        if y_offset + tex_size.h > 0 && y_offset < physical_size.h {
+                            // Render the texture
+                            frame.render_texture_at(
+                                texture,
+                                Point::from((0, y_offset)),
+                                1,     // texture_scale
+                                1.0,   // output_scale
+                                Transform::Normal,
+                                &[damage],  // damage
+                                &[],   // opaque_regions
+                                1.0,   // alpha
+                            ).ok();
+                        }
+
+                        y_offset += tex_size.h;
+                    }
+                }
+            }
         }
 
         backend.submit(Some(&[damage]))?;
