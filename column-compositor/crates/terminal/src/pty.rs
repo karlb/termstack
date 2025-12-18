@@ -176,7 +176,17 @@ impl Pty {
 
     /// Check if child process is still running
     pub fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        match self.child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                tracing::warn!("shell exited with status: {:?}", status);
+                false
+            }
+            Err(e) => {
+                tracing::warn!("error checking shell status: {:?}", e);
+                false
+            }
+        }
     }
 
     /// Get current window size

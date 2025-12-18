@@ -143,7 +143,11 @@ impl ColumnCompositor {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
 
-        let seat = seat_state.new_wl_seat(&display_handle, "seat0");
+        let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
+
+        // Add keyboard and pointer capabilities
+        seat.add_keyboard(Default::default(), 200, 25).expect("Failed to add keyboard");
+        seat.add_pointer();
 
         Self {
             display_handle,
