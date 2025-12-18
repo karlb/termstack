@@ -114,7 +114,9 @@ fn main() -> anyhow::Result<()> {
     // Main event loop
     while compositor.running {
         // Dispatch winit events
-        let _ = winit_event_loop.dispatch_new_events(|event| match event {
+        let _ = winit_event_loop.dispatch_new_events(|event| {
+            tracing::trace!("winit event: {:?}", std::mem::discriminant(&event));
+            match event {
             WinitEvent::Resized { size, .. } => {
                 output.change_current_state(
                     Some(Mode {
@@ -129,12 +131,14 @@ fn main() -> anyhow::Result<()> {
                 compositor.recalculate_layout();
             }
             WinitEvent::Input(event) => compositor.process_input_event_with_terminals(event, &mut terminal_manager),
-            WinitEvent::Focus(_) => {}
+            WinitEvent::Focus(focused) => {
+                tracing::info!("window focus changed: {}", focused);
+            }
             WinitEvent::Redraw => {}
             WinitEvent::CloseRequested => {
                 compositor.running = false;
             }
-        });
+        }});
 
         if !compositor.running {
             break;

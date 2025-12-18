@@ -38,8 +38,12 @@ impl ColumnCompositor {
         event: InputEvent<I>,
         terminals: &mut TerminalManager,
     ) {
+        tracing::trace!("input event: {:?}", std::mem::discriminant(&event));
         match event {
-            InputEvent::Keyboard { event } => self.handle_keyboard_event(event, Some(terminals)),
+            InputEvent::Keyboard { event } => {
+                tracing::trace!("keyboard event!");
+                self.handle_keyboard_event(event, Some(terminals));
+            }
             InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
             InputEvent::PointerMotionAbsolute { event } => {
                 self.handle_pointer_motion_absolute(event)
@@ -59,6 +63,8 @@ impl ColumnCompositor {
         let time = Event::time_msec(&event);
         let keycode = event.key_code();
         let key_state = event.state();
+
+        tracing::debug!(?keycode, ?key_state, "keyboard event received");
 
         let keyboard = self.seat.get_keyboard().unwrap();
 
