@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/compositor",
+    "crates/terminal",
+    "crates/test-harness",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Compositor
+smithay = { version = "0.7", default-features = false, features = [
+    "backend_drm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_winit",
+    "backend_session_libseat",
+    "renderer_gl",
+    "desktop",
+    "xwayland",
+    "wayland_frontend",
+] }
+smithay-drm-extras = "0.1"
+
+# Terminal
+alacritty_terminal = "0.24"
+
+# Async
+calloop = { version = "0.14", features = ["executor"] }
+calloop-wayland-source = "0.3"
+
+# Rendering
+softbuffer = "0.4"
+fontdue = "0.9"
+
+# PTY
+rustix = { version = "0.38", features = ["termios", "pty", "process", "fs"] }
+libc = "0.2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Config
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+
+# Testing
+proptest = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
