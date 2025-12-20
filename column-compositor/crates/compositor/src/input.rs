@@ -38,10 +38,16 @@ impl ColumnCompositor {
         event: InputEvent<I>,
         terminals: &mut TerminalManager,
     ) {
-        tracing::trace!("input event: {:?}", std::mem::discriminant(&event));
+        match &event {
+            InputEvent::Keyboard { .. } => tracing::info!("INPUT: Keyboard event!"),
+            InputEvent::PointerMotion { .. } => tracing::trace!("INPUT: PointerMotion"),
+            InputEvent::PointerMotionAbsolute { .. } => tracing::trace!("INPUT: PointerMotionAbsolute"),
+            InputEvent::PointerButton { .. } => tracing::info!("INPUT: PointerButton"),
+            InputEvent::PointerAxis { .. } => tracing::trace!("INPUT: PointerAxis"),
+            _ => tracing::info!("INPUT: Other event"),
+        }
         match event {
             InputEvent::Keyboard { event } => {
-                tracing::trace!("keyboard event!");
                 self.handle_keyboard_event(event, Some(terminals));
             }
             InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
@@ -68,6 +74,8 @@ impl ColumnCompositor {
 
         let keyboard = self.seat.get_keyboard().unwrap();
 
+        tracing::info!(?keycode, ?key_state, "processing keyboard event");
+
         // Process through keyboard for modifier tracking
         let result = keyboard.input::<(bool, Option<Vec<u8>>), _>(
             self,
@@ -76,13 +84,18 @@ impl ColumnCompositor {
             serial,
             time,
             |state, modifiers, keysym| {
+                let sym = keysym.modified_sym();
+                tracing::info!(?sym, ?modifiers, "keysym processed");
+
                 // Handle compositor keybindings
-                if state.handle_compositor_binding_with_terminals(modifiers, keysym.modified_sym(), key_state)
+                if state.handle_compositor_binding_with_terminals(modifiers, sym, key_state)
                 {
+                    tracing::info!("compositor binding handled");
                     FilterResult::Intercept((true, None))
                 } else if key_state == KeyState::Pressed {
                     // Convert keysym to bytes for terminal
-                    let bytes = keysym_to_bytes(keysym.modified_sym(), modifiers);
+                    let bytes = keysym_to_bytes(sym, modifiers);
+                    tracing::info!(?bytes, "converted to bytes");
                     if !bytes.is_empty() {
                         FilterResult::Intercept((false, Some(bytes)))
                     } else {
@@ -94,14 +107,18 @@ impl ColumnCompositor {
             },
         );
 
+        tracing::info!(?result, "keyboard.input result");
+
         // Forward to focused terminal if we got bytes
         if let Some((handled, Some(bytes))) = result {
             if !handled {
                 if let Some(terminals) = terminals {
                     // Get focused terminal (first one for now)
                     let ids = terminals.ids();
+                    tracing::info!(?ids, "terminal ids");
                     if let Some(&id) = ids.first() {
                         if let Some(terminal) = terminals.get_mut(id) {
+                            tracing::info!(?bytes, "writing to terminal");
                             let _ = terminal.write(&bytes);
                         }
                     }

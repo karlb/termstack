@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<()> {
             model: "Winit".to_string(),
         },
     );
-    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(mode);
 
     // Convert logical to physical size
@@ -103,8 +103,11 @@ fn main() -> anyhow::Result<()> {
         config.background_color[3],
     );
 
-    // Create terminal manager
-    let mut terminal_manager = TerminalManager::new();
+    // Create terminal manager with output size
+    let mut terminal_manager = TerminalManager::new_with_size(
+        output_size.w as u32,
+        output_size.h as u32,
+    );
 
     // Spawn initial terminal
     if let Err(e) = terminal_manager.spawn() {
@@ -203,13 +206,13 @@ fn main() -> anyhow::Result<()> {
 
                         // Only render if visible
                         if y_offset + tex_size.h > 0 && y_offset < physical_size.h {
-                            // Render the texture
+                            // Render the texture with vertical flip
                             frame.render_texture_at(
                                 texture,
                                 Point::from((0, y_offset)),
                                 1,     // texture_scale
                                 1.0,   // output_scale
-                                Transform::Normal,
+                                Transform::Flipped180,
                                 &[damage],  // damage
                                 &[],   // opaque_regions
                                 1.0,   // alpha

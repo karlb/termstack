@@ -123,8 +123,9 @@ impl Terminal {
         // Create VTE parser
         let parser = ansi::Processor::new();
 
-        // Create renderer
-        let renderer = TerminalRenderer::new();
+        // Create renderer with font
+        let font_config = crate::render::FontConfig::default_font();
+        let renderer = TerminalRenderer::with_font(font_config);
 
         // Create sizing state
         let sizing = TerminalSizingState::new(rows);
@@ -145,11 +146,13 @@ impl Terminal {
     pub fn process_pty(&mut self) -> Vec<SizingAction> {
         let mut actions = Vec::new();
         let mut buf = [0u8; 4096];
+        let mut total_read = 0;
 
         loop {
             match self.pty.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    total_read += n;
                     let mut term = self.term.lock();
 
                     // Count newlines for sizing state machine
@@ -172,6 +175,10 @@ impl Terminal {
                 }
                 Err(_) => break,
             }
+        }
+
+        if total_read > 0 {
+            tracing::debug!(bytes = total_read, "read from PTY");
         }
 
         actions

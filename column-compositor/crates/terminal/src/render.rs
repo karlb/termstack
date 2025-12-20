@@ -45,20 +45,36 @@ impl FontConfig {
     /// Create default font config
     /// Uses a system font or falls back to basic dimensions
     pub fn default_font() -> Self {
-        // Try to load DejaVu Sans Mono from common locations
+        // Try to load a monospace font from common locations
         let font_paths = [
+            // DejaVu Sans Mono
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
             "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+            // Liberation Mono
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+            // Noto Mono
+            "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+            "/usr/share/fonts/noto/NotoMono-Regular.ttf",
+            // Hack
+            "/usr/share/fonts/truetype/hack/Hack-Regular.ttf",
+            // Ubuntu Mono
+            "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+            // Fira Code / Fira Mono
+            "/usr/share/fonts/truetype/firacode/FiraCode-Regular.ttf",
+            "/usr/share/fonts/opentype/firacode/FiraCode-Regular.otf",
         ];
 
         for path in &font_paths {
             if let Ok(data) = std::fs::read(path) {
                 if let Some(config) = Self::from_bytes(&data, 14.0) {
+                    tracing::info!("Loaded font from: {}", path);
                     return config;
                 }
             }
         }
+        tracing::warn!("No font found in standard paths, trying fallback");
 
         // Fallback to minimal config without font
         Self::minimal()
@@ -184,6 +200,9 @@ impl TerminalRenderer {
             return;
         }
 
+        // Debug: log all rendered characters
+        tracing::trace!("Rendering char: {:?} (U+{:04X}) at ({}, {})", c, c as u32, x, y);
+
         // Foreground (glyph)
         let fg = self.color_to_argb(&cell.fg);
         self.draw_glyph(x, y, c, fg, cell.flags);
@@ -227,6 +246,12 @@ impl TerminalRenderer {
         // Get or rasterize glyph
         if !self.glyph_cache.contains_key(&cache_key) {
             let (metrics, bitmap) = font.font.rasterize(c, font.size);
+
+            tracing::debug!(
+                "Glyph '{}': size={}x{}, xmin={}, ymin={}, advance={}, bitmap_len={}",
+                c, metrics.width, metrics.height, metrics.xmin, metrics.ymin,
+                metrics.advance_width, bitmap.len()
+            );
 
             let glyph = GlyphData {
                 bitmap,

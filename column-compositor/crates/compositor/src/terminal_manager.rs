@@ -56,9 +56,9 @@ impl ManagedTerminal {
     /// Process PTY output and mark dirty if needed
     pub fn process(&mut self) -> Vec<SizingAction> {
         let actions = self.terminal.process_pty();
-        if !actions.is_empty() {
-            self.dirty = true;
-        }
+        // Always mark dirty - we'll check in render if there's actually new content
+        // The terminal may have received output even without sizing actions
+        self.dirty = true;
         actions
     }
 
@@ -93,6 +93,11 @@ impl ManagedTerminal {
         self.terminal.content_rows()
     }
 
+    /// Get cell size from the terminal's font
+    pub fn cell_size(&self) -> (u32, u32) {
+        self.terminal.cell_size()
+    }
+
     /// Render terminal to texture
     pub fn render(&mut self, renderer: &mut GlesRenderer) -> Option<&GlesTexture> {
         if !self.dirty && self.texture.is_some() {
@@ -107,14 +112,14 @@ impl ManagedTerminal {
             return None;
         }
 
-        // Convert u32 ARGB to bytes
+        // Convert u32 ARGB to BGRA bytes for Argb8888 format
         let bytes: Vec<u8> = buffer.iter()
             .flat_map(|pixel| {
                 let a = ((pixel >> 24) & 0xFF) as u8;
                 let r = ((pixel >> 16) & 0xFF) as u8;
                 let g = ((pixel >> 8) & 0xFF) as u8;
                 let b = (pixel & 0xFF) as u8;
-                [r, g, b, a]  // RGBA for OpenGL
+                [b, g, r, a]
             })
             .collect();
 
@@ -123,7 +128,7 @@ impl ManagedTerminal {
 
         match renderer.import_memory(
             &bytes,
-            smithay::backend::allocator::Fourcc::Abgr8888,
+            smithay::backend::allocator::Fourcc::Argb8888,
             size,
             false,
         ) {
@@ -168,17 +173,37 @@ pub struct TerminalManager {
 }
 
 impl TerminalManager {
-    /// Create a new terminal manager
-    pub fn new() -> Self {
+    /// Create a new terminal manager with output size
+    pub fn new_with_size(output_width: u32, output_height: u32) -> Self {
         // Default cell dimensions (will be updated when font loads)
+        let cell_width = 8u32;
+        let cell_height = 17u32;  // Match fontdue's line height calculation
+
+        // Calculate cols/rows to fill the output
+        let default_cols = (output_width / cell_width).max(1) as u16;
+        let default_rows = (output_height / cell_height).max(1) as u16;
+
         Self {
             terminals: HashMap::new(),
             next_id: 0,
-            cell_width: 8,
-            cell_height: 16,
-            default_cols: 80,
-            default_rows: 24,
+            cell_width,
+            cell_height,
+            default_cols,
+            default_rows,
         }
+    }
+
+    /// Create a new terminal manager with default size
+    pub fn new() -> Self {
+        Self::new_with_size(800, 600)
+    }
+
+    /// Update cell dimensions (called after font loads)
+    pub fn set_cell_size(&mut self, width: u32, height: u32, output_width: u32, output_height: u32) {
+        self.cell_width = width;
+        self.cell_height = height;
+        self.default_cols = (output_width / width).max(1) as u16;
+        self.default_rows = (output_height / height).max(1) as u16;
     }
 
     /// Spawn a new terminal
@@ -186,7 +211,7 @@ impl TerminalManager {
         let id = TerminalId(self.next_id);
         self.next_id += 1;
 
-        let terminal = ManagedTerminal::new(
+        let mut terminal = ManagedTerminal::new(
             id,
             self.default_cols,
             self.default_rows,
@@ -194,7 +219,19 @@ impl TerminalManager {
             self.cell_height,
         )?;
 
-        tracing::info!(id = id.0, "spawned new terminal");
+        // Get actual cell dimensions from the font and update
+        let (actual_cell_width, actual_cell_height) = terminal.cell_size();
+        if actual_cell_width != self.cell_width || actual_cell_height != self.cell_height {
+            self.cell_width = actual_cell_width;
+            self.cell_height = actual_cell_height;
+            // Recalculate pixel dimensions with correct cell size
+            terminal.width = self.default_cols as u32 * actual_cell_width;
+            terminal.height = self.default_rows as u32 * actual_cell_height;
+        }
+
+        tracing::info!(id = id.0, cols = self.default_cols, rows = self.default_rows,
+                       cell_w = self.cell_width, cell_h = self.cell_height,
+                       "spawned new terminal");
 
         self.terminals.insert(id, terminal);
         Ok(id)
