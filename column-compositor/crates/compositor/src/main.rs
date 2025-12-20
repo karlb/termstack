@@ -150,8 +150,23 @@ fn main() -> anyhow::Result<()> {
         // Handle terminal spawn requests
         if compositor.spawn_terminal_requested {
             compositor.spawn_terminal_requested = false;
+            // Calculate scroll position to show new terminal
+            let mut total_height = 0i32;
+            for id in terminal_manager.ids() {
+                if let Some(term) = terminal_manager.get(id) {
+                    total_height += term.height as i32;
+                }
+            }
+
             if let Err(e) = terminal_manager.spawn() {
                 tracing::error!("failed to spawn terminal: {}", e);
+            } else {
+                // Scroll to show the new terminal (scroll to where it starts)
+                let visible_height = compositor.output_size.h;
+                if total_height > visible_height {
+                    compositor.scroll_offset = (total_height - visible_height) as f64;
+                }
+                tracing::info!(total_height, scroll = compositor.scroll_offset, "spawned terminal, scrolling to show");
             }
         }
 

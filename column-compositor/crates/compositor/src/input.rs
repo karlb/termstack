@@ -134,6 +134,8 @@ impl ColumnCompositor {
         keysym: Keysym,
         state: KeyState,
     ) -> bool {
+        tracing::debug!(?modifiers, ?keysym, ?state, "checking compositor binding");
+
         // Use the regular binding handler first
         if self.handle_compositor_binding(modifiers, keysym, state) {
             return true;
@@ -144,10 +146,27 @@ impl ColumnCompositor {
             return false;
         }
 
+        tracing::debug!(logo = modifiers.logo, ctrl = modifiers.ctrl, shift = modifiers.shift,
+                        "checking modifiers for spawn");
+
+        // Super+Return or Super+T: Signal to spawn new terminal
         if modifiers.logo {
             match keysym {
-                // Super+Return: Signal to spawn new terminal (handled in main loop)
-                Keysym::Return => {
+                Keysym::Return | Keysym::t | Keysym::T => {
+                    tracing::info!("spawn terminal binding triggered (Super)");
+                    self.spawn_terminal_requested = true;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        // Alternative: Ctrl+Shift+T or Ctrl+Shift+Return to spawn terminal
+        // (useful when Super is grabbed by parent compositor)
+        if modifiers.ctrl && modifiers.shift {
+            match keysym {
+                Keysym::Return | Keysym::t | Keysym::T => {
+                    tracing::info!("spawn terminal binding triggered (Ctrl+Shift)");
                     self.spawn_terminal_requested = true;
                     return true;
                 }
@@ -171,12 +190,21 @@ impl ColumnCompositor {
             return false;
         }
 
+        // Ctrl+Shift+Q: Alternative quit (when Super is grabbed)
+        if modifiers.ctrl && modifiers.shift {
+            if matches!(keysym, Keysym::q | Keysym::Q) {
+                tracing::info!("quit requested (Ctrl+Shift+Q)");
+                self.running = false;
+                return true;
+            }
+        }
+
         // Super (Mod4) + key bindings
         if modifiers.logo {
             match keysym {
                 // Super+Q: Quit compositor
                 Keysym::q | Keysym::Q => {
-                    tracing::info!("quit requested");
+                    tracing::info!("quit requested (Super+Q)");
                     self.running = false;
                     return true;
                 }
@@ -361,6 +389,21 @@ impl ColumnCompositor {
 
 /// Convert a keysym to bytes for sending to a terminal
 fn keysym_to_bytes(keysym: Keysym, modifiers: &ModifiersState) -> Vec<u8> {
+    // Filter out modifier-only keys (they don't produce characters)
+    match keysym {
+        Keysym::Shift_L | Keysym::Shift_R |
+        Keysym::Control_L | Keysym::Control_R |
+        Keysym::Alt_L | Keysym::Alt_R |
+        Keysym::Super_L | Keysym::Super_R |
+        Keysym::Meta_L | Keysym::Meta_R |
+        Keysym::Caps_Lock | Keysym::Num_Lock | Keysym::Scroll_Lock |
+        Keysym::ISO_Level3_Shift | Keysym::ISO_Level5_Shift |
+        Keysym::Hyper_L | Keysym::Hyper_R => {
+            return vec![];
+        }
+        _ => {}
+    }
+
     // Handle control characters
     if modifiers.ctrl {
         let c = match keysym {
