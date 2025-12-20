@@ -14,10 +14,12 @@ use std::time::Duration;
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{Color32F, Frame, Renderer, Texture};
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::{AsRenderElements, Element, RenderElement};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
+use smithay::utils::{Physical, Point, Logical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
 use config::Config;
@@ -63,8 +65,8 @@ fn main() -> anyhow::Result<()> {
     // Convert logical to physical size
     let output_size: Size<i32, Physical> = Size::from((mode.size.w, mode.size.h));
 
-    // Create compositor state
-    let mut compositor = ColumnCompositor::new(
+    // Create compositor state (keep display separate for dispatching)
+    let (mut compositor, mut display) = ColumnCompositor::new(
         display,
         event_loop.handle(),
         output_size,
@@ -72,6 +74,9 @@ fn main() -> anyhow::Result<()> {
 
     // Add output to compositor
     compositor.space.map_output(&output, (0, 0));
+
+    // Create output global so clients can discover it
+    let _output_global = output.create_global::<ColumnCompositor>(&compositor.display_handle);
 
     // Create listening socket
     let listening_socket = ListeningSocketSource::new_auto()
@@ -84,11 +89,19 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!(?socket_name, "listening on Wayland socket");
 
-    // Set WAYLAND_DISPLAY for child processes
+    // Save original WAYLAND_DISPLAY for running apps on host
+    let host_wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    if let Some(ref host) = host_wayland_display {
+        std::env::set_var("HOST_WAYLAND_DISPLAY", host);
+        tracing::info!(host_display = ?host, "saved host WAYLAND_DISPLAY");
+    }
+
+    // Set WAYLAND_DISPLAY for child processes (apps will open inside compositor)
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
-    // Insert socket source into event loop
+    // Insert socket source into event loop for new client connections
     event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
+        tracing::info!("new Wayland client connected");
         state.display_handle.insert_client(client_stream, std::sync::Arc::new(ClientState {
             compositor_state: Default::default(),
         })).expect("failed to insert client");
@@ -146,6 +159,10 @@ fn main() -> anyhow::Result<()> {
         if !compositor.running {
             break;
         }
+
+        // Dispatch Wayland client requests
+        display.dispatch_clients(&mut compositor)
+            .expect("failed to dispatch clients");
 
         // Handle terminal spawn requests
         if compositor.spawn_terminal_requested {
@@ -263,6 +280,37 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Pre-compute window render elements before starting frame
+            let scale = Scale::from(1.0);
+            let mut terminal_total_height: i32 = 0;
+            for id in terminal_manager.ids() {
+                if let Some(term) = terminal_manager.get(id) {
+                    if let Some(tex) = term.get_texture() {
+                        terminal_total_height += tex.size().h;
+                    }
+                }
+            }
+            let mut window_y = -(compositor.scroll_offset as i32) + terminal_total_height;
+
+            let window_elements: Vec<(i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = compositor.windows
+                .iter()
+                .map(|entry| {
+                    let window = &entry.window;
+                    let window_height = entry.state.target_height() as i32;
+                    let y = window_y;
+                    window_y += window_height;
+
+                    // Only compute elements if visible
+                    let elements = if y + window_height > 0 && y < physical_size.h {
+                        let location: Point<i32, Logical> = Point::from((0, y));
+                        window.render_elements(renderer, location.to_physical_precise_round(scale), scale, 1.0)
+                    } else {
+                        Vec::new()
+                    };
+                    (y, window_height, elements)
+                })
+                .collect();
+
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;
 
@@ -306,6 +354,14 @@ fn main() -> anyhow::Result<()> {
 
                         y_offset += tex_size.h;
                     }
+                }
+            }
+
+            // Render external Wayland windows after terminals
+            for (_y, _window_height, elements) in window_elements {
+                for element in elements {
+                    let geo = element.geometry(scale);
+                    element.draw(&mut frame, element.src(), geo, &[damage], &[]).ok();
                 }
             }
         }

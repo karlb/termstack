@@ -5,9 +5,11 @@
 
 use smithay::delegate_compositor;
 use smithay::delegate_data_device;
+use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_shell;
+use smithay::wayland::output::OutputHandler;
 use smithay::desktop::{Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
@@ -17,6 +19,7 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Physical, Point, Size, SERIAL_COUNTER};
+use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     with_states, CompositorClientState, CompositorHandler, CompositorState,
@@ -136,11 +139,12 @@ impl WindowState {
 
 impl ColumnCompositor {
     /// Create a new compositor state
+    /// Returns (compositor, display) - display must be kept alive for dispatching
     pub fn new(
         display: Display<Self>,
         loop_handle: LoopHandle<'static, Self>,
         output_size: Size<i32, Physical>,
-    ) -> Self {
+    ) -> (Self, Display<Self>) {
         let display_handle = display.handle();
 
         let compositor_state = CompositorState::new::<Self>(&display_handle);
@@ -155,7 +159,7 @@ impl ColumnCompositor {
         seat.add_keyboard(Default::default(), 200, 25).expect("Failed to add keyboard");
         seat.add_pointer();
 
-        Self {
+        let compositor = Self {
             display_handle,
             loop_handle,
             compositor_state,
@@ -174,7 +178,9 @@ impl ColumnCompositor {
             spawn_terminal_requested: false,
             focus_change_requested: 0,
             scroll_requested: 0.0,
-        }
+        };
+
+        (compositor, display)
     }
 
     /// Recalculate layout after any change
@@ -401,6 +407,8 @@ impl CompositorHandler for ColumnCompositor {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // Process buffer for desktop rendering abstractions
+        on_commit_buffer_handler::<Self>(surface);
         // Handle toplevel commits
         self.handle_commit(surface);
     }
@@ -479,6 +487,7 @@ impl DataDeviceHandler for ColumnCompositor {
 
 impl ClientDndGrabHandler for ColumnCompositor {}
 impl ServerDndGrabHandler for ColumnCompositor {}
+impl OutputHandler for ColumnCompositor {}
 
 /// Client state for tracking Wayland client resources
 pub struct ClientState {
@@ -496,3 +505,4 @@ delegate_shm!(ColumnCompositor);
 delegate_xdg_shell!(ColumnCompositor);
 delegate_seat!(ColumnCompositor);
 delegate_data_device!(ColumnCompositor);
+delegate_output!(ColumnCompositor);
