@@ -113,14 +113,17 @@ impl ColumnCompositor {
         if let Some((handled, Some(bytes))) = result {
             if !handled {
                 if let Some(terminals) = terminals {
-                    // Get focused terminal (first one for now)
-                    let ids = terminals.ids();
-                    tracing::info!(?ids, "terminal ids");
-                    if let Some(&id) = ids.first() {
-                        if let Some(terminal) = terminals.get_mut(id) {
-                            tracing::info!(?bytes, "writing to terminal");
-                            let _ = terminal.write(&bytes);
+                    let focused_id = terminals.focused;
+                    let term_count = terminals.count();
+                    tracing::info!(focused = ?focused_id, term_count, ?bytes, "forwarding input to terminal");
+                    if let Some(terminal) = terminals.get_focused_mut() {
+                        if let Err(e) = terminal.write(&bytes) {
+                            tracing::error!(?e, "failed to write to terminal");
+                        } else {
+                            tracing::info!("write succeeded");
                         }
+                    } else {
+                        tracing::warn!("no focused terminal to write to");
                     }
                 }
             }
@@ -168,6 +171,41 @@ impl ColumnCompositor {
                 Keysym::Return | Keysym::t | Keysym::T => {
                     tracing::info!("spawn terminal binding triggered (Ctrl+Shift)");
                     self.spawn_terminal_requested = true;
+                    return true;
+                }
+                // Focus switching: Ctrl+Shift+J/K or Ctrl+Shift+Down/Up
+                Keysym::j | Keysym::J | Keysym::Down => {
+                    tracing::info!("focus next terminal");
+                    self.focus_change_requested = 1;
+                    return true;
+                }
+                Keysym::k | Keysym::K | Keysym::Up => {
+                    tracing::info!("focus prev terminal");
+                    self.focus_change_requested = -1;
+                    return true;
+                }
+                // Scrolling: Ctrl+Shift+Page Up/Down
+                Keysym::Page_Down => {
+                    self.scroll_requested = SCROLL_STEP * 10.0;
+                    return true;
+                }
+                Keysym::Page_Up => {
+                    self.scroll_requested = -SCROLL_STEP * 10.0;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        // Page Up/Down without modifiers for scrolling
+        if !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
+            match keysym {
+                Keysym::Page_Down => {
+                    self.scroll_requested = SCROLL_STEP * 10.0;
+                    return true;
+                }
+                Keysym::Page_Up => {
+                    self.scroll_requested = -SCROLL_STEP * 10.0;
                     return true;
                 }
                 _ => {}
@@ -344,8 +382,8 @@ impl ColumnCompositor {
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) / 120.0 * 3.0);
 
         if vertical != 0.0 {
-            // Scroll the column view
-            self.scroll(vertical * SCROLL_WHEEL_MULTIPLIER);
+            // Queue scroll for main loop (uses terminal_manager's total height)
+            self.scroll_requested += vertical * SCROLL_WHEEL_MULTIPLIER;
         }
 
         // Forward horizontal scroll to clients

@@ -150,24 +150,64 @@ fn main() -> anyhow::Result<()> {
         // Handle terminal spawn requests
         if compositor.spawn_terminal_requested {
             compositor.spawn_terminal_requested = false;
-            // Calculate scroll position to show new terminal
-            let mut total_height = 0i32;
-            for id in terminal_manager.ids() {
-                if let Some(term) = terminal_manager.get(id) {
-                    total_height += term.height as i32;
-                }
-            }
 
             if let Err(e) = terminal_manager.spawn() {
                 tracing::error!("failed to spawn terminal: {}", e);
             } else {
-                // Scroll to show the new terminal (scroll to where it starts)
+                // Calculate scroll position AFTER spawning to show new terminal
+                let total_height = terminal_manager.total_height();
                 let visible_height = compositor.output_size.h;
+                let terminal_count = terminal_manager.count();
+
+                // Log each terminal's position
+                let mut y = 0i32;
+                for id in terminal_manager.ids() {
+                    if let Some(term) = terminal_manager.get(id) {
+                        tracing::info!(id = id.0, y, height = term.height,
+                                      "terminal position");
+                        y += term.height as i32;
+                    }
+                }
+
                 if total_height > visible_height {
                     compositor.scroll_offset = (total_height - visible_height) as f64;
                 }
-                tracing::info!(total_height, scroll = compositor.scroll_offset, "spawned terminal, scrolling to show");
+                tracing::info!(terminal_count, total_height, visible_height,
+                              scroll = compositor.scroll_offset,
+                              focused = ?terminal_manager.focused,
+                              "spawned terminal, scrolling to show");
             }
+        }
+
+        // Handle focus change requests
+        if compositor.focus_change_requested != 0 {
+            let changed = if compositor.focus_change_requested > 0 {
+                terminal_manager.focus_next()
+            } else {
+                terminal_manager.focus_prev()
+            };
+            compositor.focus_change_requested = 0;
+
+            // Scroll to show the newly focused terminal
+            if changed {
+                if let Some((y, _height)) = terminal_manager.focused_position() {
+                    let visible_height = compositor.output_size.h;
+                    let total_height = terminal_manager.total_height();
+                    let max_scroll = (total_height - visible_height).max(0) as f64;
+                    // Scroll so focused terminal is at top
+                    compositor.scroll_offset = (y as f64).clamp(0.0, max_scroll);
+                }
+            }
+        }
+
+        // Handle scroll requests
+        if compositor.scroll_requested != 0.0 {
+            let total_height = terminal_manager.total_height();
+            let visible_height = compositor.output_size.h;
+            let max_scroll = (total_height - visible_height).max(0) as f64;
+            compositor.scroll_offset = (compositor.scroll_offset + compositor.scroll_requested)
+                .clamp(0.0, max_scroll);
+            compositor.scroll_requested = 0.0;
         }
 
         // Process terminal PTY output
@@ -213,6 +253,7 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("clear error: {e:?}"))?;
 
             // Render terminals
+            let focused_id = terminal_manager.focused;
             let mut y_offset: i32 = -(compositor.scroll_offset as i32);
             for id in terminal_manager.ids() {
                 if let Some(terminal) = terminal_manager.get(id) {
@@ -232,6 +273,17 @@ fn main() -> anyhow::Result<()> {
                                 &[],   // opaque_regions
                                 1.0,   // alpha
                             ).ok();
+
+                            // Draw focus indicator on top (2px green border at top)
+                            let is_focused = Some(id) == focused_id;
+                            if is_focused && y_offset >= 0 {
+                                let border_height = 2;
+                                let focus_damage = Rectangle::from_loc_and_size(
+                                    (0, y_offset),
+                                    (physical_size.w, border_height),
+                                );
+                                frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
+                            }
                         }
 
                         y_offset += tex_size.h;

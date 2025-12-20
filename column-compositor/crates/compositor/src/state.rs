@@ -74,6 +74,12 @@ pub struct ColumnCompositor {
 
     /// Flag to spawn a new terminal (set by input handler)
     pub spawn_terminal_requested: bool,
+
+    /// Focus navigation request (1 = next, -1 = prev)
+    pub focus_change_requested: i32,
+
+    /// Scroll request (in pixels, positive = down)
+    pub scroll_requested: f64,
 }
 
 /// A window entry in our column
@@ -166,6 +172,8 @@ impl ColumnCompositor {
             seat,
             running: true,
             spawn_terminal_requested: false,
+            focus_change_requested: 0,
+            scroll_requested: 0.0,
         }
     }
 
