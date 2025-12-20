@@ -166,9 +166,13 @@ impl Terminal {
                     drop(term);
 
                     // Update sizing state for each newline
+                    if newlines > 0 {
+                        tracing::debug!(newlines, content_rows = self.sizing.content_rows(), "detected newlines");
+                    }
                     for _ in 0..newlines {
                         let action = self.sizing.on_new_line();
                         if action != SizingAction::None {
+                            tracing::debug!(?action, "sizing action from newline");
                             actions.push(action);
                         }
                     }

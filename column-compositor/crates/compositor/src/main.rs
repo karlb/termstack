@@ -210,8 +210,26 @@ fn main() -> anyhow::Result<()> {
             compositor.scroll_requested = 0.0;
         }
 
-        // Process terminal PTY output
-        terminal_manager.process_all();
+        // Process terminal PTY output and handle sizing actions
+        let sizing_actions = terminal_manager.process_all();
+        if !sizing_actions.is_empty() {
+            tracing::info!(count = sizing_actions.len(), "received sizing actions");
+        }
+        for (id, action) in sizing_actions {
+            match action {
+                terminal::sizing::SizingAction::RequestGrowth { target_rows } => {
+                    tracing::info!(id = id.0, target_rows, "processing growth request");
+                    terminal_manager.grow_terminal(id, target_rows);
+                }
+                terminal::sizing::SizingAction::ApplyResize { .. } => {
+                    // Handled internally by grow_terminal
+                }
+                terminal::sizing::SizingAction::RestoreScrollback { .. } => {
+                    // TODO: handle scrollback restoration if needed
+                }
+                terminal::sizing::SizingAction::None => {}
+            }
+        }
 
         // Cleanup dead terminals
         let dead = terminal_manager.cleanup();

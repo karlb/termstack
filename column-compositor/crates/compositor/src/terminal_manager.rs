@@ -170,9 +170,14 @@ pub struct TerminalManager {
     pub cell_width: u32,
     pub cell_height: u32,
 
-    /// Default terminal size in cells
+    /// Default terminal width in cells
     pub default_cols: u16,
-    pub default_rows: u16,
+
+    /// Initial terminal height in rows (content-aware: starts small)
+    pub initial_rows: u16,
+
+    /// Maximum terminal height in rows (capped at viewport)
+    pub max_rows: u16,
 }
 
 impl TerminalManager {
@@ -182,9 +187,12 @@ impl TerminalManager {
         let cell_width = 8u32;
         let cell_height = 17u32;  // Match fontdue's line height calculation
 
-        // Calculate cols/rows to fill the output
+        // Calculate cols to fill width
         let default_cols = (output_width / cell_width).max(1) as u16;
-        let default_rows = (output_height / cell_height).max(1) as u16;
+        // Max rows based on viewport height
+        let max_rows = (output_height / cell_height).max(1) as u16;
+        // Start with small height (enough for prompt + a line or two)
+        let initial_rows = 3;
 
         Self {
             terminals: HashMap::new(),
@@ -193,7 +201,8 @@ impl TerminalManager {
             cell_width,
             cell_height,
             default_cols,
-            default_rows,
+            initial_rows,
+            max_rows,
         }
     }
 
@@ -218,7 +227,19 @@ impl TerminalManager {
         self.cell_width = width;
         self.cell_height = height;
         self.default_cols = (output_width / width).max(1) as u16;
-        self.default_rows = (output_height / height).max(1) as u16;
+        self.max_rows = (output_height / height).max(1) as u16;
+    }
+
+    /// Grow a terminal to accommodate more content (capped at max_rows)
+    pub fn grow_terminal(&mut self, id: TerminalId, target_rows: u16) {
+        let max_rows = self.max_rows;
+        let cell_height = self.cell_height;
+
+        if let Some(terminal) = self.terminals.get_mut(&id) {
+            let new_rows = target_rows.min(max_rows);
+            terminal.resize(new_rows, cell_height);
+            tracing::debug!(id = id.0, target_rows, new_rows, max_rows, "grew terminal");
+        }
     }
 
     /// Spawn a new terminal
@@ -229,7 +250,7 @@ impl TerminalManager {
         let mut terminal = ManagedTerminal::new(
             id,
             self.default_cols,
-            self.default_rows,
+            self.initial_rows,  // Start small, will grow with content
             self.cell_width,
             self.cell_height,
         )?;
@@ -239,12 +260,14 @@ impl TerminalManager {
         if actual_cell_width != self.cell_width || actual_cell_height != self.cell_height {
             self.cell_width = actual_cell_width;
             self.cell_height = actual_cell_height;
-            // Recalculate pixel dimensions with correct cell size
+            // Recalculate max_rows with correct cell size
+            // (initial_rows stays the same)
             terminal.width = self.default_cols as u32 * actual_cell_width;
-            terminal.height = self.default_rows as u32 * actual_cell_height;
+            terminal.height = self.initial_rows as u32 * actual_cell_height;
         }
 
-        tracing::info!(id = id.0, cols = self.default_cols, rows = self.default_rows,
+        tracing::info!(id = id.0, cols = self.default_cols, rows = self.initial_rows,
+                       max_rows = self.max_rows,
                        cell_w = self.cell_width, cell_h = self.cell_height,
                        "spawned new terminal");
 
