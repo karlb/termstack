@@ -1162,106 +1162,64 @@ fn cached_heights_mismatch_could_cause_overlap() {
 }
 
 // ============================================================================
-// Mouse Coordinate Flip Tests
+// Surface Hit Detection Tests
 // ============================================================================
 
-/// Test: When content is rendered with Y-flipped source, click coordinates
-/// WITHIN a window must also be flipped to match the visual content.
-///
-/// Without this flip:
-/// - Clicking at visual top of window (relative_y=0) would hit content at surface Y=0
-/// - But we rendered with flipped source, so surface Y=0 is at visual BOTTOM
-/// - Result: clicking top of window hits content from the bottom
+/// Test: Hit detection uses DESTINATION geometry, not SOURCE texture coordinates.
+/// When we flip the SOURCE during rendering, element POSITIONS remain unchanged.
+/// So click detection should use relative_y = click_y - window_y (no flip needed).
 #[test]
-fn click_coordinates_must_be_flipped_to_match_rendered_content() {
-    // Window with height 400
-    let window_height = 400;
-
-    // User clicks at visual Y=10 (near top of window destination)
-    let click_y_in_window = 10;
-
-    // Without flip correction: relative_y = 10
-    // This would hit surface content at Y=10 (near top of surface)
-    let relative_y_unflipped = click_y_in_window;
-
-    // But we render with flipped source! Content from surface Y=0 appears at
-    // visual Y=399 (bottom of destination), and content from surface Y=399
-    // appears at visual Y=0 (top of destination).
+fn hit_detection_uses_destination_geometry_not_source() {
+    // When rendering with flipped source:
+    // - SOURCE coordinates are flipped (texture content read upside-down)
+    // - DESTINATION coordinates are unchanged (element positions on screen)
     //
-    // So clicking at visual Y=10 should hit surface content at Y=389
-    let relative_y_flipped = window_height - 1 - click_y_in_window;
+    // Hit detection uses destination geometry to find which element is clicked.
+    // The source flip only affects texture content WITHIN each element.
 
-    assert_eq!(relative_y_unflipped, 10, "unflipped would be 10");
-    assert_eq!(relative_y_flipped, 389, "flipped should be 389");
-
-    // Verify the flip formula:
-    // visual_y=0 -> surface_y=height-1 (top of dest shows bottom of surface)
-    // visual_y=height-1 -> surface_y=0 (bottom of dest shows top of surface)
-    assert_eq!(window_height - 1 - 0, 399, "top clicks to surface bottom");
-    assert_eq!(window_height - 1 - 399, 0, "bottom clicks to surface top");
-}
-
-/// Test: The relative_point Y calculation in surface_under must account for
-/// content flip. Formula: relative_y = window_height - (click_y - window_y) - 1
-/// or approximately: relative_y = window_height - click_offset
-#[test]
-fn surface_under_must_flip_relative_y() {
-    // Setup: window at screen Y=100 with height 400
+    // Window at screen Y=100, height=400
     let window_y = 100.0;
-    let window_height = 400.0;
 
-    // Click at screen Y=150 (50 pixels into the window visually)
+    // Click at screen Y=150 (50 pixels into the window)
     let click_screen_y = 150.0;
 
-    // Old (buggy) calculation:
-    let buggy_relative_y = click_screen_y - window_y;
-    assert_eq!(buggy_relative_y, 50.0, "buggy: 50 pixels from window top");
+    // Relative position for hit detection (no flip needed)
+    let relative_y = click_screen_y - window_y;
+    assert_eq!(relative_y, 50.0, "relative Y is simply click_y - window_y");
 
-    // This would ask Smithay for surface at Y=50, but visually that's near the
-    // bottom of the surface (because we flip the source when rendering).
-
-    // Correct calculation: flip the Y within the window
-    let correct_relative_y = window_height - (click_screen_y - window_y);
-    assert_eq!(correct_relative_y, 350.0, "correct: maps to surface Y=350");
-
-    // Verify edge cases:
-    // Click at very top of window (screen_y = window_y)
-    let click_at_top = window_y;
-    let relative_at_top = window_height - (click_at_top - window_y);
-    assert_eq!(relative_at_top, 400.0, "clicking top maps to surface bottom");
-
-    // Click at very bottom of window (screen_y = window_y + height - 1)
-    let click_at_bottom = window_y + window_height - 1.0;
-    let relative_at_bottom = window_height - (click_at_bottom - window_y);
-    assert_eq!(relative_at_bottom, 1.0, "clicking bottom maps to surface top");
+    // An element at geo.loc.y = 0 with height 100 covers Y range 0-100
+    // relative_y = 50 is in range 0-100, so we hit the element
+    let element_start = 0.0;
+    let element_end = 100.0;
+    let hit = relative_y >= element_start && relative_y < element_end;
+    assert!(hit, "relative_y=50 should hit element at 0-100");
 }
 
-/// Test: Verify the relationship between render flip and click flip
-/// If we render with Transform or flipped source, click coords need matching flip
+/// Test: Source flip affects texture content, not element positions
 #[test]
-fn render_flip_and_click_flip_must_match() {
-    let window_height = 300;
+fn source_flip_only_affects_texture_not_geometry() {
+    // Consider an element:
+    // - geo.loc.y = 0 (destination position in window)
+    // - geo.size.h = 100 (destination size)
+    // - src covers the element's texture
 
-    // Rendering flip: source Y' = source_height - source_y
-    // (negative height in flipped_src achieves this)
+    // Without source flip:
+    // - Texture Y=0 appears at destination Y=0
+    // - Texture Y=99 appears at destination Y=99
 
-    // For click detection to match:
-    // If visual position V maps to rendered source position S, then
-    // clicking at visual V should return surface at position S
+    // With source flip:
+    // - Texture Y=99 appears at destination Y=0 (content inverted)
+    // - Texture Y=0 appears at destination Y=99
+    // BUT the element is still AT destination Y=0 to Y=99
 
-    // With our flip: V=0 shows S=height-1, V=height-1 shows S=0
-    // So click at V should query surface at S = height - V - 1
-    // (approximately S = height - V for large heights)
+    // For hit detection, we only care about destination Y range
+    let element_dest_start = 0;
+    let element_dest_end = 100;
 
-    for visual_y in [0, 50, 149, 150, 151, 299] {
-        let source_y = window_height - 1 - visual_y;
-
-        // Verify the mapping is bijective (one-to-one)
-        let back_to_visual = window_height - 1 - source_y;
-        assert_eq!(back_to_visual, visual_y,
-            "visual {} -> source {} -> visual {} (should match)",
-            visual_y, source_y, back_to_visual);
-    }
+    // Click at destination Y=50 should hit the element
+    let click_y = 50;
+    let hit = click_y >= element_dest_start && click_y < element_dest_end;
+    assert!(hit, "click at dest Y=50 hits element regardless of source flip");
 }
 
 // ============================================================================

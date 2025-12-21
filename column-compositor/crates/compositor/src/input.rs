@@ -466,17 +466,11 @@ impl ColumnCompositor {
             window_y += h as f64;
         }
 
-        // Get the window height for coordinate flipping
-        let window_height = self.cached_window_heights.get(index).copied().unwrap_or(0) as f64;
-
-        // Calculate relative position within the window, with Y-flip correction.
-        // We render window content with a flipped source (to correct for OpenGL's Y-up),
-        // so content at surface Y=0 appears at the BOTTOM of the window visually.
-        // To match clicks to the correct surface position, we must flip the Y coordinate:
-        //   relative_y = window_height - (click_y - window_y)
-        let click_offset_in_window = point.y - window_y;
-        let flipped_y = window_height - click_offset_in_window;
-        let relative_point: Point<f64, Logical> = Point::from((point.x, flipped_y));
+        // Calculate relative position within the window.
+        // Note: We flip the SOURCE during rendering to correct for OpenGL's Y-up,
+        // but the DESTINATION positions (element geometry) remain unchanged.
+        // Hit detection uses destination geometry, so no flip is needed here.
+        let relative_point: Point<f64, Logical> = Point::from((point.x, point.y - window_y));
 
         entry
             .window
