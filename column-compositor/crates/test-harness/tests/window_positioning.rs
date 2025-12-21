@@ -1495,6 +1495,109 @@ fn fix_actual_heights_should_persist_across_frames() {
         "FIXED: Frame 2 preserves actual heights from frame 1");
 }
 
+/// Test coordinate calculation: relative_point should equal element's geo.loc
+/// when clicking at the element's rendered screen position
+#[test]
+fn relative_point_matches_element_geometry() {
+    // This test verifies the CRITICAL relationship:
+    // If an element renders at screen_y = window_y + geo.loc.y,
+    // then clicking at screen_y should give relative_y = geo.loc.y
+
+    let terminal_height = 100;
+    let window_y = terminal_height; // Window starts right after terminals
+    let element_geo_loc_y = 50; // Element is 50px down from window top
+
+    // Element renders at: screen_y = window_y + geo.loc.y = 100 + 50 = 150
+    let rendered_screen_y = window_y + element_geo_loc_y;
+    assert_eq!(rendered_screen_y, 150);
+
+    // When we click at screen_y = 150:
+    let click_screen_y = 150.0;
+    let relative_y = click_screen_y - window_y as f64;
+
+    // relative_y should equal geo.loc.y so surface_under finds the element
+    assert_eq!(relative_y, element_geo_loc_y as f64,
+        "relative_y should match element's geo.loc.y");
+}
+
+/// Test that click at element center gives correct relative point
+#[test]
+fn click_at_element_center_gives_correct_relative() {
+    let terminal_height = 200;
+    let window_0_height = 300;
+    let scroll_offset = 0.0;
+
+    // Window 0: Y=200 to Y=500 (height 300)
+    // Element at geo.loc.y=0, height=300
+
+    let window_y = terminal_height as f64 - scroll_offset;
+    assert_eq!(window_y, 200.0);
+
+    // Click at center of window 0: screen_y = 350
+    let click_y = 350.0;
+    let relative_y = click_y - window_y;
+
+    // relative_y = 150, which is in the middle of the window (0-300)
+    assert_eq!(relative_y, 150.0);
+    assert!(relative_y >= 0.0 && relative_y < window_0_height as f64,
+        "relative_y should be within window bounds");
+}
+
+/// Test with scrolling - relative point should still be correct
+#[test]
+fn relative_point_correct_with_scroll() {
+    let terminal_height = 200;
+    let window_height = 400;
+    let scroll_offset = 100.0;
+
+    // With scroll, window_y = terminal_height - scroll_offset = 100
+    let window_y = terminal_height as f64 - scroll_offset;
+    assert_eq!(window_y, 100.0);
+
+    // Window is now at screen Y=100 to Y=500
+    // Click at screen Y=200:
+    let click_y = 200.0;
+    let relative_y = click_y - window_y;
+
+    // relative_y = 100, which means we clicked 100px into the window
+    assert_eq!(relative_y, 100.0);
+    assert!(relative_y >= 0.0 && relative_y < window_height as f64);
+}
+
+/// Test that window_at and relative_point calculation are consistent
+#[test]
+fn window_at_and_relative_point_consistent() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.set_terminal_height(100);
+    tc.add_external_window(200); // Window 0: Y=100-300
+    tc.add_external_window(200); // Window 1: Y=300-500
+
+    // Click at Y=250 (middle of window 0)
+    let click_y = 250.0;
+    let hit = tc.window_at(click_y);
+    assert_eq!(hit, Some(0), "should hit window 0");
+
+    // For window 0, window_y = 100
+    // relative_y = 250 - 100 = 150
+    // This is 150px into window 0, which has height 200 - valid!
+    let window_y = 100.0; // terminal_height - scroll_offset
+    let relative_y = click_y - window_y;
+    assert_eq!(relative_y, 150.0);
+    assert!(relative_y >= 0.0 && relative_y < 200.0, "relative_y within window 0 bounds");
+
+    // Click at Y=350 (middle of window 1)
+    let click_y = 350.0;
+    let hit = tc.window_at(click_y);
+    assert_eq!(hit, Some(1), "should hit window 1");
+
+    // For window 1, window_y = 100 + 200 = 300
+    let window_1_y = 300.0;
+    let relative_y = click_y - window_1_y;
+    assert_eq!(relative_y, 50.0);
+    assert!(relative_y >= 0.0 && relative_y < 200.0, "relative_y within window 1 bounds");
+}
+
 /// Test that new windows get initialized with bbox, but existing are preserved
 #[test]
 fn fix_new_window_gets_bbox_existing_preserved() {

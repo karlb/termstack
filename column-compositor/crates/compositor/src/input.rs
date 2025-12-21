@@ -468,6 +468,16 @@ impl ColumnCompositor {
         let index = index?;
         let entry = self.windows.get(index)?;
 
+        // Log window geometry info
+        let bbox = entry.window.bbox();
+        let geometry = entry.window.geometry();
+        tracing::info!(
+            index,
+            bbox = ?(bbox.loc.x, bbox.loc.y, bbox.size.w, bbox.size.h),
+            geometry = ?(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h),
+            "surface_under: window geometry"
+        );
+
         // Calculate the window's screen Y position using cached heights
         let terminal_height = self.terminal_total_height as f64;
         let mut window_y = terminal_height - self.scroll_offset;
@@ -484,12 +494,18 @@ impl ColumnCompositor {
         // Note: We flip the SOURCE during rendering to correct for OpenGL's Y-up,
         // but the DESTINATION positions (element geometry) remain unchanged.
         // Hit detection uses destination geometry, so no flip is needed here.
-        let relative_point: Point<f64, Logical> = Point::from((point.x, point.y - window_y));
+        //
+        // surface_under expects coordinates relative to the window's origin.
+        // Our windows are positioned at screen Y = window_y, so:
+        let relative_x = point.x;
+        let relative_y = point.y - window_y;
+        let relative_point: Point<f64, Logical> = Point::from((relative_x, relative_y));
 
         tracing::info!(
             index,
             window_y,
             window_height,
+            geometry_offset = ?(geometry.loc.x, geometry.loc.y),
             relative_point = ?(relative_point.x, relative_point.y),
             "surface_under: calculated relative point"
         );
