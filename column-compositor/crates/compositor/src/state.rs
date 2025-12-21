@@ -204,28 +204,38 @@ impl ColumnCompositor {
             self.scroll_offset,
         );
 
-        // Update window positions in space
-        // Windows are positioned AFTER terminals, so add terminal_total_height offset
-        // Note: pos.y already includes scroll_offset subtraction from ColumnLayout::calculate
-        // So we only need to add terminal_total_height (not terminal_total_height - scroll)
+        // Update window positions in Space using CACHED heights (actual rendered heights)
+        // This is critical: ColumnLayout uses state.current_height(), but we render
+        // using actual element heights stored in cached_window_heights.
+        // For click detection to match rendering, Space must use the same heights.
+        self.update_space_positions();
+    }
+
+    /// Update Space element positions using cached_window_heights
+    /// This ensures click detection matches actual rendered positions
+    pub fn update_space_positions(&mut self) {
+        // Calculate screen_y for each window using cached heights
+        // Formula: screen_y = terminal_total_height - scroll_offset + accumulated_height
+        let mut accumulated: i32 = 0;
+        let scroll = self.scroll_offset as i32;
 
         for (i, entry) in self.windows.iter().enumerate() {
-            if let Some(pos) = self.layout.window_positions.get(i) {
-                // pos.y = accumulated_height - scroll_offset (from ColumnLayout)
-                // screen_y = terminal_total_height + pos.y
-                //          = terminal_total_height + accumulated_height - scroll_offset
-                // This matches main.rs: window_y = -scroll_offset + terminal_total_height + accumulated
-                let screen_y = self.terminal_total_height + pos.y;
-                let loc = Point::from((0, screen_y));
-                self.space.map_element(entry.window.clone(), loc, false);
-                tracing::trace!(
-                    index = i,
-                    pos_y = pos.y,
-                    terminal_height = self.terminal_total_height,
-                    screen_y,
-                    "recalculate_layout: window position"
-                );
-            }
+            let screen_y = self.terminal_total_height - scroll + accumulated;
+            let loc = Point::from((0, screen_y));
+            self.space.map_element(entry.window.clone(), loc, false);
+
+            // Use cached height for accumulation (actual rendered height)
+            let height = self.cached_window_heights.get(i).copied().unwrap_or(200);
+            accumulated += height;
+
+            tracing::trace!(
+                index = i,
+                screen_y,
+                height,
+                terminal_height = self.terminal_total_height,
+                scroll,
+                "update_space_positions: window position"
+            );
         }
     }
 

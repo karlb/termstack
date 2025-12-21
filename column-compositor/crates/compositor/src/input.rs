@@ -343,9 +343,25 @@ impl ColumnCompositor {
         event: impl AbsolutePositionEvent<I>,
     ) {
         let output_size = self.output_size;
-        let position = (
+        let raw_position = (
             event.x_transformed(output_size.w),
             event.y_transformed(output_size.h),
+        );
+
+        // Flip Y coordinate to account for OpenGL's Y-up coordinate system
+        // OpenGL has Y=0 at bottom, but winit/screen has Y=0 at top
+        // When we render at GL Y=100, it appears at screen Y=(height-100)
+        // So pointer at screen Y needs to be flipped to match our rendering positions
+        let position = (
+            raw_position.0,
+            output_size.h as f64 - raw_position.1,
+        );
+
+        tracing::trace!(
+            raw_y = raw_position.1,
+            flipped_y = position.1,
+            output_height = output_size.h,
+            "pointer Y flip"
         );
 
         let serial = SERIAL_COUNTER.next_serial();
@@ -375,13 +391,30 @@ impl ColumnCompositor {
         if state == ButtonState::Pressed {
             let pointer_location = pointer.current_location();
 
+            // Log detailed position info for debugging
             tracing::info!(
                 pointer_location = ?(pointer_location.x, pointer_location.y),
+                output_size = ?(self.output_size.w, self.output_size.h),
                 terminal_height = self.terminal_total_height,
                 scroll_offset = self.scroll_offset,
                 window_count = self.windows.len(),
+                cached_heights = ?self.cached_window_heights,
                 "handle_pointer_button: click pressed"
             );
+
+            // Log where Space thinks each window is
+            for (i, entry) in self.windows.iter().enumerate() {
+                if let Some(loc) = self.space.element_location(&entry.window) {
+                    let height = self.cached_window_heights.get(i).copied().unwrap_or(0);
+                    tracing::info!(
+                        window_idx = i,
+                        space_y = loc.y,
+                        height,
+                        y_range = ?(loc.y, loc.y + height),
+                        "handle_pointer_button: window in Space"
+                    );
+                }
+            }
 
             if let Some(index) = self.window_at(pointer_location) {
                 // Clicked on an external Wayland window
