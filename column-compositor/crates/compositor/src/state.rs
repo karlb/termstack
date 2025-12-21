@@ -393,19 +393,14 @@ impl ColumnCompositor {
 
     /// Get the window under a point (returns None if point is on internal terminals)
     pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
-        // Account for scroll offset and terminal heights
-        let adjusted_y = point.y + self.scroll_offset;
         let terminal_height = self.terminal_total_height as f64;
 
-        // If point is in the terminal area, no external window is under it
-        if adjusted_y < terminal_height {
-            return None;
-        }
-
-        // Check external windows (their layout positions are relative to terminal end)
+        // layout.window_positions already has scroll offset applied in pos.y
+        // Windows are rendered at screen Y = terminal_height + pos.y
         for (i, pos) in self.layout.window_positions.iter().enumerate() {
-            let window_y = terminal_height + pos.y as f64;
-            if adjusted_y >= window_y && adjusted_y < window_y + pos.height as f64 {
+            let window_screen_y = terminal_height + pos.y as f64;
+            let window_screen_end = window_screen_y + pos.height as f64;
+            if point.y >= window_screen_y && point.y < window_screen_end {
                 return Some(i);
             }
         }
@@ -414,8 +409,10 @@ impl ColumnCompositor {
 
     /// Check if a point is on the internal terminal area
     pub fn is_on_terminal(&self, point: Point<f64, smithay::utils::Logical>) -> bool {
-        let adjusted_y = point.y + self.scroll_offset;
-        adjusted_y < self.terminal_total_height as f64
+        // Terminals are rendered from Y = -scroll_offset to Y = terminal_height - scroll_offset
+        // On screen, this means the terminal area ends at terminal_height - scroll_offset
+        let terminal_screen_end = (self.terminal_total_height as f64 - self.scroll_offset).max(0.0);
+        point.y < terminal_screen_end
     }
 }
 

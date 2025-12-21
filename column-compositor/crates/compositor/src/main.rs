@@ -130,6 +130,18 @@ fn main() -> anyhow::Result<()> {
 
     // Main event loop
     while compositor.running {
+        // Update terminal_total_height BEFORE processing input events
+        // so click detection uses the correct positions
+        let mut current_terminal_height: i32 = 0;
+        for id in terminal_manager.ids() {
+            if let Some(term) = terminal_manager.get(id) {
+                if let Some(tex) = term.get_texture() {
+                    current_terminal_height += tex.size().h;
+                }
+            }
+        }
+        compositor.terminal_total_height = current_terminal_height;
+
         // Dispatch winit events
         let _ = winit_event_loop.dispatch_new_events(|event| {
             tracing::trace!("winit event: {:?}", std::mem::discriminant(&event));
@@ -283,16 +295,8 @@ fn main() -> anyhow::Result<()> {
 
             // Pre-compute window render elements before starting frame
             let scale = Scale::from(1.0);
-            let mut terminal_total_height: i32 = 0;
-            for id in terminal_manager.ids() {
-                if let Some(term) = terminal_manager.get(id) {
-                    if let Some(tex) = term.get_texture() {
-                        terminal_total_height += tex.size().h;
-                    }
-                }
-            }
-            // Store terminal height for click detection
-            compositor.terminal_total_height = terminal_total_height;
+            // Use the terminal_total_height computed at start of loop (for consistent click detection)
+            let terminal_total_height = compositor.terminal_total_height;
             let mut window_y = -(compositor.scroll_offset as i32) + terminal_total_height;
 
             let window_elements: Vec<(i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = compositor.windows
@@ -331,13 +335,14 @@ fn main() -> anyhow::Result<()> {
 
                         // Only render if visible
                         if y_offset + tex_size.h > 0 && y_offset < physical_size.h {
-                            // Render the texture with vertical flip
+                            // Render the texture with vertical flip to compensate for
+                            // OpenGL's Y-up coordinate system
                             frame.render_texture_at(
                                 texture,
                                 Point::from((0, y_offset)),
                                 1,     // texture_scale
                                 1.0,   // output_scale
-                                Transform::Flipped180,
+                                Transform::Flipped180,  // Flip for correct orientation
                                 &[damage],  // damage
                                 &[],   // opaque_regions
                                 1.0,   // alpha
@@ -361,14 +366,14 @@ fn main() -> anyhow::Result<()> {
             }
 
             // Render external Wayland windows after terminals
-            // The elements need to be drawn with the same Y-flip as terminals
+            // To flip content vertically for OpenGL's Y-up coordinate system,
+            // we flip the source Y coordinates (read buffer from bottom to top)
             for (_y, _window_height, elements) in window_elements {
                 for element in elements {
                     let geo = element.geometry(scale);
                     let src = element.src();
 
-                    // Create a flipped source rectangle to flip the content vertically
-                    // The buffer is in Y-down format but OpenGL is Y-up
+                    // Flip source Y: read from (0, h) to (0, 0) instead of (0, 0) to (0, h)
                     let flipped_src = Rectangle::from_loc_and_size(
                         (src.loc.x, src.loc.y + src.size.h),
                         (src.size.w, -src.size.h),

@@ -399,6 +399,8 @@ impl ColumnCompositor {
                     keyboard.set_focus(self, None, serial);
                 }
                 tracing::info!("focused internal terminal");
+            } else {
+                tracing::info!("click not on terminal or window");
             }
         }
 
@@ -455,8 +457,13 @@ impl ColumnCompositor {
         let entry = self.windows.get(index)?;
         let pos = self.layout.window_positions.get(index)?;
 
+        // Calculate the window's screen Y position
+        // pos.y already has scroll offset applied from layout calculation
+        let terminal_height = self.terminal_total_height as f64;
+        let window_screen_y = terminal_height + pos.y as f64;
+
         // Get the surface at the relative position within the window
-        let relative_point: Point<f64, Logical> = Point::from((point.x, point.y - pos.y as f64));
+        let relative_point: Point<f64, Logical> = Point::from((point.x, point.y - window_screen_y));
 
         entry
             .window
