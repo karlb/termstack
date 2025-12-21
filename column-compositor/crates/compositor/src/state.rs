@@ -205,11 +205,26 @@ impl ColumnCompositor {
         );
 
         // Update window positions in space
+        // Windows are positioned AFTER terminals, so add terminal_total_height offset
+        // Note: pos.y already includes scroll_offset subtraction from ColumnLayout::calculate
+        // So we only need to add terminal_total_height (not terminal_total_height - scroll)
+
         for (i, entry) in self.windows.iter().enumerate() {
             if let Some(pos) = self.layout.window_positions.get(i) {
-                // All windows have the same width (full output width)
-                let loc = Point::from((0, pos.y));
+                // pos.y = accumulated_height - scroll_offset (from ColumnLayout)
+                // screen_y = terminal_total_height + pos.y
+                //          = terminal_total_height + accumulated_height - scroll_offset
+                // This matches main.rs: window_y = -scroll_offset + terminal_total_height + accumulated
+                let screen_y = self.terminal_total_height + pos.y;
+                let loc = Point::from((0, screen_y));
                 self.space.map_element(entry.window.clone(), loc, false);
+                tracing::trace!(
+                    index = i,
+                    pos_y = pos.y,
+                    terminal_height = self.terminal_total_height,
+                    screen_y,
+                    "recalculate_layout: window position"
+                );
             }
         }
     }
@@ -424,9 +439,32 @@ impl ColumnCompositor {
 
     /// Get the window under a point (returns None if point is on internal terminals)
     pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
-        let terminal_height = self.terminal_total_height as f64;
+        // First check if point is on terminal area
+        if self.is_on_terminal(point) {
+            return None;
+        }
 
-        // Use cached window heights for consistent positioning with rendering
+        // Use Smithay's Space element_under for proper coordinate handling
+        // This respects the window positions we set via map_element
+        if let Some((window, _loc)) = self.space.element_under(point) {
+            // Find the index of this window in our windows list
+            // Compare by toplevel surface since Window clones share the same surface
+            if let Some(found_toplevel) = window.toplevel() {
+                for (i, entry) in self.windows.iter().enumerate() {
+                    if entry.toplevel.wl_surface() == found_toplevel.wl_surface() {
+                        tracing::debug!(
+                            index = i,
+                            point = ?(point.x, point.y),
+                            "window_at: found window via Space"
+                        );
+                        return Some(i);
+                    }
+                }
+            }
+        }
+
+        // Fallback: use cached heights calculation
+        let terminal_height = self.terminal_total_height as f64;
         let mut window_y = terminal_height - self.scroll_offset;
 
         for (i, &height) in self.cached_window_heights.iter().enumerate() {
@@ -434,6 +472,12 @@ impl ColumnCompositor {
             let window_screen_end = window_y + window_height;
 
             if point.y >= window_y && point.y < window_screen_end {
+                tracing::debug!(
+                    index = i,
+                    point = ?(point.x, point.y),
+                    window_y,
+                    "window_at: found window via cached heights"
+                );
                 return Some(i);
             }
             window_y += window_height;

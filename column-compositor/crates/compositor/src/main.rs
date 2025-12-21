@@ -139,6 +139,10 @@ fn main() -> anyhow::Result<()> {
         // Cache window heights for consistent positioning between input and render
         compositor.update_cached_window_heights();
 
+        // Update Space positions to match current terminal height and scroll
+        // This ensures Space.element_under works correctly for click detection
+        compositor.recalculate_layout();
+
         // Dispatch winit events
         let _ = winit_event_loop.dispatch_new_events(|event| {
             tracing::trace!("winit event: {:?}", std::mem::discriminant(&event));

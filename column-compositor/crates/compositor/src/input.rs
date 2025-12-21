@@ -375,8 +375,22 @@ impl ColumnCompositor {
         if state == ButtonState::Pressed {
             let pointer_location = pointer.current_location();
 
+            tracing::info!(
+                pointer_location = ?(pointer_location.x, pointer_location.y),
+                terminal_height = self.terminal_total_height,
+                scroll_offset = self.scroll_offset,
+                window_count = self.windows.len(),
+                "handle_pointer_button: click pressed"
+            );
+
             if let Some(index) = self.window_at(pointer_location) {
                 // Clicked on an external Wayland window
+                tracing::info!(
+                    index,
+                    pointer_y = pointer_location.y,
+                    "handle_pointer_button: hit window"
+                );
+
                 self.focused_index = Some(index);
                 self.external_window_focused = true;
 
@@ -392,6 +406,12 @@ impl ColumnCompositor {
                 }
             } else if self.is_on_terminal(pointer_location) {
                 // Clicked on an internal terminal
+                tracing::info!(
+                    pointer_y = pointer_location.y,
+                    terminal_end = (self.terminal_total_height as f64 - self.scroll_offset),
+                    "handle_pointer_button: hit terminal area"
+                );
+
                 self.external_window_focused = false;
 
                 // Clear keyboard focus from external windows
@@ -400,7 +420,10 @@ impl ColumnCompositor {
                 }
                 tracing::info!("focused internal terminal");
             } else {
-                tracing::info!("click not on terminal or window");
+                tracing::info!(
+                    pointer_y = pointer_location.y,
+                    "handle_pointer_button: click not on terminal or window"
+                );
             }
         }
 
