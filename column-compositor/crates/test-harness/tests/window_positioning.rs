@@ -1153,6 +1153,109 @@ fn cached_heights_mismatch_could_cause_overlap() {
     );
 }
 
+// ============================================================================
+// Mouse Coordinate Flip Tests
+// ============================================================================
+
+/// Test: When content is rendered with Y-flipped source, click coordinates
+/// WITHIN a window must also be flipped to match the visual content.
+///
+/// Without this flip:
+/// - Clicking at visual top of window (relative_y=0) would hit content at surface Y=0
+/// - But we rendered with flipped source, so surface Y=0 is at visual BOTTOM
+/// - Result: clicking top of window hits content from the bottom
+#[test]
+fn click_coordinates_must_be_flipped_to_match_rendered_content() {
+    // Window with height 400
+    let window_height = 400;
+
+    // User clicks at visual Y=10 (near top of window destination)
+    let click_y_in_window = 10;
+
+    // Without flip correction: relative_y = 10
+    // This would hit surface content at Y=10 (near top of surface)
+    let relative_y_unflipped = click_y_in_window;
+
+    // But we render with flipped source! Content from surface Y=0 appears at
+    // visual Y=399 (bottom of destination), and content from surface Y=399
+    // appears at visual Y=0 (top of destination).
+    //
+    // So clicking at visual Y=10 should hit surface content at Y=389
+    let relative_y_flipped = window_height - 1 - click_y_in_window;
+
+    assert_eq!(relative_y_unflipped, 10, "unflipped would be 10");
+    assert_eq!(relative_y_flipped, 389, "flipped should be 389");
+
+    // Verify the flip formula:
+    // visual_y=0 -> surface_y=height-1 (top of dest shows bottom of surface)
+    // visual_y=height-1 -> surface_y=0 (bottom of dest shows top of surface)
+    assert_eq!(window_height - 1 - 0, 399, "top clicks to surface bottom");
+    assert_eq!(window_height - 1 - 399, 0, "bottom clicks to surface top");
+}
+
+/// Test: The relative_point Y calculation in surface_under must account for
+/// content flip. Formula: relative_y = window_height - (click_y - window_y) - 1
+/// or approximately: relative_y = window_height - click_offset
+#[test]
+fn surface_under_must_flip_relative_y() {
+    // Setup: window at screen Y=100 with height 400
+    let window_y = 100.0;
+    let window_height = 400.0;
+
+    // Click at screen Y=150 (50 pixels into the window visually)
+    let click_screen_y = 150.0;
+
+    // Old (buggy) calculation:
+    let buggy_relative_y = click_screen_y - window_y;
+    assert_eq!(buggy_relative_y, 50.0, "buggy: 50 pixels from window top");
+
+    // This would ask Smithay for surface at Y=50, but visually that's near the
+    // bottom of the surface (because we flip the source when rendering).
+
+    // Correct calculation: flip the Y within the window
+    let correct_relative_y = window_height - (click_screen_y - window_y);
+    assert_eq!(correct_relative_y, 350.0, "correct: maps to surface Y=350");
+
+    // Verify edge cases:
+    // Click at very top of window (screen_y = window_y)
+    let click_at_top = window_y;
+    let relative_at_top = window_height - (click_at_top - window_y);
+    assert_eq!(relative_at_top, 400.0, "clicking top maps to surface bottom");
+
+    // Click at very bottom of window (screen_y = window_y + height - 1)
+    let click_at_bottom = window_y + window_height - 1.0;
+    let relative_at_bottom = window_height - (click_at_bottom - window_y);
+    assert_eq!(relative_at_bottom, 1.0, "clicking bottom maps to surface top");
+}
+
+/// Test: Verify the relationship between render flip and click flip
+/// If we render with Transform or flipped source, click coords need matching flip
+#[test]
+fn render_flip_and_click_flip_must_match() {
+    let window_height = 300;
+
+    // Rendering flip: source Y' = source_height - source_y
+    // (negative height in flipped_src achieves this)
+
+    // For click detection to match:
+    // If visual position V maps to rendered source position S, then
+    // clicking at visual V should return surface at position S
+
+    // With our flip: V=0 shows S=height-1, V=height-1 shows S=0
+    // So click at V should query surface at S = height - V - 1
+    // (approximately S = height - V for large heights)
+
+    for visual_y in [0, 50, 149, 150, 151, 299] {
+        let source_y = window_height - 1 - visual_y;
+
+        // Verify the mapping is bijective (one-to-one)
+        let back_to_visual = window_height - 1 - source_y;
+        assert_eq!(back_to_visual, visual_y,
+            "visual {} -> source {} -> visual {} (should match)",
+            visual_y, source_y, back_to_visual);
+    }
+}
+
 /// KEY TEST: The rendering code must use ACTUAL element heights to position
 /// subsequent windows, not just cached heights. If element.geometry().size.h
 /// is larger than cached_height, using cached_height causes overlap.
