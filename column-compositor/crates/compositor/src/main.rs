@@ -16,6 +16,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{Color32F, Frame, Renderer, Texture};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Element, RenderElement};
+use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
@@ -380,10 +381,16 @@ fn main() -> anyhow::Result<()> {
 
         backend.submit(Some(&[damage]))?;
 
-        // Send frame callbacks
-        compositor.space.elements().for_each(|window| {
-            window.send_frame(&output, Duration::ZERO, None, |_, _| None);
-        });
+        // Send frame callbacks to all toplevel surfaces
+        for surface in compositor.xdg_shell_state.toplevel_surfaces() {
+            send_frames_surface_tree(
+                surface.wl_surface(),
+                &output,
+                Duration::ZERO,
+                None,
+                |_, _| Some(output.clone()),
+            );
+        }
 
         // Flush clients
         compositor.display_handle.flush_clients()?;
