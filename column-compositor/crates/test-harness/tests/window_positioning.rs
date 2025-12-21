@@ -1378,3 +1378,169 @@ fn must_use_actual_element_heights_for_positioning() {
     let win1_start = correct_positions[1]; // 700
     assert!(win0_end <= win1_start, "Correct approach: no overlap");
 }
+
+// ============================================================================
+// Frame-to-Frame State Bug Tests
+// ============================================================================
+
+/// This test demonstrates the EXACT bug in main.rs:
+/// - update_cached_window_heights() at start of frame uses bbox()
+/// - After rendering, we store actual heights
+/// - But next frame, update_cached_window_heights() OVERWRITES actual heights with bbox again!
+///
+/// This causes click detection to always use bbox values, not actual element heights.
+#[test]
+fn bug_bbox_overwrites_actual_heights_each_frame() {
+    // Simulate the main.rs frame loop bug
+
+    struct FrameState {
+        cached_window_heights: Vec<i32>,
+    }
+
+    impl FrameState {
+        // Simulates update_cached_window_heights() - uses bbox()
+        fn update_cached_window_heights(&mut self, bbox_heights: &[i32]) {
+            self.cached_window_heights = bbox_heights.to_vec();
+        }
+
+        // Simulates storing actual heights after rendering
+        fn store_actual_heights(&mut self, actual_heights: Vec<i32>) {
+            self.cached_window_heights = actual_heights;
+        }
+    }
+
+    let bbox_heights = vec![200, 200]; // What bbox() returns
+    let actual_heights = vec![400, 200]; // What elements actually render at
+
+    let mut state = FrameState {
+        cached_window_heights: Vec::new(),
+    };
+
+    // === Frame 1 ===
+    // Start of frame: update with bbox
+    state.update_cached_window_heights(&bbox_heights);
+    assert_eq!(state.cached_window_heights, vec![200, 200], "Frame 1 start: using bbox");
+
+    // Input processing uses cached_window_heights (bbox values)
+    // Click detection would use window 0: 0-200, window 1: 200-400
+
+    // End of frame: store actual heights after rendering
+    state.store_actual_heights(actual_heights.clone());
+    assert_eq!(state.cached_window_heights, vec![400, 200], "Frame 1 end: stored actual");
+
+    // === Frame 2 ===
+    // Start of frame: update with bbox AGAIN - THIS IS THE BUG!
+    state.update_cached_window_heights(&bbox_heights);
+
+    // The actual heights we stored are GONE!
+    assert_eq!(state.cached_window_heights, vec![200, 200],
+        "BUG: Frame 2 start overwrote actual heights with bbox again!");
+
+    // This means click detection in frame 2 STILL uses bbox values,
+    // not the actual element heights computed in frame 1.
+    // Window 0 is VISUALLY at 0-400, but click detection thinks it's at 0-200!
+}
+
+/// Test that shows the correct behavior: actual heights should persist
+/// This mirrors the FIXED behavior in state.rs update_cached_window_heights()
+#[test]
+fn fix_actual_heights_should_persist_across_frames() {
+    struct FrameState {
+        cached_window_heights: Vec<i32>,
+        window_count: usize,
+    }
+
+    impl FrameState {
+        // FIXED version: only sync count, preserve existing heights
+        fn update_cached_window_heights_fixed(&mut self, bbox_heights: &[i32]) {
+            let cached_count = self.cached_window_heights.len();
+
+            if cached_count > self.window_count {
+                // Windows removed
+                self.cached_window_heights.truncate(self.window_count);
+            } else if cached_count < self.window_count {
+                // Windows added - only append new entries from bbox
+                for &h in bbox_heights.iter().skip(cached_count) {
+                    self.cached_window_heights.push(h);
+                }
+            }
+            // If counts match, preserve existing heights
+        }
+
+        fn store_actual_heights(&mut self, actual_heights: Vec<i32>) {
+            self.cached_window_heights = actual_heights;
+        }
+    }
+
+    let bbox_heights = vec![200, 200];
+    let actual_heights = vec![400, 200];
+
+    let mut state = FrameState {
+        cached_window_heights: Vec::new(),
+        window_count: 2,
+    };
+
+    // === Frame 1 ===
+    state.update_cached_window_heights_fixed(&bbox_heights);
+    assert_eq!(state.cached_window_heights, vec![200, 200], "Frame 1: initialized with bbox");
+
+    state.store_actual_heights(actual_heights.clone());
+    assert_eq!(state.cached_window_heights, vec![400, 200], "Frame 1: stored actual");
+
+    // === Frame 2 ===
+    state.update_cached_window_heights_fixed(&bbox_heights);
+
+    // Actual heights should PERSIST!
+    assert_eq!(state.cached_window_heights, vec![400, 200],
+        "FIXED: Frame 2 preserves actual heights from frame 1");
+}
+
+/// Test that new windows get initialized with bbox, but existing are preserved
+#[test]
+fn fix_new_window_gets_bbox_existing_preserved() {
+    struct FrameState {
+        cached_window_heights: Vec<i32>,
+        window_count: usize,
+    }
+
+    impl FrameState {
+        fn update_cached_window_heights_fixed(&mut self, bbox_heights: &[i32]) {
+            let cached_count = self.cached_window_heights.len();
+
+            if cached_count > self.window_count {
+                self.cached_window_heights.truncate(self.window_count);
+            } else if cached_count < self.window_count {
+                for &h in bbox_heights.iter().skip(cached_count) {
+                    self.cached_window_heights.push(h);
+                }
+            }
+        }
+
+        fn store_actual_heights(&mut self, actual_heights: Vec<i32>) {
+            self.cached_window_heights = actual_heights;
+        }
+    }
+
+    let mut state = FrameState {
+        cached_window_heights: Vec::new(),
+        window_count: 1,
+    };
+
+    // === Frame 1: One window ===
+    let bbox_heights_1 = vec![200];
+    state.update_cached_window_heights_fixed(&bbox_heights_1);
+    assert_eq!(state.cached_window_heights, vec![200]);
+
+    // After rendering, actual height is 400
+    state.store_actual_heights(vec![400]);
+
+    // === Frame 2: Add second window ===
+    state.window_count = 2;
+    let bbox_heights_2 = vec![200, 150]; // Window 0 bbox still 200, new window bbox 150
+
+    state.update_cached_window_heights_fixed(&bbox_heights_2);
+
+    // Window 0 should keep actual height (400), window 1 gets bbox (150)
+    assert_eq!(state.cached_window_heights, vec![400, 150],
+        "Existing window keeps actual height, new window gets bbox");
+}

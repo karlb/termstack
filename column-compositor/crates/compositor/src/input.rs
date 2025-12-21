@@ -453,7 +453,19 @@ impl ColumnCompositor {
         point: Point<f64, Logical>,
     ) -> Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> {
         // Find which window is under the point
-        let index = self.window_at(point)?;
+        let index = self.window_at(point);
+
+        tracing::info!(
+            screen_point = ?point,
+            terminal_height = self.terminal_total_height,
+            scroll_offset = self.scroll_offset,
+            cached_heights = ?self.cached_window_heights,
+            window_count = self.windows.len(),
+            hit_index = ?index,
+            "surface_under: checking point"
+        );
+
+        let index = index?;
         let entry = self.windows.get(index)?;
 
         // Calculate the window's screen Y position using cached heights
@@ -466,16 +478,33 @@ impl ColumnCompositor {
             window_y += h as f64;
         }
 
+        let window_height = self.cached_window_heights.get(index).copied().unwrap_or(0);
+
         // Calculate relative position within the window.
         // Note: We flip the SOURCE during rendering to correct for OpenGL's Y-up,
         // but the DESTINATION positions (element geometry) remain unchanged.
         // Hit detection uses destination geometry, so no flip is needed here.
         let relative_point: Point<f64, Logical> = Point::from((point.x, point.y - window_y));
 
-        entry
+        tracing::info!(
+            index,
+            window_y,
+            window_height,
+            relative_point = ?(relative_point.x, relative_point.y),
+            "surface_under: calculated relative point"
+        );
+
+        let result = entry
             .window
-            .surface_under(relative_point, smithay::desktop::WindowSurfaceType::ALL)
-            .map(|(surface, pt)| (surface, Point::from((pt.x as f64, pt.y as f64))))
+            .surface_under(relative_point, smithay::desktop::WindowSurfaceType::ALL);
+
+        tracing::info!(
+            found_surface = result.is_some(),
+            surface_point = ?result.as_ref().map(|(_, pt)| (pt.x, pt.y)),
+            "surface_under: result"
+        );
+
+        result.map(|(surface, pt)| (surface, Point::from((pt.x as f64, pt.y as f64))))
     }
 }
 

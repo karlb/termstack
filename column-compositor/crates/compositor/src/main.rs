@@ -300,7 +300,7 @@ fn main() -> anyhow::Result<()> {
             // This prevents overlap when element geometry differs from cached bbox
             let mut window_elements: Vec<(i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = Vec::new();
 
-            for (entry, &cached_height) in compositor.windows.iter().zip(compositor.cached_window_heights.iter()) {
+            for (win_idx, (entry, &cached_height)) in compositor.windows.iter().zip(compositor.cached_window_heights.iter()).enumerate() {
                 let window = &entry.window;
                 let y = window_y;
 
@@ -324,6 +324,29 @@ fn main() -> anyhow::Result<()> {
                         .max()
                         .unwrap_or(cached_height)
                 };
+
+                // Log element geometries for debugging click detection
+                for (elem_idx, elem) in elements.iter().enumerate() {
+                    let geo = elem.geometry(scale);
+                    tracing::debug!(
+                        win_idx,
+                        elem_idx,
+                        window_y = y,
+                        geo_loc = ?(geo.loc.x, geo.loc.y),
+                        geo_size = ?(geo.size.w, geo.size.h),
+                        render_dest_y = y + geo.loc.y,
+                        "element geometry"
+                    );
+                }
+
+                tracing::debug!(
+                    win_idx,
+                    window_y = y,
+                    cached_height,
+                    actual_height,
+                    element_count = elements.len(),
+                    "window render position"
+                );
 
                 window_elements.push((y, actual_height, elements));
 

@@ -397,17 +397,29 @@ impl ColumnCompositor {
     }
 
     /// Update cached window heights - call at start of each frame
+    /// IMPORTANT: This only syncs the count with windows list.
+    /// It preserves existing heights (from previous frame's actual element heights)
+    /// and only initializes NEW windows from bbox.
     pub fn update_cached_window_heights(&mut self) {
-        self.cached_window_heights.clear();
-        for entry in &self.windows {
-            let bbox = entry.window.bbox();
-            let height = if bbox.size.h > 0 {
-                bbox.size.h
-            } else {
-                entry.state.current_height() as i32
-            };
-            self.cached_window_heights.push(height);
+        let window_count = self.windows.len();
+        let cached_count = self.cached_window_heights.len();
+
+        if cached_count > window_count {
+            // Windows were removed - truncate
+            self.cached_window_heights.truncate(window_count);
+        } else if cached_count < window_count {
+            // Windows were added - append new entries using bbox for initial height
+            for entry in self.windows.iter().skip(cached_count) {
+                let bbox = entry.window.bbox();
+                let height = if bbox.size.h > 0 {
+                    bbox.size.h
+                } else {
+                    entry.state.current_height() as i32
+                };
+                self.cached_window_heights.push(height);
+            }
         }
+        // If counts match, preserve existing heights (from previous frame's actual heights)
     }
 
     /// Get the window under a point (returns None if point is on internal terminals)
