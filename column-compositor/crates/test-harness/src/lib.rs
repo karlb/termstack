@@ -6,4 +6,4 @@ pub mod assertions;
 pub mod fixtures;
 pub mod headless;
 
-pub use headless::TestCompositor;
+pub use headless::{RenderedElement, TestCompositor};

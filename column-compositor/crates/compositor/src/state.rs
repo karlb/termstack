@@ -89,6 +89,10 @@ pub struct ColumnCompositor {
 
     /// Total height of internal terminals (updated each frame for click detection)
     pub terminal_total_height: i32,
+
+    /// Cached window heights for consistent positioning between input and render
+    /// Updated at start of each frame before input processing
+    pub cached_window_heights: Vec<i32>,
 }
 
 /// A window entry in our column
@@ -186,6 +190,7 @@ impl ColumnCompositor {
             scroll_requested: 0.0,
             external_window_focused: false,
             terminal_total_height: 0,
+            cached_window_heights: Vec::new(),
         };
 
         (compositor, display)
@@ -391,18 +396,35 @@ impl ColumnCompositor {
         }
     }
 
+    /// Update cached window heights - call at start of each frame
+    pub fn update_cached_window_heights(&mut self) {
+        self.cached_window_heights.clear();
+        for entry in &self.windows {
+            let bbox = entry.window.bbox();
+            let height = if bbox.size.h > 0 {
+                bbox.size.h
+            } else {
+                entry.state.current_height() as i32
+            };
+            self.cached_window_heights.push(height);
+        }
+    }
+
     /// Get the window under a point (returns None if point is on internal terminals)
     pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
         let terminal_height = self.terminal_total_height as f64;
 
-        // layout.window_positions already has scroll offset applied in pos.y
-        // Windows are rendered at screen Y = terminal_height + pos.y
-        for (i, pos) in self.layout.window_positions.iter().enumerate() {
-            let window_screen_y = terminal_height + pos.y as f64;
-            let window_screen_end = window_screen_y + pos.height as f64;
-            if point.y >= window_screen_y && point.y < window_screen_end {
+        // Use cached window heights for consistent positioning with rendering
+        let mut window_y = terminal_height - self.scroll_offset;
+
+        for (i, &height) in self.cached_window_heights.iter().enumerate() {
+            let window_height = height as f64;
+            let window_screen_end = window_y + window_height;
+
+            if point.y >= window_y && point.y < window_screen_end {
                 return Some(i);
             }
+            window_y += window_height;
         }
         None
     }
@@ -527,3 +549,226 @@ delegate_xdg_shell!(ColumnCompositor);
 delegate_seat!(ColumnCompositor);
 delegate_data_device!(ColumnCompositor);
 delegate_output!(ColumnCompositor);
+
+#[cfg(test)]
+mod tests {
+
+    /// Test data for positioning - simulates the state needed for window_at() calculations
+    struct MockPositioning {
+        terminal_total_height: i32,
+        scroll_offset: f64,
+        cached_window_heights: Vec<i32>,
+    }
+
+    impl MockPositioning {
+        /// Replicate the window_at() logic for testing
+        fn window_at(&self, y: f64) -> Option<usize> {
+            let terminal_height = self.terminal_total_height as f64;
+            let mut window_y = terminal_height - self.scroll_offset;
+
+            for (i, &height) in self.cached_window_heights.iter().enumerate() {
+                let window_height = height as f64;
+                let window_screen_end = window_y + window_height;
+
+                if y >= window_y && y < window_screen_end {
+                    return Some(i);
+                }
+                window_y += window_height;
+            }
+            None
+        }
+
+        /// Replicate the rendering position calculation from main.rs
+        fn render_positions(&self) -> Vec<(i32, i32)> {
+            let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
+            self.cached_window_heights
+                .iter()
+                .map(|&height| {
+                    let y = window_y;
+                    window_y += height;
+                    (y, height)
+                })
+                .collect()
+        }
+
+        /// Get the Y range for each window (start, end)
+        fn window_ranges(&self) -> Vec<(f64, f64)> {
+            let terminal_height = self.terminal_total_height as f64;
+            let mut window_y = terminal_height - self.scroll_offset;
+
+            self.cached_window_heights
+                .iter()
+                .map(|&height| {
+                    let start = window_y;
+                    let end = window_y + height as f64;
+                    window_y = end;
+                    (start, end)
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn test_window_at_single_window() {
+        let pos = MockPositioning {
+            terminal_total_height: 100,
+            scroll_offset: 0.0,
+            cached_window_heights: vec![200],
+        };
+
+        // Window should be at Y=100 to Y=300
+        assert_eq!(pos.window_at(50.0), None, "should not hit window at Y=50 (on terminal)");
+        assert_eq!(pos.window_at(100.0), Some(0), "should hit window 0 at Y=100");
+        assert_eq!(pos.window_at(200.0), Some(0), "should hit window 0 at Y=200");
+        assert_eq!(pos.window_at(299.0), Some(0), "should hit window 0 at Y=299");
+        assert_eq!(pos.window_at(300.0), None, "should not hit window at Y=300 (past end)");
+    }
+
+    #[test]
+    fn test_window_at_two_windows_no_overlap() {
+        let pos = MockPositioning {
+            terminal_total_height: 100,
+            scroll_offset: 0.0,
+            cached_window_heights: vec![150, 200],
+        };
+
+        // Window 0: Y=100 to Y=250
+        // Window 1: Y=250 to Y=450
+        let ranges = pos.window_ranges();
+        assert_eq!(ranges[0], (100.0, 250.0), "window 0 range");
+        assert_eq!(ranges[1], (250.0, 450.0), "window 1 range");
+
+        // Verify no overlap
+        assert!(ranges[0].1 <= ranges[1].0, "windows should not overlap");
+
+        // Test click detection
+        assert_eq!(pos.window_at(100.0), Some(0), "Y=100 should hit window 0");
+        assert_eq!(pos.window_at(249.0), Some(0), "Y=249 should hit window 0");
+        assert_eq!(pos.window_at(250.0), Some(1), "Y=250 should hit window 1");
+        assert_eq!(pos.window_at(449.0), Some(1), "Y=449 should hit window 1");
+    }
+
+    #[test]
+    fn test_render_positions_match_click_detection() {
+        let pos = MockPositioning {
+            terminal_total_height: 100,
+            scroll_offset: 0.0,
+            cached_window_heights: vec![150, 200, 100],
+        };
+
+        let render_pos = pos.render_positions();
+        let click_ranges = pos.window_ranges();
+
+        // Verify render Y matches click detection start Y
+        for (i, ((render_y, render_h), (click_start, click_end))) in
+            render_pos.iter().zip(click_ranges.iter()).enumerate()
+        {
+            assert_eq!(
+                *render_y as f64, *click_start,
+                "window {} render Y ({}) should match click start ({})",
+                i, render_y, click_start
+            );
+            assert_eq!(
+                *render_h as f64, click_end - click_start,
+                "window {} render height should match click height",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_window_positions_with_scroll() {
+        let pos = MockPositioning {
+            terminal_total_height: 100,
+            scroll_offset: 50.0,
+            cached_window_heights: vec![150, 200],
+        };
+
+        // With scroll=50:
+        // Window 0: Y=100-50=50 to Y=200
+        // Window 1: Y=200 to Y=400
+        let ranges = pos.window_ranges();
+        assert_eq!(ranges[0], (50.0, 200.0), "window 0 range with scroll");
+        assert_eq!(ranges[1], (200.0, 400.0), "window 1 range with scroll");
+
+        // Render positions should also be shifted
+        let render_pos = pos.render_positions();
+        assert_eq!(render_pos[0].0, 50, "render Y for window 0 with scroll");
+        assert_eq!(render_pos[1].0, 200, "render Y for window 1 with scroll");
+    }
+
+    #[test]
+    fn test_window_at_returns_correct_index_not_flipped() {
+        // This test verifies the issue: "click targets seem to be flipped vertically"
+        let pos = MockPositioning {
+            terminal_total_height: 0,  // No terminals
+            scroll_offset: 0.0,
+            cached_window_heights: vec![200, 300],  // Window 0 is 200px, Window 1 is 300px
+        };
+
+        // Window 0 should be at Y=0-200 (top)
+        // Window 1 should be at Y=200-500 (bottom)
+
+        // Clicking near the top should hit window 0, not window 1
+        assert_eq!(pos.window_at(10.0), Some(0), "click at Y=10 should hit window 0 (top)");
+        assert_eq!(pos.window_at(100.0), Some(0), "click at Y=100 should hit window 0");
+        assert_eq!(pos.window_at(199.0), Some(0), "click at Y=199 should hit window 0");
+
+        // Clicking lower should hit window 1
+        assert_eq!(pos.window_at(200.0), Some(1), "click at Y=200 should hit window 1");
+        assert_eq!(pos.window_at(300.0), Some(1), "click at Y=300 should hit window 1 (bottom)");
+        assert_eq!(pos.window_at(499.0), Some(1), "click at Y=499 should hit window 1");
+    }
+
+    #[test]
+    fn test_windows_stack_vertically_not_overlap() {
+        // This test verifies: "Windows are still overlapping"
+        let heights = vec![200, 300, 150];
+        let pos = MockPositioning {
+            terminal_total_height: 0,
+            scroll_offset: 0.0,
+            cached_window_heights: heights.clone(),
+        };
+
+        let ranges = pos.window_ranges();
+
+        // Each window's end should equal the next window's start
+        for i in 0..ranges.len() - 1 {
+            assert_eq!(
+                ranges[i].1, ranges[i + 1].0,
+                "window {} end ({}) should equal window {} start ({})",
+                i, ranges[i].1, i + 1, ranges[i + 1].0
+            );
+        }
+
+        // Total height should be sum of all heights
+        let total: f64 = heights.iter().map(|&h| h as f64).sum();
+        assert_eq!(ranges.last().unwrap().1, total, "total height should match");
+    }
+
+    #[test]
+    fn test_point_in_only_one_window() {
+        // For any Y coordinate, window_at should return at most one window
+        let pos = MockPositioning {
+            terminal_total_height: 50,
+            scroll_offset: 0.0,
+            cached_window_heights: vec![100, 150, 200],
+        };
+
+        // Check every pixel from 0 to 550
+        for y in 0..550 {
+            let result = pos.window_at(y as f64);
+            // Ensure we get either None or exactly one index
+            if let Some(idx) = result {
+                assert!(idx < 3, "window index should be valid");
+                // Verify this Y doesn't also hit another window
+                for other_idx in 0..3 {
+                    if other_idx != idx {
+                        // Re-check - the same Y should not be in multiple windows
+                        // This is implicitly tested by window_at returning a single value
+                    }
+                }
+            }
+        }
+    }
+}

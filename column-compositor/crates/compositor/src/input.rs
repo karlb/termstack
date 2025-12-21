@@ -455,15 +455,19 @@ impl ColumnCompositor {
         // Find which window is under the point
         let index = self.window_at(point)?;
         let entry = self.windows.get(index)?;
-        let pos = self.layout.window_positions.get(index)?;
 
-        // Calculate the window's screen Y position
-        // pos.y already has scroll offset applied from layout calculation
+        // Calculate the window's screen Y position using cached heights
         let terminal_height = self.terminal_total_height as f64;
-        let window_screen_y = terminal_height + pos.y as f64;
+        let mut window_y = terminal_height - self.scroll_offset;
+        for (i, &h) in self.cached_window_heights.iter().enumerate() {
+            if i == index {
+                break;
+            }
+            window_y += h as f64;
+        }
 
         // Get the surface at the relative position within the window
-        let relative_point: Point<f64, Logical> = Point::from((point.x, point.y - window_screen_y));
+        let relative_point: Point<f64, Logical> = Point::from((point.x, point.y - window_y));
 
         entry
             .window

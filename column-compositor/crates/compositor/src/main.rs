@@ -3,12 +3,6 @@
 //! This compositor arranges terminal windows in a scrollable vertical column,
 //! with windows dynamically sizing based on their content.
 
-mod config;
-mod input;
-mod layout;
-mod state;
-mod terminal_manager;
-
 use std::time::Duration;
 
 use smithay::backend::winit::{self, WinitEvent};
@@ -20,12 +14,12 @@ use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use smithay::utils::{Physical, Point, Logical, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
-use config::Config;
-use state::{ClientState, ColumnCompositor};
-use terminal_manager::TerminalManager;
+use compositor::config::Config;
+use compositor::state::{ClientState, ColumnCompositor};
+use compositor::terminal_manager::TerminalManager;
 
 fn main() -> anyhow::Result<()> {
     // Initialize logging
@@ -141,6 +135,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         compositor.terminal_total_height = current_terminal_height;
+
+        // Cache window heights for consistent positioning between input and render
+        compositor.update_cached_window_heights();
 
         // Dispatch winit events
         let _ = winit_event_loop.dispatch_new_events(|event| {
@@ -299,24 +296,40 @@ fn main() -> anyhow::Result<()> {
             let terminal_total_height = compositor.terminal_total_height;
             let mut window_y = -(compositor.scroll_offset as i32) + terminal_total_height;
 
-            let window_elements: Vec<(i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = compositor.windows
-                .iter()
-                .map(|entry| {
-                    let window = &entry.window;
-                    let window_height = entry.state.target_height() as i32;
-                    let y = window_y;
-                    window_y += window_height;
+            // Build window_elements using ACTUAL element heights, not cached heights
+            // This prevents overlap when element geometry differs from cached bbox
+            let mut window_elements: Vec<(i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = Vec::new();
 
-                    // Only compute elements if visible
-                    let elements = if y + window_height > 0 && y < physical_size.h {
-                        let location: Point<i32, Logical> = Point::from((0, y));
-                        window.render_elements(renderer, location.to_physical_precise_round(scale), scale, 1.0)
-                    } else {
-                        Vec::new()
-                    };
-                    (y, window_height, elements)
-                })
-                .collect();
+            for (entry, &cached_height) in compositor.windows.iter().zip(compositor.cached_window_heights.iter()) {
+                let window = &entry.window;
+                let y = window_y;
+
+                // Get elements first
+                let elements = if y + cached_height > 0 && y < physical_size.h {
+                    let location: Point<i32, Physical> = Point::from((0, 0));
+                    window.render_elements(renderer, location, scale, 1.0)
+                } else {
+                    Vec::new()
+                };
+
+                // Calculate ACTUAL height from elements (max of element bottoms)
+                let actual_height = if elements.is_empty() {
+                    cached_height
+                } else {
+                    elements.iter()
+                        .map(|e: &WaylandSurfaceRenderElement<GlesRenderer>| {
+                            let geo = e.geometry(scale);
+                            geo.loc.y + geo.size.h
+                        })
+                        .max()
+                        .unwrap_or(cached_height)
+                };
+
+                window_elements.push((y, actual_height, elements));
+
+                // Advance by ACTUAL height to prevent overlap
+                window_y += actual_height;
+            }
 
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;
@@ -366,20 +379,27 @@ fn main() -> anyhow::Result<()> {
             }
 
             // Render external Wayland windows after terminals
-            // To flip content vertically for OpenGL's Y-up coordinate system,
-            // we flip the source Y coordinates (read buffer from bottom to top)
-            for (_y, _window_height, elements) in window_elements {
+            // Smithay's geometry() does NOT include the location offset we pass to render_elements
+            // We must manually offset each element's destination by window_y
+            for (window_y, _window_height, elements) in window_elements {
                 for element in elements {
                     let geo = element.geometry(scale);
                     let src = element.src();
 
-                    // Flip source Y: read from (0, h) to (0, 0) instead of (0, 0) to (0, h)
-                    let flipped_src = Rectangle::from_loc_and_size(
-                        (src.loc.x, src.loc.y + src.size.h),
-                        (src.size.w, -src.size.h),
+                    // Offset the destination geometry by our calculated window_y
+                    // geo.loc.y is relative to window origin, we need to add window position
+                    let dest = Rectangle::new(
+                        Point::from((geo.loc.x, geo.loc.y + window_y)),
+                        geo.size,
                     );
 
-                    element.draw(&mut frame, flipped_src, geo, &[damage], &[]).ok();
+                    // Flip source Y for correct content orientation
+                    let flipped_src = Rectangle::new(
+                        Point::from((src.loc.x, src.loc.y + src.size.h)),
+                        Size::from((src.size.w, -src.size.h)),
+                    );
+
+                    element.draw(&mut frame, flipped_src, dest, &[damage], &[]).ok();
                 }
             }
         }

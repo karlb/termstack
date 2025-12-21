@@ -52,11 +52,30 @@ pub struct TestCompositor {
 
     /// Focused index
     focused_index: Option<usize>,
+
+    /// Total height of terminals (before external windows)
+    terminal_total_height: i32,
+
+    /// Cached window heights (mirrors real compositor behavior)
+    cached_window_heights: Vec<i32>,
 }
 
 struct MockWindow {
     height: u32,
     content: String,
+    /// Elements within this window (internal_y_offset, element_height)
+    /// For simple windows, this is just [(0, height)]
+    /// For complex windows like gnome-maps, this could be multiple elements
+    elements: Vec<(i32, i32)>,
+}
+
+/// Represents a rendered element's final screen position
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderedElement {
+    pub window_index: usize,
+    pub element_index: usize,
+    pub screen_y: i32,
+    pub height: i32,
 }
 
 impl TestCompositor {
@@ -67,7 +86,67 @@ impl TestCompositor {
             windows: Vec::new(),
             scroll_offset: 0.0,
             focused_index: None,
+            terminal_total_height: 0,
+            cached_window_heights: Vec::new(),
         }
+    }
+
+    /// Set terminal total height (for testing window positioning after terminals)
+    pub fn set_terminal_height(&mut self, height: i32) {
+        self.terminal_total_height = height;
+    }
+
+    /// Update cached window heights (mirrors real compositor's update_cached_window_heights)
+    pub fn update_cached_window_heights(&mut self) {
+        self.cached_window_heights = self.windows.iter().map(|w| w.height as i32).collect();
+    }
+
+    /// Get window under a point - mirrors real compositor's window_at()
+    /// Uses the SAME algorithm as the real compositor
+    pub fn window_at(&self, y: f64) -> Option<usize> {
+        let terminal_height = self.terminal_total_height as f64;
+        let mut window_y = terminal_height - self.scroll_offset;
+
+        for (i, &height) in self.cached_window_heights.iter().enumerate() {
+            let window_height = height as f64;
+            let window_screen_end = window_y + window_height;
+
+            if y >= window_y && y < window_screen_end {
+                return Some(i);
+            }
+            window_y += window_height;
+        }
+        None
+    }
+
+    /// Get render positions - mirrors real compositor's render position calculation
+    /// Returns Vec of (y_position, height) for each window
+    pub fn render_positions(&self) -> Vec<(i32, i32)> {
+        let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
+        self.cached_window_heights
+            .iter()
+            .map(|&height| {
+                let y = window_y;
+                window_y += height;
+                (y, height)
+            })
+            .collect()
+    }
+
+    /// Get window Y ranges for click detection
+    pub fn window_click_ranges(&self) -> Vec<(f64, f64)> {
+        let terminal_height = self.terminal_total_height as f64;
+        let mut window_y = terminal_height - self.scroll_offset;
+
+        self.cached_window_heights
+            .iter()
+            .map(|&height| {
+                let start = window_y;
+                let end = window_y + height as f64;
+                window_y = end;
+                (start, end)
+            })
+            .collect()
     }
 
     /// Spawn a terminal and return a handle
@@ -77,11 +156,108 @@ impl TestCompositor {
         self.windows.push(MockWindow {
             height: 200,
             content: String::new(),
+            elements: vec![(0, 200)], // Single element spanning the window
         });
 
         self.focused_index = Some(index);
+        self.update_cached_window_heights();
 
         TerminalHandle { index }
+    }
+
+    /// Add an external window with specified height (for testing window positioning)
+    pub fn add_external_window(&mut self, height: u32) -> TerminalHandle {
+        let index = self.windows.len();
+
+        self.windows.push(MockWindow {
+            height,
+            content: String::new(),
+            elements: vec![(0, height as i32)], // Single element spanning the window
+        });
+
+        self.focused_index = Some(index);
+        self.update_cached_window_heights();
+
+        TerminalHandle { index }
+    }
+
+    /// Add a window with multiple elements (simulates complex apps like gnome-maps)
+    /// elements: Vec of (internal_y_offset, element_height)
+    pub fn add_window_with_elements(&mut self, total_height: u32, elements: Vec<(i32, i32)>) -> TerminalHandle {
+        let index = self.windows.len();
+
+        self.windows.push(MockWindow {
+            height: total_height,
+            content: String::new(),
+            elements,
+        });
+
+        self.focused_index = Some(index);
+        self.update_cached_window_heights();
+
+        TerminalHandle { index }
+    }
+
+    /// Get all rendered elements with their final screen positions
+    /// This simulates what the rendering code does: window_y + geo.loc.y
+    pub fn rendered_elements(&self) -> Vec<RenderedElement> {
+        let mut result = Vec::new();
+        let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
+
+        for (window_idx, (window, &cached_height)) in self.windows.iter()
+            .zip(self.cached_window_heights.iter())
+            .enumerate()
+        {
+            for (elem_idx, &(internal_y, elem_height)) in window.elements.iter().enumerate() {
+                // This mirrors the rendering code: screen_y = window_y + geo.loc.y
+                let screen_y = window_y + internal_y;
+                result.push(RenderedElement {
+                    window_index: window_idx,
+                    element_index: elem_idx,
+                    screen_y,
+                    height: elem_height,
+                });
+            }
+            window_y += cached_height;
+        }
+
+        result
+    }
+
+    /// Check if any elements from different windows overlap
+    pub fn find_element_overlaps(&self) -> Vec<(RenderedElement, RenderedElement)> {
+        let elements = self.rendered_elements();
+        let mut overlaps = Vec::new();
+
+        for i in 0..elements.len() {
+            for j in (i + 1)..elements.len() {
+                let a = &elements[i];
+                let b = &elements[j];
+
+                // Only check elements from different windows
+                if a.window_index == b.window_index {
+                    continue;
+                }
+
+                // Check for overlap: ranges [a.screen_y, a.screen_y + a.height) and [b.screen_y, b.screen_y + b.height)
+                let a_end = a.screen_y + a.height;
+                let b_end = b.screen_y + b.height;
+
+                if a.screen_y < b_end && b.screen_y < a_end {
+                    overlaps.push((*a, *b));
+                }
+            }
+        }
+
+        overlaps
+    }
+
+    /// Set a specific window's height (simulates bbox returning different values)
+    pub fn set_window_height(&mut self, index: usize, height: u32) {
+        if let Some(window) = self.windows.get_mut(index) {
+            window.height = height;
+        }
+        self.update_cached_window_heights();
     }
 
     /// Send input to a terminal
@@ -95,6 +271,7 @@ impl TestCompositor {
             let line_height = 16u32; // Approximate
             window.height += (newlines as u32) * line_height;
         }
+        self.update_cached_window_heights();
     }
 
     /// Wait for a condition with timeout
@@ -142,18 +319,70 @@ impl TestCompositor {
 
     /// Scroll the terminal view
     pub fn scroll_terminal(&mut self, _handle: &TerminalHandle, delta: i32) {
-        let max_scroll = self
-            .windows
-            .iter()
-            .map(|w| w.height)
-            .sum::<u32>()
-            .saturating_sub(self.output_size.1) as f64;
+        self.scroll(delta as f64);
+    }
 
-        self.scroll_offset = (self.scroll_offset + delta as f64).clamp(0.0, max_scroll);
+    /// Scroll by a delta amount
+    pub fn scroll(&mut self, delta: f64) {
+        let total_height = self.terminal_total_height as u32
+            + self.windows.iter().map(|w| w.height).sum::<u32>();
+        let max_scroll = total_height.saturating_sub(self.output_size.1) as f64;
+        self.scroll_offset = (self.scroll_offset + delta).clamp(0.0, max_scroll);
+    }
+
+    /// Set scroll offset directly
+    pub fn set_scroll(&mut self, offset: f64) {
+        let total_height = self.terminal_total_height as u32
+            + self.windows.iter().map(|w| w.height).sum::<u32>();
+        let max_scroll = total_height.saturating_sub(self.output_size.1) as f64;
+        self.scroll_offset = offset.clamp(0.0, max_scroll);
+    }
+
+    /// Get current scroll offset
+    pub fn scroll_offset(&self) -> f64 {
+        self.scroll_offset
+    }
+
+    /// Get total content height (terminals + windows)
+    pub fn total_content_height(&self) -> i32 {
+        self.terminal_total_height + self.windows.iter().map(|w| w.height as i32).sum::<i32>()
     }
 
     /// Get output size
     pub fn output_size(&self) -> (u32, u32) {
         self.output_size
+    }
+
+    /// Check if a window is visible on screen (considering scroll)
+    pub fn is_window_visible(&self, index: usize) -> bool {
+        let render_pos = self.render_positions();
+        if let Some(&(y, height)) = render_pos.get(index) {
+            let window_bottom = y + height;
+            let screen_height = self.output_size.1 as i32;
+            // Window is visible if any part is on screen
+            window_bottom > 0 && y < screen_height
+        } else {
+            false
+        }
+    }
+
+    /// Get the visible portion of a window (start_y, end_y) in screen coordinates
+    /// Returns None if window is not visible
+    pub fn visible_portion(&self, index: usize) -> Option<(i32, i32)> {
+        let render_pos = self.render_positions();
+        if let Some(&(y, height)) = render_pos.get(index) {
+            let window_bottom = y + height;
+            let screen_height = self.output_size.1 as i32;
+
+            if window_bottom <= 0 || y >= screen_height {
+                None
+            } else {
+                let visible_top = y.max(0);
+                let visible_bottom = window_bottom.min(screen_height);
+                Some((visible_top, visible_bottom))
+            }
+        } else {
+            None
+        }
     }
 }

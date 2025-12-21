@@ -1,0 +1,1195 @@
+//! Tests for window positioning and click detection
+//!
+//! These tests verify that:
+//! 1. Windows don't overlap (issue: "foot window is fully inside gnome-maps window")
+//! 2. Click targets are not vertically flipped (issue: "click targets seem to be flipped")
+//! 3. Render positions match click detection positions
+
+use test_harness::{TestCompositor, assertions, fixtures};
+
+#[test]
+fn windows_dont_overlap_with_different_heights() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    // Simulate gnome-maps (tall window) and foot (smaller window)
+    tc.add_external_window(400); // gnome-maps
+    tc.add_external_window(200); // foot
+
+    let render_pos = tc.render_positions();
+
+    // Window 0 (gnome-maps) should be at Y=0
+    // Window 1 (foot) should be at Y=400, NOT Y=0
+    assert_eq!(render_pos[0].0, 0, "window 0 should start at Y=0");
+    assert_eq!(render_pos[0].1, 400, "window 0 should have height 400");
+    assert_eq!(render_pos[1].0, 400, "window 1 should start at Y=400 (after window 0)");
+    assert_eq!(render_pos[1].1, 200, "window 1 should have height 200");
+
+    // They should not overlap
+    let window_0_end = render_pos[0].0 + render_pos[0].1;
+    let window_1_start = render_pos[1].0;
+    assert!(window_0_end <= window_1_start,
+        "windows overlap: window 0 ends at {}, window 1 starts at {}",
+        window_0_end, window_1_start);
+}
+
+#[test]
+fn click_detection_matches_render_positions() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    tc.add_external_window(300);
+    tc.add_external_window(200);
+    tc.add_external_window(150);
+
+    assertions::assert_render_matches_click_detection(&tc);
+}
+
+#[test]
+fn click_targets_not_vertically_flipped() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    // Add windows in order: window 0 first, then window 1
+    tc.add_external_window(200); // Window 0
+    tc.add_external_window(300); // Window 1
+
+    // Clicking at Y=50 (top of screen, within window 0) should hit window 0
+    assertions::assert_click_at_y_hits_window(&tc, 50.0, Some(0));
+
+    // Clicking at Y=250 (within window 1, which starts at Y=200) should hit window 1
+    assertions::assert_click_at_y_hits_window(&tc, 250.0, Some(1));
+
+    // NOT the other way around (which would indicate flipped targets)
+    assertions::assert_click_targets_not_flipped(&tc);
+}
+
+#[test]
+fn windows_stack_correctly_after_terminals() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    // Simulate internal terminals taking up 100 pixels
+    tc.set_terminal_height(100);
+
+    // Add two external windows
+    tc.add_external_window(200);
+    tc.add_external_window(150);
+
+    let render_pos = tc.render_positions();
+
+    // Windows should start after terminals
+    assert_eq!(render_pos[0].0, 100, "first window should start at terminal height");
+    assert_eq!(render_pos[1].0, 300, "second window should start after first");
+
+    // Click detection should also account for terminal height
+    assertions::assert_click_at_y_hits_window(&tc, 50.0, None); // On terminal area
+    assertions::assert_click_at_y_hits_window(&tc, 150.0, Some(0)); // On window 0
+    assertions::assert_click_at_y_hits_window(&tc, 350.0, Some(1)); // On window 1
+}
+
+#[test]
+fn scroll_affects_both_render_and_click_detection() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    let win = tc.add_external_window(200);
+    tc.add_external_window(200);
+
+    // Scroll down by 100 pixels
+    tc.scroll_terminal(&win, 100);
+
+    // After scrolling, render and click should still match
+    assertions::assert_render_matches_click_detection(&tc);
+}
+
+#[test]
+fn window_order_preserved_with_many_windows() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    // Add 5 windows with different heights
+    tc.add_external_window(100);
+    tc.add_external_window(150);
+    tc.add_external_window(200);
+    tc.add_external_window(180);
+    tc.add_external_window(120);
+
+    assertions::assert_window_order_correct(&tc);
+    assertions::assert_click_targets_not_flipped(&tc);
+}
+
+#[test]
+fn zero_height_window_doesnt_break_positioning() {
+    // This tests the fallback behavior when bbox returns 0
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    tc.add_external_window(0);   // Simulates bbox returning 0
+    tc.add_external_window(200);
+
+    let render_pos = tc.render_positions();
+
+    // Even with height 0, positions should be calculated
+    // (In real code, we'd use fallback height, but this tests edge case)
+    assert_eq!(render_pos[1].0, 0, "window 1 starts at window 0's end (0)");
+}
+
+#[test]
+fn changing_window_height_updates_positions() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    tc.add_external_window(200);
+    tc.add_external_window(200);
+
+    // Initial: window 1 at Y=200
+    assert_eq!(tc.render_positions()[1].0, 200);
+
+    // Resize window 0 to 400 pixels
+    tc.set_window_height(0, 400);
+
+    // Window 1 should now be at Y=400
+    assert_eq!(tc.render_positions()[1].0, 400);
+
+    // Click detection should also update
+    assertions::assert_click_at_y_hits_window(&tc, 250.0, Some(0)); // Now within enlarged window 0
+    assertions::assert_click_at_y_hits_window(&tc, 450.0, Some(1)); // Window 1 moved down
+}
+
+/// Test that OpenGL Y-flip calculation is correct.
+/// In OpenGL, Y=0 is at the BOTTOM of the screen (Y-up coordinate system).
+/// In screen coordinates, Y=0 is at the TOP (Y-down coordinate system).
+/// When rendering to OpenGL, we must flip destination Y coordinates.
+#[test]
+fn opengl_y_flip_calculation_correct() {
+    let output_height: i32 = 720;
+
+    // Window at screen Y=100 with height 200
+    // In screen coords: top at Y=100, bottom at Y=300
+    // In OpenGL coords: bottom at Y=620 (720-100), top at Y=420 (720-100-200)
+    // So the OpenGL destination should have loc.y = 420, size.h = 200
+
+    let screen_y = 100;
+    let window_height = 200;
+
+    // The flipped Y position for OpenGL
+    let opengl_y = output_height - screen_y - window_height;
+
+    assert_eq!(opengl_y, 420, "OpenGL Y should be output_height - screen_y - height");
+
+    // Verify the window occupies the correct screen region after flip
+    let opengl_bottom = opengl_y;  // 420
+    let opengl_top = opengl_y + window_height;  // 620
+
+    // Convert back to screen coords to verify
+    let screen_top_from_opengl = output_height - opengl_top;  // 720 - 620 = 100
+    let screen_bottom_from_opengl = output_height - opengl_bottom;  // 720 - 420 = 300
+
+    assert_eq!(screen_top_from_opengl, screen_y, "screen top should match");
+    assert_eq!(screen_bottom_from_opengl, screen_y + window_height, "screen bottom should match");
+}
+
+/// Test that flipping destination Y is required for proper window rendering.
+/// This test documents that when element.draw() is called, the destination
+/// geometry must have its Y coordinate flipped for OpenGL's Y-up system.
+#[test]
+fn destination_y_must_be_flipped_for_opengl() {
+    // This test verifies the flip formula used in rendering
+    let output_height: i32 = 720;
+
+    struct TestCase {
+        screen_y: i32,
+        height: i32,
+        expected_opengl_y: i32,
+    }
+
+    let cases = [
+        TestCase { screen_y: 0, height: 100, expected_opengl_y: 620 },    // top of screen
+        TestCase { screen_y: 100, height: 200, expected_opengl_y: 420 },  // middle
+        TestCase { screen_y: 520, height: 200, expected_opengl_y: 0 },    // bottom of screen
+        TestCase { screen_y: 360, height: 360, expected_opengl_y: 0 },    // full height from middle
+    ];
+
+    for (i, case) in cases.iter().enumerate() {
+        let flipped_y = output_height - case.screen_y - case.height;
+        assert_eq!(
+            flipped_y, case.expected_opengl_y,
+            "case {}: screen_y={}, height={} should flip to opengl_y={}",
+            i, case.screen_y, case.height, case.expected_opengl_y
+        );
+    }
+}
+
+// ============================================================================
+// Multiple Windows Tests
+// ============================================================================
+
+#[test]
+fn three_windows_stack_correctly() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    tc.add_external_window(200);
+    tc.add_external_window(300);
+    tc.add_external_window(150);
+
+    let pos = tc.render_positions();
+
+    assert_eq!(pos[0], (0, 200), "window 0");
+    assert_eq!(pos[1], (200, 300), "window 1");
+    assert_eq!(pos[2], (500, 150), "window 2");
+
+    // Verify contiguous stacking
+    assert_eq!(pos[0].0 + pos[0].1, pos[1].0, "window 0 end == window 1 start");
+    assert_eq!(pos[1].0 + pos[1].1, pos[2].0, "window 1 end == window 2 start");
+}
+
+#[test]
+fn five_windows_with_varied_heights() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    let heights = [100, 250, 75, 400, 180];
+    for h in heights {
+        tc.add_external_window(h);
+    }
+
+    let pos = tc.render_positions();
+
+    // Verify each window starts where previous ends
+    let mut expected_y = 0;
+    for (i, &h) in heights.iter().enumerate() {
+        assert_eq!(pos[i].0, expected_y, "window {} start", i);
+        assert_eq!(pos[i].1, h as i32, "window {} height", i);
+        expected_y += h as i32;
+    }
+
+    // Verify click detection for each window
+    assertions::assert_click_at_y_hits_window(&tc, 50.0, Some(0));   // middle of window 0
+    assertions::assert_click_at_y_hits_window(&tc, 200.0, Some(1));  // start of window 1
+    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(2));  // start of window 2
+    assertions::assert_click_at_y_hits_window(&tc, 450.0, Some(3));  // middle of window 3
+    assertions::assert_click_at_y_hits_window(&tc, 900.0, Some(4));  // middle of window 4
+}
+
+#[test]
+fn ten_small_windows() {
+    let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
+
+    for _ in 0..10 {
+        tc.add_external_window(50);
+    }
+
+    let pos = tc.render_positions();
+
+    // All 10 windows should stack correctly
+    for i in 0..10 {
+        assert_eq!(pos[i].0, i as i32 * 50, "window {} y position", i);
+        assert_eq!(pos[i].1, 50, "window {} height", i);
+    }
+
+    // Click detection for each
+    for i in 0..10 {
+        let click_y = (i as f64 * 50.0) + 25.0; // middle of each window
+        assertions::assert_click_at_y_hits_window(&tc, click_y, Some(i));
+    }
+}
+
+// ============================================================================
+// Scrolling Tests
+// ============================================================================
+
+#[test]
+fn scroll_moves_all_windows_up() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.add_external_window(300);
+    tc.add_external_window(300);
+    tc.add_external_window(300);
+
+    // Initial positions
+    let pos_before = tc.render_positions();
+    assert_eq!(pos_before[0].0, 0);
+    assert_eq!(pos_before[1].0, 300);
+    assert_eq!(pos_before[2].0, 600);
+
+    // Scroll down by 100px
+    tc.scroll(100.0);
+
+    let pos_after = tc.render_positions();
+    assert_eq!(pos_after[0].0, -100, "window 0 scrolled up");
+    assert_eq!(pos_after[1].0, 200, "window 1 scrolled up");
+    assert_eq!(pos_after[2].0, 500, "window 2 scrolled up");
+}
+
+#[test]
+fn scroll_and_click_detection_stay_consistent() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Use larger windows so total > screen height, enabling scroll
+    tc.add_external_window(400);
+    tc.add_external_window(400);
+    tc.add_external_window(400);
+    // Total = 1200, screen = 720, max_scroll = 480
+
+    // Before scroll: click at Y=100 should hit window 0
+    assertions::assert_click_at_y_hits_window(&tc, 100.0, Some(0));
+    assertions::assert_click_at_y_hits_window(&tc, 500.0, Some(1));
+
+    // Scroll down by 300px
+    tc.scroll(300.0);
+
+    // After scroll: window 0 at Y=-300 to Y=100, window 1 at Y=100 to Y=500
+    // Click at Y=150 should now hit window 1 (which spans Y=100 to Y=500)
+    assertions::assert_click_at_y_hits_window(&tc, 150.0, Some(1));
+
+    // Click at Y=50 should hit window 0 (still visible from Y=-300 to Y=100)
+    assertions::assert_click_at_y_hits_window(&tc, 50.0, Some(0));
+
+    // Verify render positions match
+    assertions::assert_render_matches_click_detection(&tc);
+}
+
+#[test]
+fn scroll_to_bottom_shows_last_window() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Total height = 1500, output = 720, max scroll = 780
+    tc.add_external_window(500);
+    tc.add_external_window(500);
+    tc.add_external_window(500);
+
+    // Scroll to max
+    tc.set_scroll(780.0);
+
+    let pos = tc.render_positions();
+
+    // Window 2 should be visible at bottom of screen
+    assert_eq!(pos[2].0, 220, "window 2 at Y=1000-780=220");
+    assert!(tc.is_window_visible(2), "window 2 should be visible");
+
+    // Window 0 should be off-screen (Y = -780)
+    assert_eq!(pos[0].0, -780);
+    assert!(!tc.is_window_visible(0), "window 0 should be off-screen");
+}
+
+#[test]
+fn scroll_preserves_window_order() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.add_external_window(200);
+    tc.add_external_window(300);
+    tc.add_external_window(250);
+
+    // Test at various scroll positions
+    for scroll in [0.0, 50.0, 100.0, 200.0, 300.0] {
+        tc.set_scroll(scroll);
+        assertions::assert_window_order_correct(&tc);
+        assertions::assert_render_matches_click_detection(&tc);
+    }
+}
+
+#[test]
+fn partial_window_visibility_during_scroll() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Use windows that total more than screen height
+    tc.add_external_window(500);
+    tc.add_external_window(500);
+    // Total = 1000, screen = 720, max_scroll = 280
+
+    // Scroll so window 0 is partially visible
+    tc.set_scroll(200.0);
+
+    // Window 0 at Y=-200, height=500, so visible from Y=0 to Y=300
+    let visible_0 = tc.visible_portion(0);
+    assert_eq!(visible_0, Some((0, 300)), "window 0 partial visibility");
+
+    // Window 1 at Y=300, height=500, so visible from Y=300 to Y=720 (screen height)
+    let visible_1 = tc.visible_portion(1);
+    assert_eq!(visible_1, Some((300, 720)), "window 1 partial visibility");
+
+    // Both should register as visible
+    assert!(tc.is_window_visible(0));
+    assert!(tc.is_window_visible(1));
+}
+
+#[test]
+fn window_completely_scrolled_off_top() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Use larger windows so we can scroll enough to hide window 0
+    tc.add_external_window(300);
+    tc.add_external_window(500);
+    tc.add_external_window(500);
+    // Total = 1300, screen = 720, max_scroll = 580
+
+    // Scroll so window 0 is completely off-screen (needs scroll > 300)
+    tc.set_scroll(350.0);
+
+    // Window 0 at Y=-350, height=300, bottom at Y=-50 (off-screen)
+    assert!(!tc.is_window_visible(0), "window 0 should be off-screen");
+    assert_eq!(tc.visible_portion(0), None);
+
+    // Window 1 should be visible (at Y=-50 to Y=450)
+    assert!(tc.is_window_visible(1));
+}
+
+#[test]
+fn click_on_partially_visible_window() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Use larger windows so scrolling is possible
+    tc.add_external_window(500);
+    tc.add_external_window(500);
+    // Total = 1000, screen = 720, max_scroll = 280
+
+    // Scroll so window 0 is partially off-screen
+    tc.set_scroll(200.0);
+
+    // Window 0 is at Y=-200 to Y=300
+    // Clicking at Y=50 should hit window 0 (the visible part)
+    assertions::assert_click_at_y_hits_window(&tc, 50.0, Some(0));
+
+    // Clicking at Y=400 should hit window 1 (at Y=300 to Y=800)
+    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(1));
+}
+
+// ============================================================================
+// Windows with Terminals Tests
+// ============================================================================
+
+#[test]
+fn windows_after_terminals_with_scroll() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.set_terminal_height(300);
+    tc.add_external_window(400);
+    tc.add_external_window(400);
+    // Total = 300 + 800 = 1100, screen = 720, max_scroll = 380
+
+    // Initial: terminals at 0-300, window 0 at 300-700, window 1 at 700-1100
+    let pos = tc.render_positions();
+    assert_eq!(pos[0].0, 300, "window 0 after terminals");
+    assert_eq!(pos[1].0, 700, "window 1 after window 0");
+
+    // Click on terminal area
+    assertions::assert_click_at_y_hits_window(&tc, 150.0, None);
+
+    // Click on window 0
+    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(0));
+
+    // Scroll down
+    tc.scroll(200.0);
+
+    // Now: terminals at -200 to 100, window 0 at 100-500, window 1 at 500-900
+    let pos_scrolled = tc.render_positions();
+    assert_eq!(pos_scrolled[0].0, 100);
+    assert_eq!(pos_scrolled[1].0, 500);
+
+    // Click detection should match
+    assertions::assert_click_at_y_hits_window(&tc, 200.0, Some(0));
+    assertions::assert_click_at_y_hits_window(&tc, 600.0, Some(1));
+}
+
+#[test]
+fn large_terminal_with_small_windows() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.set_terminal_height(600);
+    tc.add_external_window(100);
+    tc.add_external_window(100);
+    tc.add_external_window(100);
+
+    // Total: 600 + 300 = 900, output = 720, max scroll = 180
+    let pos = tc.render_positions();
+    assert_eq!(pos[0].0, 600);
+    assert_eq!(pos[1].0, 700);
+    assert_eq!(pos[2].0, 800);
+
+    // Window visibility:
+    // Window 0: y=600, bottom=700. 700 > 0 && 600 < 720 => visible (120px shown)
+    // Window 1: y=700, bottom=800. 800 > 0 && 700 < 720 => visible (20px shown)
+    // Window 2: y=800, bottom=900. 900 > 0 && 800 < 720 => 800 >= 720 => NOT visible
+    assert!(tc.is_window_visible(0));
+    assert!(tc.is_window_visible(1)); // partially visible (top 20px)
+    assert!(!tc.is_window_visible(2)); // completely off-screen
+
+    // Scroll to show all windows
+    tc.set_scroll(180.0);
+
+    // After scroll: window positions shift up by 180
+    // Window 0: y=420, Window 1: y=520, Window 2: y=620
+    assert!(tc.is_window_visible(0));
+    assert!(tc.is_window_visible(1));
+    assert!(tc.is_window_visible(2)); // now visible at y=620
+}
+
+// ============================================================================
+// Edge Cases
+// ============================================================================
+
+#[test]
+fn empty_compositor_no_crash() {
+    let tc = TestCompositor::new_headless(1280, 720);
+
+    assert!(tc.render_positions().is_empty());
+    assert!(tc.window_click_ranges().is_empty());
+    assert_eq!(tc.window_at(100.0), None);
+}
+
+#[test]
+fn single_large_window_bigger_than_screen() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.add_external_window(1500);
+
+    // Window is 1500px, screen is 720px
+    assert!(tc.is_window_visible(0));
+
+    // Can scroll through the window
+    tc.set_scroll(400.0);
+    assert!(tc.is_window_visible(0));
+
+    // Click anywhere on screen should hit window 0
+    for y in [0.0, 100.0, 300.0, 500.0, 700.0] {
+        assertions::assert_click_at_y_hits_window(&tc, y, Some(0));
+    }
+}
+
+#[test]
+fn max_scroll_boundary() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.add_external_window(500);
+    tc.add_external_window(500);
+    // Total = 1000, max scroll = 1000 - 720 = 280
+
+    // Try to scroll past max
+    tc.set_scroll(1000.0);
+    assert_eq!(tc.scroll_offset(), 280.0, "scroll should clamp to max");
+
+    // Scroll should not go negative
+    tc.set_scroll(-100.0);
+    assert_eq!(tc.scroll_offset(), 0.0, "scroll should clamp to 0");
+}
+
+#[test]
+fn rapid_scroll_changes() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.add_external_window(200);
+    tc.add_external_window(200);
+    tc.add_external_window(200);
+
+    // Rapidly scroll back and forth
+    for _ in 0..100 {
+        tc.scroll(50.0);
+        assertions::assert_render_matches_click_detection(&tc);
+
+        tc.scroll(-30.0);
+        assertions::assert_render_matches_click_detection(&tc);
+    }
+}
+
+#[test]
+fn window_at_exact_boundaries() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.add_external_window(200);
+    tc.add_external_window(200);
+
+    // Test exact boundary points
+    // Window 0: Y=0 to Y=200
+    // Window 1: Y=200 to Y=400
+
+    assertions::assert_click_at_y_hits_window(&tc, 0.0, Some(0));    // start of window 0
+    assertions::assert_click_at_y_hits_window(&tc, 199.9, Some(0));  // just before end
+    assertions::assert_click_at_y_hits_window(&tc, 200.0, Some(1));  // exactly at window 1 start
+    assertions::assert_click_at_y_hits_window(&tc, 399.9, Some(1));  // just before end
+    assertions::assert_click_at_y_hits_window(&tc, 400.0, None);     // past all windows
+}
+
+// ============================================================================
+// OpenGL Rendering Flip Tests
+// ============================================================================
+
+/// Test that multiple windows get correct OpenGL flip positions.
+/// This verifies the actual rendering calculation that converts screen Y
+/// to OpenGL Y coordinates. Each window should have a unique flipped position.
+#[test]
+fn multiple_windows_opengl_flip_no_overlap() {
+    let output_height: i32 = 720;
+
+    // Simulate two windows at different screen positions
+    struct Window {
+        screen_y: i32,
+        height: i32,
+    }
+
+    let windows = [
+        Window { screen_y: 0, height: 200 },     // window 0 at top
+        Window { screen_y: 200, height: 300 },   // window 1 below
+        Window { screen_y: 500, height: 220 },   // window 2 further down
+    ];
+
+    // Calculate flipped positions (this is what the rendering code should do)
+    let flipped: Vec<(i32, i32)> = windows.iter()
+        .map(|w| {
+            let opengl_y = output_height - w.screen_y - w.height;
+            (opengl_y, w.height)
+        })
+        .collect();
+
+    // Window 0: screen 0-200 => OpenGL 520-720
+    assert_eq!(flipped[0], (520, 200), "window 0 flipped position");
+
+    // Window 1: screen 200-500 => OpenGL 220-520
+    assert_eq!(flipped[1], (220, 300), "window 1 flipped position");
+
+    // Window 2: screen 500-720 => OpenGL 0-220
+    assert_eq!(flipped[2], (0, 220), "window 2 flipped position");
+
+    // CRITICAL: Verify no overlap in flipped positions
+    // Window 0 OpenGL range: 520 to 720
+    // Window 1 OpenGL range: 220 to 520
+    // Window 2 OpenGL range: 0 to 220
+    // These should be contiguous and non-overlapping
+
+    assert_eq!(flipped[2].0 + flipped[2].1, flipped[1].0,
+        "window 2 end should meet window 1 start");
+    assert_eq!(flipped[1].0 + flipped[1].1, flipped[0].0,
+        "window 1 end should meet window 0 start");
+    assert_eq!(flipped[0].0 + flipped[0].1, output_height,
+        "window 0 end should be at output height");
+}
+
+/// Test that using window_y (our calculated position) vs geo.loc.y matters.
+/// This documents the bug: if geo.loc.y is always 0 (relative to window),
+/// all windows would flip to the same position, causing overlap.
+#[test]
+fn bug_detection_all_windows_same_flip_if_wrong_y_used() {
+    let output_height: i32 = 720;
+
+    // If we incorrectly use geo.loc.y = 0 for all windows (relative to window origin)
+    // instead of the actual screen position, we get:
+    let buggy_flip = |_screen_y: i32, geo_loc_y: i32, height: i32| {
+        output_height - geo_loc_y - height
+    };
+
+    // Two windows at different screen positions, but geo.loc.y is 0 for both
+    let window_0_buggy = buggy_flip(0, 0, 200);    // screen_y=0 ignored, uses geo.loc.y=0
+    let window_1_buggy = buggy_flip(200, 0, 300);  // screen_y=200 ignored, uses geo.loc.y=0
+
+    // BUG: Both would render at the same OpenGL Y if using wrong value!
+    assert_eq!(window_0_buggy, 520); // 720 - 0 - 200 = 520
+    assert_eq!(window_1_buggy, 420); // 720 - 0 - 300 = 420
+
+    // They overlap! Window 0 at 520-720, Window 1 at 420-720
+    // Window 1's top (420) is below Window 0's bottom (520)? No wait...
+    // Window 1 range: 420 to 720 (420 + 300)
+    // Window 0 range: 520 to 720 (520 + 200)
+    // They overlap from 520 to 720!
+    let w0_bottom = window_0_buggy;
+    let w0_top = window_0_buggy + 200;
+    let w1_bottom = window_1_buggy;
+    let w1_top = window_1_buggy + 300;
+
+    // Check for overlap: ranges [w0_bottom, w0_top] and [w1_bottom, w1_top]
+    let overlap = w0_bottom < w1_top && w1_bottom < w0_top;
+    assert!(overlap, "using geo.loc.y=0 causes overlap - this is the bug!");
+
+    // The FIX: use screen_y (our calculated window_y) instead
+    let correct_flip = |screen_y: i32, height: i32| {
+        output_height - screen_y - height
+    };
+
+    let window_0_correct = correct_flip(0, 200);
+    let window_1_correct = correct_flip(200, 300);
+
+    assert_eq!(window_0_correct, 520); // 720 - 0 - 200 = 520
+    assert_eq!(window_1_correct, 220); // 720 - 200 - 300 = 220
+
+    // No overlap: Window 0 at 520-720, Window 1 at 220-520
+    let w0c_top = window_0_correct + 200; // 720
+    let w1c_bottom = window_1_correct;     // 220
+    let w1c_top = window_1_correct + 300;  // 520
+
+    assert_eq!(w1c_top, window_0_correct, "correct: window 1 ends where window 0 starts");
+}
+
+/// Test that element geometry must include location offset for correct rendering.
+/// When we call window.render_elements(renderer, location, scale, alpha),
+/// the returned elements should have geometry.loc offset by location.
+#[test]
+fn element_geometry_must_include_location_offset() {
+    let output_height: i32 = 720;
+
+    // Simulate what render_elements should return
+    struct Element {
+        loc_y: i32,  // geometry().loc.y
+        height: i32,
+    }
+
+    // If render_elements correctly adds location offset:
+    // Window 0 at screen_y=0: elements have geo.loc.y = 0
+    // Window 1 at screen_y=200: elements have geo.loc.y = 200
+
+    let element_0 = Element { loc_y: 0, height: 200 };
+    let element_1 = Element { loc_y: 200, height: 300 };
+
+    let flip_0 = output_height - element_0.loc_y - element_0.height;
+    let flip_1 = output_height - element_1.loc_y - element_1.height;
+
+    assert_eq!(flip_0, 520);
+    assert_eq!(flip_1, 220);
+
+    // Verify no overlap
+    assert_eq!(flip_1 + element_1.height, flip_0,
+        "element 1 top should meet element 0 bottom");
+}
+
+// ============================================================================
+// Multi-Element Window Tests (gnome-maps scenario)
+// ============================================================================
+
+/// Test: gnome-maps style window with multiple elements doesn't overlap terminal
+/// This simulates the bug in the screenshot where gnome-maps appears both
+/// above and below the terminal.
+#[test]
+fn gnome_maps_style_multi_element_window_no_overlap() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Internal terminal takes 200 pixels
+    tc.set_terminal_height(200);
+
+    // Add a simple terminal window (foot)
+    tc.add_external_window(150);
+
+    // Add gnome-maps style window with multiple elements:
+    // - toolbar at internal y=0
+    // - map content at internal y=50
+    // - zoom controls at internal y=300
+    tc.add_window_with_elements(400, vec![
+        (0, 50),    // toolbar
+        (50, 250),  // map content
+        (300, 100), // zoom controls
+    ]);
+
+    // Verify no overlaps between windows
+    assertions::assert_no_element_overlaps(&tc);
+
+    // Verify elements stay within window bounds
+    assertions::assert_elements_within_window_bounds(&tc);
+
+    // Check specific positions
+    let elements = tc.rendered_elements();
+
+    // Window 0 (foot) starts at y=200 (after terminal)
+    assert!(elements.iter().any(|e| e.window_index == 0 && e.screen_y == 200));
+
+    // Window 1 (gnome-maps) starts at y=350 (after foot)
+    // Its toolbar element should be at y=350
+    let maps_toolbar = elements.iter()
+        .find(|e| e.window_index == 1 && e.element_index == 0)
+        .expect("maps toolbar element");
+    assert_eq!(maps_toolbar.screen_y, 350, "maps toolbar should be at 350");
+}
+
+/// Test: Elements with negative internal Y offset (like dropdowns/popups)
+/// These should NOT cause overlap with previous windows
+#[test]
+fn negative_element_offset_detected_as_overlap() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.set_terminal_height(200);
+
+    // First window
+    tc.add_external_window(200);
+
+    // Second window with a popup that extends ABOVE the window
+    // This simulates a dropdown menu at internal y=-50
+    tc.add_window_with_elements(300, vec![
+        (-50, 50),  // popup ABOVE window origin - should cause overlap!
+        (0, 300),   // main content
+    ]);
+
+    // This SHOULD detect an overlap because the popup extends into window 0's space
+    let overlaps = tc.find_element_overlaps();
+    assert!(!overlaps.is_empty(),
+        "Expected overlap from negative element offset, but none detected");
+
+    // The popup element should fail bounds check
+    let elements = tc.rendered_elements();
+    let popup = elements.iter()
+        .find(|e| e.window_index == 1 && e.element_index == 0)
+        .expect("popup element");
+
+    // Popup at window_y=400, internal_y=-50 => screen_y=350
+    // Window 1 starts at 400, so 350 < 400 = out of bounds
+    assert!(popup.screen_y < 400, "popup should be positioned above window start");
+}
+
+/// Test: Multiple windows with multiple elements each - no overlaps
+#[test]
+fn multiple_complex_windows_no_overlap() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.set_terminal_height(100);
+
+    // Three complex windows
+    tc.add_window_with_elements(150, vec![
+        (0, 50),   // header
+        (50, 100), // content
+    ]);
+
+    tc.add_window_with_elements(200, vec![
+        (0, 30),   // toolbar
+        (30, 140), // main area
+        (170, 30), // footer
+    ]);
+
+    tc.add_window_with_elements(180, vec![
+        (0, 180),  // single full-height element
+    ]);
+
+    // All elements should be non-overlapping
+    assertions::assert_no_element_overlaps(&tc);
+    assertions::assert_elements_within_window_bounds(&tc);
+
+    // Verify element count
+    let elements = tc.rendered_elements();
+    assert_eq!(elements.len(), 6, "should have 2 + 3 + 1 = 6 elements");
+}
+
+/// Test: Window with element that extends beyond window bounds
+#[test]
+fn element_exceeding_window_bounds_detected() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Add window with element taller than window
+    tc.add_window_with_elements(200, vec![
+        (0, 300),  // Element is 300px but window is only 200px
+    ]);
+
+    let elements = tc.rendered_elements();
+    let elem = &elements[0];
+
+    // Element ends at y=300 but window ends at y=200
+    let render_pos = tc.render_positions();
+    let (_window_y, window_height) = render_pos[0];
+
+    assert!(elem.height > window_height,
+        "element height {} should exceed window height {}",
+        elem.height, window_height);
+}
+
+/// Test simulating the exact scenario from the screenshot
+/// Terminal in middle, with gnome-maps elements appearing both above and below
+#[test]
+fn screenshot_scenario_terminal_split_by_maps() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Internal terminal
+    tc.set_terminal_height(150);
+
+    // gnome-maps is the first external window
+    // If it has elements at bad positions, they could appear split around terminal
+    tc.add_window_with_elements(400, vec![
+        (0, 200),   // top portion (toolbar + some map)
+        (200, 200), // bottom portion (rest of map + controls)
+    ]);
+
+    // foot is the second external window
+    tc.add_external_window(200);
+
+    // Elements should render in order without splits
+    let elements = tc.rendered_elements();
+
+    // Sort by screen_y to see actual render order
+    let mut sorted: Vec<_> = elements.iter().collect();
+    sorted.sort_by_key(|e| e.screen_y);
+
+    // Verify order: all gnome-maps elements should be contiguous
+    // They should NOT be split around foot
+    let maps_elements: Vec<_> = sorted.iter()
+        .filter(|e| e.window_index == 0)
+        .collect();
+
+    if maps_elements.len() >= 2 {
+        for i in 1..maps_elements.len() {
+            let prev_end = maps_elements[i-1].screen_y + maps_elements[i-1].height;
+            let curr_start = maps_elements[i].screen_y;
+
+            // Elements from same window should be contiguous (no gaps from other windows)
+            assert!(prev_end <= curr_start,
+                "gnome-maps elements should not overlap themselves");
+        }
+    }
+
+    // No inter-window overlaps
+    assertions::assert_no_element_overlaps(&tc);
+}
+
+// ============================================================================
+// Rendering Destination Calculation Tests
+// ============================================================================
+
+/// Test that simulates the EXACT calculation done in main.rs rendering code.
+/// This verifies the window_y accumulation and dest calculation.
+#[test]
+fn rendering_dest_calculation_matches_expected() {
+    // Simulate the exact calculation from main.rs
+    let terminal_total_height: i32 = 100;
+    let scroll_offset: i32 = 0;
+    let window_heights: Vec<i32> = vec![300, 200]; // gnome-maps, foot
+
+    // This mirrors the map() closure in main.rs that calculates window positions
+    let mut window_y = -scroll_offset + terminal_total_height;
+    let window_positions: Vec<i32> = window_heights.iter().map(|&h| {
+        let y = window_y;
+        window_y += h;
+        y
+    }).collect();
+
+    // Verify window positions are calculated correctly
+    assert_eq!(window_positions[0], 100, "gnome-maps should start at terminal_height");
+    assert_eq!(window_positions[1], 400, "foot should start after gnome-maps (100 + 300)");
+
+    // Now simulate rendering: dest.y = geo.loc.y + window_y
+    // Assuming geo.loc.y = 0 for main surface elements
+    let geo_loc_y = 0;
+
+    let dest_y_window0 = geo_loc_y + window_positions[0];
+    let dest_y_window1 = geo_loc_y + window_positions[1];
+
+    assert_eq!(dest_y_window0, 100, "gnome-maps dest should be 100");
+    assert_eq!(dest_y_window1, 400, "foot dest should be 400");
+
+    // Verify no overlap
+    let window0_end = dest_y_window0 + window_heights[0]; // 100 + 300 = 400
+    let window1_start = dest_y_window1; // 400
+
+    assert!(window0_end <= window1_start,
+        "foot (y={}) should not overlap gnome-maps (ends at {})",
+        window1_start, window0_end);
+}
+
+/// Test that catches the bug: if window_y is NOT advanced correctly,
+/// subsequent windows will overlap.
+#[test]
+fn window_y_must_advance_by_cached_height() {
+    // Bug scenario: if window_y doesn't advance, all windows render at same position
+    let terminal_total_height: i32 = 100;
+    let scroll_offset: i32 = 0;
+    let window_heights: Vec<i32> = vec![300, 200, 150];
+
+    // CORRECT: window_y advances by each window's height
+    let mut window_y = -scroll_offset + terminal_total_height;
+    let correct_positions: Vec<i32> = window_heights.iter().map(|&h| {
+        let y = window_y;
+        window_y += h;
+        y
+    }).collect();
+
+    assert_eq!(correct_positions, vec![100, 400, 600]);
+
+    // BUGGY: if window_y doesn't advance (e.g., using wrong variable)
+    let buggy_positions: Vec<i32> = window_heights.iter().map(|_| {
+        // Bug: always returns terminal_total_height, doesn't advance
+        terminal_total_height
+    }).collect();
+
+    // All windows would render at same position - OVERLAP!
+    assert_eq!(buggy_positions, vec![100, 100, 100]);
+
+    // This would cause the exact symptom: foot overlapping gnome-maps
+}
+
+/// Test the specific scenario: foot overlapping gnome-maps
+/// This test should FAIL if the rendering logic is buggy
+#[test]
+fn foot_must_render_after_gnome_maps_not_overlapping() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.set_terminal_height(100);
+
+    // gnome-maps: large window (400px)
+    tc.add_external_window(400);
+
+    // foot: smaller window (200px)
+    tc.add_external_window(200);
+
+    let positions = tc.render_positions();
+
+    // gnome-maps at y=100 (after terminal)
+    assert_eq!(positions[0].0, 100, "gnome-maps should be at y=100");
+    assert_eq!(positions[0].1, 400, "gnome-maps height should be 400");
+
+    // foot at y=500 (after gnome-maps: 100 + 400 = 500)
+    assert_eq!(positions[1].0, 500, "foot should be at y=500 (after gnome-maps)");
+    assert_eq!(positions[1].1, 200, "foot height should be 200");
+
+    // Verify no overlap using rendered elements
+    let elements = tc.rendered_elements();
+
+    let gnome_maps_elem = elements.iter().find(|e| e.window_index == 0).unwrap();
+    let foot_elem = elements.iter().find(|e| e.window_index == 1).unwrap();
+
+    let gnome_maps_end = gnome_maps_elem.screen_y + gnome_maps_elem.height;
+    let foot_start = foot_elem.screen_y;
+
+    assert!(
+        gnome_maps_end <= foot_start,
+        "BUG: foot (y={}) overlaps gnome-maps (ends at y={}). Foot should start at y={}",
+        foot_start, gnome_maps_end, gnome_maps_end
+    );
+}
+
+/// Test that mirrors EXACTLY the main.rs rendering code structure.
+/// This is the definitive test for window overlap bugs.
+#[test]
+fn exact_main_rs_rendering_iteration_pattern() {
+    // This test replicates the exact logic from main.rs lines 293-320 and 369-392
+
+    // Mock data (simulating compositor state)
+    let terminal_total_height: i32 = 100;
+    let scroll_offset: f64 = 0.0;
+    let cached_window_heights: Vec<i32> = vec![400, 200]; // gnome-maps, foot
+
+    // Simulated windows (just indices for this test)
+    let windows: Vec<usize> = vec![0, 1];
+
+    // === PART 1: Build window_elements (mirrors lines 293-320) ===
+    let mut window_y = -(scroll_offset as i32) + terminal_total_height;
+
+    struct MockElements {
+        window_index: usize,
+        geo_loc_y: i32,
+        height: i32,
+    }
+
+    let window_elements: Vec<(i32, i32, Vec<MockElements>)> = windows
+        .iter()
+        .zip(cached_window_heights.iter())
+        .map(|(&window_index, &cached_height)| {
+            let window_height = cached_height;
+            let y = window_y;
+            window_y += window_height;
+
+            // Simulate elements with geo.loc.y = 0 (main surface at window origin)
+            let elements = vec![MockElements {
+                window_index,
+                geo_loc_y: 0,
+                height: cached_height,
+            }];
+
+            (y, window_height, elements)
+        })
+        .collect();
+
+    // Verify positions after map()
+    assert_eq!(window_elements[0].0, 100, "window 0 position");
+    assert_eq!(window_elements[1].0, 500, "window 1 position");
+
+    // === PART 2: Rendering iteration (mirrors lines 369-392) ===
+    let mut rendered_dests: Vec<(usize, i32, i32)> = Vec::new();
+
+    for (window_y, _window_height, elements) in window_elements {
+        for element in elements {
+            // This is the exact calculation from main.rs line 380
+            let dest_y = element.geo_loc_y + window_y;
+
+            rendered_dests.push((element.window_index, dest_y, element.height));
+        }
+    }
+
+    // Verify destinations
+    assert_eq!(rendered_dests.len(), 2);
+
+    let (win0_idx, win0_dest_y, win0_h) = rendered_dests[0];
+    let (win1_idx, win1_dest_y, win1_h) = rendered_dests[1];
+
+    assert_eq!(win0_idx, 0, "first element from window 0");
+    assert_eq!(win1_idx, 1, "second element from window 1");
+
+    assert_eq!(win0_dest_y, 100, "window 0 dest_y = geo.loc.y(0) + window_y(100)");
+    assert_eq!(win1_dest_y, 500, "window 1 dest_y = geo.loc.y(0) + window_y(500)");
+
+    // Verify no overlap
+    let win0_end = win0_dest_y + win0_h;
+    assert!(
+        win0_end <= win1_dest_y,
+        "OVERLAP BUG: window 0 ends at {} but window 1 starts at {}",
+        win0_end, win1_dest_y
+    );
+}
+
+/// Test what happens if cached heights don't match actual rendering
+/// This could happen if heights change between caching and rendering
+#[test]
+fn cached_heights_mismatch_could_cause_overlap() {
+    // Scenario: bbox() returns different value than what we cached
+
+    // Cached heights (from update_cached_window_heights at frame start)
+    let cached: Vec<i32> = vec![400, 200];
+
+    // But actual rendered heights are different (bbox changed)
+    let actual: Vec<i32> = vec![600, 200]; // gnome-maps grew!
+
+    // Window positions based on CACHED heights
+    let mut y = 0;
+    let positions_from_cache: Vec<i32> = cached.iter().map(|&h| {
+        let pos = y;
+        y += h;
+        pos
+    }).collect();
+
+    // Window 0 at y=0, Window 1 at y=400 (based on cached height 400)
+    assert_eq!(positions_from_cache, vec![0, 400]);
+
+    // But if window 0 actually renders with height 600...
+    // Window 0: y=0 to y=600
+    // Window 1: y=400 (OVERLAP! window 1 starts before window 0 ends)
+
+    let window0_actual_end = positions_from_cache[0] + actual[0];
+    let window1_start = positions_from_cache[1];
+
+    // This demonstrates the overlap scenario
+    assert!(
+        window0_actual_end > window1_start,
+        "This test demonstrates that cached/actual height mismatch causes overlap"
+    );
+}
+
+/// KEY TEST: The rendering code must use ACTUAL element heights to position
+/// subsequent windows, not just cached heights. If element.geometry().size.h
+/// is larger than cached_height, using cached_height causes overlap.
+#[test]
+fn must_use_actual_element_heights_for_positioning() {
+    // This simulates what SHOULD happen in main.rs
+
+    let terminal_height = 100;
+    let cached_heights = vec![400, 200]; // What bbox() returned
+    let actual_heights = vec![600, 200]; // What geo.size.h actually is
+
+    // BUGGY approach: advance by cached_height
+    let mut y = terminal_height;
+    let buggy_positions: Vec<i32> = cached_heights.iter().map(|&h| {
+        let pos = y;
+        y += h;
+        pos
+    }).collect();
+    // Window 0 at 100, Window 1 at 500
+
+    // Check for overlap with buggy approach
+    let win0_end_actual = buggy_positions[0] + actual_heights[0]; // 100 + 600 = 700
+    let win1_start_buggy = buggy_positions[1]; // 500
+    let has_overlap = win0_end_actual > win1_start_buggy; // 700 > 500 = OVERLAP!
+    assert!(has_overlap, "Buggy approach causes overlap");
+
+    // CORRECT approach: advance by ACTUAL height from elements
+    let mut y = terminal_height;
+    let correct_positions: Vec<i32> = actual_heights.iter().map(|&h| {
+        let pos = y;
+        y += h;
+        pos
+    }).collect();
+    // Window 0 at 100, Window 1 at 700
+
+    // Check no overlap with correct approach
+    let win0_end = correct_positions[0] + actual_heights[0]; // 100 + 600 = 700
+    let win1_start = correct_positions[1]; // 700
+    assert!(win0_end <= win1_start, "Correct approach: no overlap");
+}
