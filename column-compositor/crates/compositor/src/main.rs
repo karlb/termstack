@@ -290,6 +290,8 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            // Store terminal height for click detection
+            compositor.terminal_total_height = terminal_total_height;
             let mut window_y = -(compositor.scroll_offset as i32) + terminal_total_height;
 
             let window_elements: Vec<(i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = compositor.windows
@@ -358,10 +360,20 @@ fn main() -> anyhow::Result<()> {
             }
 
             // Render external Wayland windows after terminals
+            // The elements need to be drawn with the same Y-flip as terminals
             for (_y, _window_height, elements) in window_elements {
                 for element in elements {
                     let geo = element.geometry(scale);
-                    element.draw(&mut frame, element.src(), geo, &[damage], &[]).ok();
+                    let src = element.src();
+
+                    // Create a flipped source rectangle to flip the content vertically
+                    // The buffer is in Y-down format but OpenGL is Y-up
+                    let flipped_src = Rectangle::from_loc_and_size(
+                        (src.loc.x, src.loc.y + src.size.h),
+                        (src.size.w, -src.size.h),
+                    );
+
+                    element.draw(&mut frame, flipped_src, geo, &[damage], &[]).ok();
                 }
             }
         }

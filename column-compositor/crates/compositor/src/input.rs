@@ -74,7 +74,33 @@ impl ColumnCompositor {
 
         let keyboard = self.seat.get_keyboard().unwrap();
 
-        tracing::info!(?keycode, ?key_state, "processing keyboard event");
+        // If an external Wayland window has focus, forward events via Wayland protocol
+        if self.external_window_focused {
+            // Still check for compositor bindings first
+            let binding_handled = keyboard.input::<bool, _>(
+                self,
+                keycode,
+                key_state,
+                serial,
+                time,
+                |state, modifiers, keysym| {
+                    let sym = keysym.modified_sym();
+                    if state.handle_compositor_binding_with_terminals(modifiers, sym, key_state) {
+                        FilterResult::Intercept(true)
+                    } else {
+                        // Forward to the focused Wayland surface
+                        FilterResult::Forward
+                    }
+                },
+            );
+
+            if binding_handled == Some(true) {
+                tracing::info!("compositor binding handled (external window focused)");
+            }
+            return;
+        }
+
+        tracing::info!(?keycode, ?key_state, "processing keyboard event for terminal");
 
         // Process through keyboard for modifier tracking
         let result = keyboard.input::<(bool, Option<Vec<u8>>), _>(
@@ -347,18 +373,32 @@ impl ColumnCompositor {
 
         // Focus window on click
         if state == ButtonState::Pressed {
-            if let Some(keyboard) = self.seat.get_keyboard() {
-                let pointer_location = pointer.current_location();
-                if let Some(index) = self.window_at(pointer_location) {
-                    self.focused_index = Some(index);
+            let pointer_location = pointer.current_location();
+
+            if let Some(index) = self.window_at(pointer_location) {
+                // Clicked on an external Wayland window
+                self.focused_index = Some(index);
+                self.external_window_focused = true;
+
+                if let Some(keyboard) = self.seat.get_keyboard() {
                     if let Some(entry) = self.windows.get(index) {
                         keyboard.set_focus(
                             self,
                             Some(entry.toplevel.wl_surface().clone()),
                             serial,
                         );
+                        tracing::info!(index, "focused external window");
                     }
                 }
+            } else if self.is_on_terminal(pointer_location) {
+                // Clicked on an internal terminal
+                self.external_window_focused = false;
+
+                // Clear keyboard focus from external windows
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.set_focus(self, None, serial);
+                }
+                tracing::info!("focused internal terminal");
             }
         }
 

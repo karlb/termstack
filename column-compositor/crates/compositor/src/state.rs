@@ -83,6 +83,12 @@ pub struct ColumnCompositor {
 
     /// Scroll request (in pixels, positive = down)
     pub scroll_requested: f64,
+
+    /// Whether keyboard focus is on an external Wayland window (vs internal terminal)
+    pub external_window_focused: bool,
+
+    /// Total height of internal terminals (updated each frame for click detection)
+    pub terminal_total_height: i32,
 }
 
 /// A window entry in our column
@@ -178,6 +184,8 @@ impl ColumnCompositor {
             spawn_terminal_requested: false,
             focus_change_requested: 0,
             scroll_requested: 0.0,
+            external_window_focused: false,
+            terminal_total_height: 0,
         };
 
         (compositor, display)
@@ -383,15 +391,31 @@ impl ColumnCompositor {
         }
     }
 
-    /// Get the window under a point
+    /// Get the window under a point (returns None if point is on internal terminals)
     pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
+        // Account for scroll offset and terminal heights
+        let adjusted_y = point.y + self.scroll_offset;
+        let terminal_height = self.terminal_total_height as f64;
+
+        // If point is in the terminal area, no external window is under it
+        if adjusted_y < terminal_height {
+            return None;
+        }
+
+        // Check external windows (their layout positions are relative to terminal end)
         for (i, pos) in self.layout.window_positions.iter().enumerate() {
-            let y = pos.y as f64;
-            if point.y >= y && point.y < y + pos.height as f64 {
+            let window_y = terminal_height + pos.y as f64;
+            if adjusted_y >= window_y && adjusted_y < window_y + pos.height as f64 {
                 return Some(i);
             }
         }
         None
+    }
+
+    /// Check if a point is on the internal terminal area
+    pub fn is_on_terminal(&self, point: Point<f64, smithay::utils::Logical>) -> bool {
+        let adjusted_y = point.y + self.scroll_offset;
+        adjusted_y < self.terminal_total_height as f64
     }
 }
 
