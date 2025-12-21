@@ -378,6 +378,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Update cached_window_heights with ACTUAL heights for next frame's click detection
+            // This ensures click detection uses the same heights as rendering
+            compositor.cached_window_heights = window_elements.iter()
+                .map(|(_, actual_height, _)| *actual_height)
+                .collect();
+
             // Render external Wayland windows after terminals
             // Smithay's geometry() does NOT include the location offset we pass to render_elements
             // We must manually offset each element's destination by window_y

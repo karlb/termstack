@@ -61,11 +61,14 @@ pub struct TestCompositor {
 }
 
 struct MockWindow {
-    height: u32,
+    /// The "cached" height - what bbox() would return
+    /// This is used by click detection in the real compositor
+    cached_height: u32,
     content: String,
     /// Elements within this window (internal_y_offset, element_height)
     /// For simple windows, this is just [(0, height)]
     /// For complex windows like gnome-maps, this could be multiple elements
+    /// The ACTUAL rendered height is max(elem.y + elem.height) for all elements
     elements: Vec<(i32, i32)>,
 }
 
@@ -97,13 +100,52 @@ impl TestCompositor {
     }
 
     /// Update cached window heights (mirrors real compositor's update_cached_window_heights)
+    /// Uses the cached_height field, NOT the actual element heights
     pub fn update_cached_window_heights(&mut self) {
-        self.cached_window_heights = self.windows.iter().map(|w| w.height as i32).collect();
+        self.cached_window_heights = self.windows.iter().map(|w| w.cached_height as i32).collect();
+    }
+
+    /// Get actual height for a window based on its elements
+    /// This is max(elem.y + elem.height) for all elements
+    fn actual_height(&self, window_idx: usize) -> i32 {
+        self.windows.get(window_idx)
+            .map(|w| {
+                w.elements.iter()
+                    .map(|&(y, h)| y + h)
+                    .max()
+                    .unwrap_or(w.cached_height as i32)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Get actual heights for all windows (what rendering actually uses)
+    pub fn actual_heights(&self) -> Vec<i32> {
+        (0..self.windows.len())
+            .map(|i| self.actual_height(i))
+            .collect()
     }
 
     /// Get window under a point - mirrors real compositor's window_at()
-    /// Uses the SAME algorithm as the real compositor
+    /// NOW USES ACTUAL HEIGHTS (like the fixed compositor)
     pub fn window_at(&self, y: f64) -> Option<usize> {
+        let terminal_height = self.terminal_total_height as f64;
+        let mut window_y = terminal_height - self.scroll_offset;
+        let actual_heights = self.actual_heights();
+
+        for (i, &height) in actual_heights.iter().enumerate() {
+            let window_height = height as f64;
+            let window_screen_end = window_y + window_height;
+
+            if y >= window_y && y < window_screen_end {
+                return Some(i);
+            }
+            window_y += window_height;
+        }
+        None
+    }
+
+    /// Get window under a point using CACHED heights (OLD buggy behavior)
+    pub fn window_at_cached(&self, y: f64) -> Option<usize> {
         let terminal_height = self.terminal_total_height as f64;
         let mut window_y = terminal_height - self.scroll_offset;
 
@@ -121,7 +163,23 @@ impl TestCompositor {
 
     /// Get render positions - mirrors real compositor's render position calculation
     /// Returns Vec of (y_position, height) for each window
+    /// NOW USES ACTUAL HEIGHTS (like the fixed main.rs rendering code)
     pub fn render_positions(&self) -> Vec<(i32, i32)> {
+        let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
+        let actual_heights = self.actual_heights();
+        actual_heights
+            .iter()
+            .map(|&height| {
+                let y = window_y;
+                window_y += height;
+                (y, height)
+            })
+            .collect()
+    }
+
+    /// Get render positions using CACHED heights (OLD buggy behavior)
+    /// This shows where click detection THINKS windows are
+    pub fn render_positions_cached(&self) -> Vec<(i32, i32)> {
         let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
         self.cached_window_heights
             .iter()
@@ -134,7 +192,25 @@ impl TestCompositor {
     }
 
     /// Get window Y ranges for click detection
+    /// NOW USES ACTUAL HEIGHTS (like the fixed compositor)
     pub fn window_click_ranges(&self) -> Vec<(f64, f64)> {
+        let terminal_height = self.terminal_total_height as f64;
+        let mut window_y = terminal_height - self.scroll_offset;
+        let actual_heights = self.actual_heights();
+
+        actual_heights
+            .iter()
+            .map(|&height| {
+                let start = window_y;
+                let end = window_y + height as f64;
+                window_y = end;
+                (start, end)
+            })
+            .collect()
+    }
+
+    /// Get window Y ranges using CACHED heights (OLD buggy behavior)
+    pub fn window_click_ranges_cached(&self) -> Vec<(f64, f64)> {
         let terminal_height = self.terminal_total_height as f64;
         let mut window_y = terminal_height - self.scroll_offset;
 
@@ -154,7 +230,7 @@ impl TestCompositor {
         let index = self.windows.len();
 
         self.windows.push(MockWindow {
-            height: 200,
+            cached_height: 200,
             content: String::new(),
             elements: vec![(0, 200)], // Single element spanning the window
         });
@@ -166,11 +242,12 @@ impl TestCompositor {
     }
 
     /// Add an external window with specified height (for testing window positioning)
+    /// The cached_height and actual element height are the same
     pub fn add_external_window(&mut self, height: u32) -> TerminalHandle {
         let index = self.windows.len();
 
         self.windows.push(MockWindow {
-            height,
+            cached_height: height,
             content: String::new(),
             elements: vec![(0, height as i32)], // Single element spanning the window
         });
@@ -181,13 +258,35 @@ impl TestCompositor {
         TerminalHandle { index }
     }
 
+    /// Add an external window where cached_height differs from actual element height
+    /// This simulates the bug where bbox() returns different value than rendered size
+    pub fn add_external_window_with_mismatch(
+        &mut self,
+        cached_height: u32,
+        actual_height: u32,
+    ) -> TerminalHandle {
+        let index = self.windows.len();
+
+        self.windows.push(MockWindow {
+            cached_height,
+            content: String::new(),
+            elements: vec![(0, actual_height as i32)], // Actual rendered height differs!
+        });
+
+        self.focused_index = Some(index);
+        self.update_cached_window_heights();
+
+        TerminalHandle { index }
+    }
+
     /// Add a window with multiple elements (simulates complex apps like gnome-maps)
     /// elements: Vec of (internal_y_offset, element_height)
+    /// cached_height is set to total_height (may differ from max element extent)
     pub fn add_window_with_elements(&mut self, total_height: u32, elements: Vec<(i32, i32)>) -> TerminalHandle {
         let index = self.windows.len();
 
         self.windows.push(MockWindow {
-            height: total_height,
+            cached_height: total_height,
             content: String::new(),
             elements,
         });
@@ -200,14 +299,13 @@ impl TestCompositor {
 
     /// Get all rendered elements with their final screen positions
     /// This simulates what the rendering code does: window_y + geo.loc.y
+    /// NOW USES ACTUAL HEIGHTS for window_y advancement (like fixed main.rs)
     pub fn rendered_elements(&self) -> Vec<RenderedElement> {
         let mut result = Vec::new();
         let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
+        let actual_heights = self.actual_heights();
 
-        for (window_idx, (window, &cached_height)) in self.windows.iter()
-            .zip(self.cached_window_heights.iter())
-            .enumerate()
-        {
+        for (window_idx, window) in self.windows.iter().enumerate() {
             for (elem_idx, &(internal_y, elem_height)) in window.elements.iter().enumerate() {
                 // This mirrors the rendering code: screen_y = window_y + geo.loc.y
                 let screen_y = window_y + internal_y;
@@ -218,7 +316,8 @@ impl TestCompositor {
                     height: elem_height,
                 });
             }
-            window_y += cached_height;
+            // Advance by ACTUAL height (like fixed main.rs)
+            window_y += actual_heights[window_idx];
         }
 
         result
@@ -252,10 +351,22 @@ impl TestCompositor {
         overlaps
     }
 
-    /// Set a specific window's height (simulates bbox returning different values)
+    /// Set a specific window's cached height (simulates bbox returning different values)
     pub fn set_window_height(&mut self, index: usize, height: u32) {
         if let Some(window) = self.windows.get_mut(index) {
-            window.height = height;
+            window.cached_height = height;
+            // Also update elements to match (for simple cases)
+            window.elements = vec![(0, height as i32)];
+        }
+        self.update_cached_window_heights();
+    }
+
+    /// Set window's cached height WITHOUT updating elements
+    /// This creates a mismatch between cached and actual heights
+    pub fn set_window_cached_height_only(&mut self, index: usize, cached_height: u32) {
+        if let Some(window) = self.windows.get_mut(index) {
+            window.cached_height = cached_height;
+            // Elements stay the same - creates mismatch!
         }
         self.update_cached_window_heights();
     }
@@ -269,7 +380,12 @@ impl TestCompositor {
             // Count newlines and grow window
             let newlines = input.chars().filter(|&c| c == '\n').count();
             let line_height = 16u32; // Approximate
-            window.height += (newlines as u32) * line_height;
+            let growth = (newlines as u32) * line_height;
+            window.cached_height += growth;
+            // Also grow elements
+            if let Some((_, ref mut h)) = window.elements.last_mut() {
+                *h += growth as i32;
+            }
         }
         self.update_cached_window_heights();
     }
@@ -302,9 +418,9 @@ impl TestCompositor {
     pub fn snapshot(&self) -> CompositorSnapshot {
         CompositorSnapshot {
             window_count: self.windows.len(),
-            window_heights: self.windows.iter().map(|w| w.height).collect(),
+            window_heights: self.windows.iter().map(|w| w.cached_height).collect(),
             scroll_offset: self.scroll_offset,
-            total_height: self.windows.iter().map(|w| w.height).sum(),
+            total_height: self.windows.iter().map(|w| w.cached_height).sum(),
             focused_index: self.focused_index,
         }
     }
@@ -324,16 +440,18 @@ impl TestCompositor {
 
     /// Scroll by a delta amount
     pub fn scroll(&mut self, delta: f64) {
-        let total_height = self.terminal_total_height as u32
-            + self.windows.iter().map(|w| w.height).sum::<u32>();
+        // Use actual heights for scroll calculation (matches rendering)
+        let actual_total: i32 = self.actual_heights().iter().sum();
+        let total_height = self.terminal_total_height as u32 + actual_total as u32;
         let max_scroll = total_height.saturating_sub(self.output_size.1) as f64;
         self.scroll_offset = (self.scroll_offset + delta).clamp(0.0, max_scroll);
     }
 
     /// Set scroll offset directly
     pub fn set_scroll(&mut self, offset: f64) {
-        let total_height = self.terminal_total_height as u32
-            + self.windows.iter().map(|w| w.height).sum::<u32>();
+        // Use actual heights for scroll calculation (matches rendering)
+        let actual_total: i32 = self.actual_heights().iter().sum();
+        let total_height = self.terminal_total_height as u32 + actual_total as u32;
         let max_scroll = total_height.saturating_sub(self.output_size.1) as f64;
         self.scroll_offset = offset.clamp(0.0, max_scroll);
     }
@@ -343,9 +461,9 @@ impl TestCompositor {
         self.scroll_offset
     }
 
-    /// Get total content height (terminals + windows)
+    /// Get total content height (terminals + windows) using actual heights
     pub fn total_content_height(&self) -> i32 {
-        self.terminal_total_height + self.windows.iter().map(|w| w.height as i32).sum::<i32>()
+        self.terminal_total_height + self.actual_heights().iter().sum::<i32>()
     }
 
     /// Get output size

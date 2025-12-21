@@ -853,26 +853,34 @@ fn multiple_complex_windows_no_overlap() {
     assert_eq!(elements.len(), 6, "should have 2 + 3 + 1 = 6 elements");
 }
 
-/// Test: Window with element that extends beyond window bounds
+/// Test: Window with element that extends beyond CACHED window bounds
+/// This shows how actual elements can be larger than what bbox() reports
 #[test]
-fn element_exceeding_window_bounds_detected() {
+fn element_exceeding_cached_window_bounds_detected() {
     let mut tc = TestCompositor::new_headless(1280, 720);
 
-    // Add window with element taller than window
+    // Add window with element taller than cached height (200)
+    // but actual element is 300px
     tc.add_window_with_elements(200, vec![
-        (0, 300),  // Element is 300px but window is only 200px
+        (0, 300),  // Element is 300px but cached height is only 200px
     ]);
 
     let elements = tc.rendered_elements();
     let elem = &elements[0];
 
-    // Element ends at y=300 but window ends at y=200
-    let render_pos = tc.render_positions();
-    let (_window_y, window_height) = render_pos[0];
+    // Element height exceeds the CACHED height (not render height, which uses actual)
+    let cached_pos = tc.render_positions_cached();
+    let (_window_y, cached_height) = cached_pos[0];
 
-    assert!(elem.height > window_height,
-        "element height {} should exceed window height {}",
-        elem.height, window_height);
+    assert!(elem.height > cached_height,
+        "element height {} should exceed cached window height {}",
+        elem.height, cached_height);
+
+    // But render_positions uses actual heights, so they match
+    let actual_pos = tc.render_positions();
+    let (_, actual_height) = actual_pos[0];
+    assert_eq!(elem.height, actual_height,
+        "element height should match actual render height");
 }
 
 /// Test simulating the exact scenario from the screenshot
@@ -1254,6 +1262,122 @@ fn render_flip_and_click_flip_must_match() {
             "visual {} -> source {} -> visual {} (should match)",
             visual_y, source_y, back_to_visual);
     }
+}
+
+// ============================================================================
+// Cached vs Actual Height Mismatch Tests (FIXED BEHAVIOR)
+// ============================================================================
+
+/// FIXED: Click detection now uses actual heights, matching rendering.
+/// When actual > cached, clicking at visually correct position returns correct window.
+#[test]
+fn click_detection_uses_actual_heights_after_fix() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Window 0: cached=200, actual=400 (element is larger than bbox reports)
+    tc.add_external_window_with_mismatch(200, 400);
+
+    // Window 1: cached=200, actual=200 (normal)
+    tc.add_external_window(200);
+
+    // Both rendering and click detection now use actual heights:
+    // Window 0: Y=0, height=400
+    // Window 1: Y=400, height=200
+    let render_pos = tc.render_positions();
+    assert_eq!(render_pos[0], (0, 400), "window 0 render position");
+    assert_eq!(render_pos[1], (400, 200), "window 1 render position");
+
+    // Click ranges now match render positions
+    let click_ranges = tc.window_click_ranges();
+    assert_eq!(click_ranges[0], (0.0, 400.0), "window 0 click range (actual)");
+    assert_eq!(click_ranges[1], (400.0, 600.0), "window 1 click range (actual)");
+
+    // Clicking at Y=250 (visually on window 0) now correctly returns window 0
+    let clicked_at_250 = tc.window_at(250.0);
+    assert_eq!(clicked_at_250, Some(0), "Y=250 should hit window 0");
+
+    // Verify the old buggy behavior would have returned wrong window
+    let buggy_result = tc.window_at_cached(250.0);
+    assert_eq!(buggy_result, Some(1), "cached heights would incorrectly return window 1");
+}
+
+/// FIXED: Clicking at Y=450 now correctly hits window 1 (at render Y=400-600)
+#[test]
+fn click_in_actual_range_works_after_fix() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Window 0: cached=200, actual=400
+    tc.add_external_window_with_mismatch(200, 400);
+
+    // Window 1: cached=200, actual=200 (at render Y=400)
+    tc.add_external_window(200);
+
+    // Render positions: window 1 at Y=400-600
+    let render_pos = tc.render_positions();
+    assert_eq!(render_pos[1], (400, 200));
+
+    // Click at Y=450 (visually on window 1) - now works correctly
+    let clicked = tc.window_at(450.0);
+    assert_eq!(clicked, Some(1), "Y=450 should hit window 1 at Y=400-600");
+
+    // Verify the old buggy behavior would have returned None
+    let buggy_result = tc.window_at_cached(450.0);
+    assert_eq!(buggy_result, None, "cached heights would incorrectly return None");
+}
+
+/// FIXED: Click detection matches render positions when using actual heights
+#[test]
+fn click_detection_matches_render_positions_after_fix() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    // Create mismatch between cached and actual
+    tc.add_external_window_with_mismatch(200, 400); // Window 0
+    tc.add_external_window(200); // Window 1
+
+    let render_pos = tc.render_positions();
+    let click_ranges = tc.window_click_ranges();
+
+    // Now they match!
+    let render_0_end = render_pos[0].0 + render_pos[0].1;
+    let click_0_end = click_ranges[0].1 as i32;
+
+    assert_eq!(render_0_end, click_0_end,
+        "window 0 render end ({}) should match click end ({})",
+        render_0_end, click_0_end);
+
+    // Window 1 should also match
+    let render_1_start = render_pos[1].0;
+    let click_1_start = click_ranges[1].0 as i32;
+    assert_eq!(render_1_start, click_1_start,
+        "window 1 render start should match click start");
+}
+
+/// FIXED: Render_positions and window_click_ranges now use same heights
+#[test]
+fn render_and_click_ranges_match_with_actual_heights() {
+    let mut tc = TestCompositor::new_headless(1280, 720);
+
+    tc.add_external_window_with_mismatch(100, 300); // cached=100, actual=300
+    tc.add_external_window_with_mismatch(100, 200); // cached=100, actual=200
+    tc.add_external_window(150); // cached=actual=150
+
+    // Both use actual: 0-300, 300-500, 500-650
+    let render = tc.render_positions();
+    assert_eq!(render[0], (0, 300));
+    assert_eq!(render[1], (300, 200));
+    assert_eq!(render[2], (500, 150));
+
+    // Click ranges now match render positions
+    let click = tc.window_click_ranges();
+    assert_eq!(click[0], (0.0, 300.0));
+    assert_eq!(click[1], (300.0, 500.0));
+    assert_eq!(click[2], (500.0, 650.0));
+
+    // Clicking at Y=400 now correctly hits window 1
+    assert_eq!(tc.window_at(400.0), Some(1), "Y=400 should hit window 1");
+
+    // Clicking at Y=150 correctly hits window 0
+    assert_eq!(tc.window_at(150.0), Some(0), "Y=150 should hit window 0");
 }
 
 /// KEY TEST: The rendering code must use ACTUAL element heights to position
