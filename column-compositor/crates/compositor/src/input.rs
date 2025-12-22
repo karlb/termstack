@@ -553,7 +553,7 @@ impl ColumnCompositor {
             content_y += h as f64;
         }
 
-        let cell_height = self.cached_cell_heights.get(index).copied().unwrap_or(0) as f64;
+        let cell_height = self.get_cell_height(index).unwrap_or(0) as f64;
 
         // With Y-flip, the cell's position in render coordinates:
         // - render_y = output_height - content_y - height (bottom of cell in render)

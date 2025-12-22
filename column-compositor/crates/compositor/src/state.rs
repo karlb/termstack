@@ -223,7 +223,7 @@ impl ColumnCompositor {
         let mut content_y: i32 = -(self.scroll_offset as i32);
 
         for (i, cell) in self.cells.iter().enumerate() {
-            let height = self.cached_cell_heights.get(i).copied().unwrap_or(200);
+            let height = self.get_cell_height(i).unwrap_or(200);
 
             // Only external windows need to be mapped in Space
             if let ColumnCell::External(entry) = cell {
@@ -488,7 +488,7 @@ impl ColumnCompositor {
     /// Returns the new scroll offset if it changed, None otherwise.
     pub fn scroll_to_show_cell_bottom(&mut self, cell_index: usize) -> Option<f64> {
         let y: i32 = self.cached_cell_heights.iter().take(cell_index).sum();
-        let height = self.cached_cell_heights.get(cell_index).copied().unwrap_or(200);
+        let height = self.get_cell_height(cell_index).unwrap_or(200);
         let bottom_y = y + height;
         let visible_height = self.output_size.h;
         let total_height: i32 = self.cached_cell_heights.iter().sum();
