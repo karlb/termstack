@@ -11,8 +11,8 @@ calloop.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+compositor = { path = "../compositor" }
 
 [dev-dependencies]
 proptest.workspace = true
-compositor = { path = "../compositor" }
 terminal = { path = "../terminal" }

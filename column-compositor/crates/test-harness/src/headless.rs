@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use compositor::coords::{RenderPoint, ScreenPoint};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -58,6 +59,9 @@ pub struct TestCompositor {
 
     /// Cached window heights (mirrors real compositor behavior)
     cached_window_heights: Vec<i32>,
+
+    /// Current pointer location in render coordinates (Y=0 at bottom)
+    pointer_location: RenderPoint,
 }
 
 struct MockWindow {
@@ -91,6 +95,7 @@ impl TestCompositor {
             focused_index: None,
             terminal_total_height: 0,
             cached_window_heights: Vec::new(),
+            pointer_location: RenderPoint::new(0.0, 0.0),
         }
     }
 
@@ -502,5 +507,52 @@ impl TestCompositor {
         } else {
             None
         }
+    }
+
+    // ===== Input Simulation Methods =====
+
+    /// Simulate a pointer motion event in screen coordinates (Y=0 at top)
+    ///
+    /// This mirrors the real compositor's handle_pointer_motion_absolute:
+    /// it converts screen coordinates to render coordinates (Y=0 at bottom).
+    pub fn simulate_pointer_motion(&mut self, screen_x: f64, screen_y: f64) {
+        let screen_point = ScreenPoint::new(screen_x, screen_y);
+        self.pointer_location = screen_point.to_render(self.output_size.1 as i32);
+    }
+
+    /// Simulate a click at screen coordinates (Y=0 at top)
+    ///
+    /// Moves the pointer to the location and then simulates a click.
+    /// Updates focus based on what's under the pointer.
+    pub fn simulate_click(&mut self, screen_x: f64, screen_y: f64) {
+        // Move pointer (converts screen to render coordinates)
+        self.simulate_pointer_motion(screen_x, screen_y);
+
+        // Find what's under the pointer (using render coordinates)
+        let render_y = self.pointer_location.y.value();
+        if let Some(index) = self.window_at(render_y) {
+            self.focused_index = Some(index);
+        }
+    }
+
+    /// Simulate a scroll event
+    ///
+    /// Positive delta scrolls down (content moves up, showing lower content).
+    /// This mirrors the real compositor's handle_pointer_axis behavior.
+    pub fn simulate_scroll(&mut self, delta_y: f64) {
+        // In the real compositor, scroll_requested is negated because
+        // we flip Y coordinates for OpenGL compatibility
+        // Here we just apply the delta directly
+        self.scroll(delta_y);
+    }
+
+    /// Get current pointer location in render coordinates (Y=0 at bottom)
+    pub fn pointer_location(&self) -> RenderPoint {
+        self.pointer_location
+    }
+
+    /// Get current pointer location as a tuple (x, y) in render coordinates
+    pub fn pointer_location_tuple(&self) -> (f64, f64) {
+        (self.pointer_location.x, self.pointer_location.y.value())
     }
 }
