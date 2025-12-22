@@ -8,7 +8,6 @@ use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
-use crate::coords::ScreenPoint;
 use crate::state::ColumnCompositor;
 use crate::terminal_manager::TerminalManager;
 
@@ -344,36 +343,50 @@ impl ColumnCompositor {
         let output_size = self.output_size;
 
         // Input from Winit is in screen coordinates (Y=0 at top)
-        let screen_point = ScreenPoint::new(
-            event.x_transformed(output_size.w),
-            event.y_transformed(output_size.h),
-        );
+        let screen_x = event.x_transformed(output_size.w);
+        let screen_y = event.y_transformed(output_size.h);
 
-        // Convert to render coordinates (Y=0 at bottom)
-        // Our windows are positioned in render coordinates for OpenGL rendering
-        // The surface_under function handles the Y-flip for surface-local coords
-        let render_point = screen_point.to_render(output_size.h);
+        // Convert to render coordinates (Y=0 at bottom) for hit detection
+        let render_y = output_size.h as f64 - screen_y;
 
         tracing::trace!(
-            screen_y = screen_point.y.value(),
-            render_y = render_point.y.value(),
+            screen_y,
+            render_y,
             output_height = output_size.h,
             "pointer motion"
         );
 
-        let render_position = (render_point.x, render_point.y.value());
-
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
 
-        // surface_under computes surface-local coords with Y-flip correction
-        let under = self.surface_under(Point::from(render_position));
+        // Hit detection uses render coordinates (matches our window positions)
+        let render_position = Point::from((screen_x, render_y));
+        let under = self.surface_under(render_position);
+
+        // Send SCREEN coordinates to clients via pointer.motion
+        // Clients expect Y=0 at top, Y increasing downward
+        let screen_position = (screen_x, screen_y);
+
+        // Debug: show what surface-local coords will be computed
+        if let Some((_, surface_pos)) = &under {
+            let local_x = screen_x - surface_pos.x;
+            let local_y = screen_y - surface_pos.y;
+            tracing::debug!(
+                screen_x,
+                screen_y,
+                surface_x = surface_pos.x,
+                surface_y = surface_pos.y,
+                local_x,
+                local_y,
+                "motion: screen coords and computed surface-local"
+            );
+        }
 
         pointer.motion(
             self,
             under,
             &MotionEvent {
-                location: render_position.into(),
+                location: screen_position.into(),
                 serial,
                 time: event.time_msec(),
             },
@@ -396,12 +409,18 @@ impl ColumnCompositor {
 
         // Focus window on click
         if state == ButtonState::Pressed {
-            // Pointer location is in render coordinates (Y=0 at bottom)
-            let pointer_location = pointer.current_location();
+            // Pointer location from Smithay is in screen coordinates (Y=0 at top)
+            // because that's what we send to pointer.motion()
+            let screen_location = pointer.current_location();
+
+            // Convert to render coordinates (Y=0 at bottom) for hit detection
+            let render_y = self.output_size.h as f64 - screen_location.y;
+            let render_location: Point<f64, Logical> = Point::from((screen_location.x, render_y));
 
             // Log detailed position info for debugging
             tracing::debug!(
-                pointer_location = ?(pointer_location.x, pointer_location.y),
+                screen_location = ?(screen_location.x, screen_location.y),
+                render_location = ?(render_location.x, render_location.y),
                 output_size = ?(self.output_size.w, self.output_size.h),
                 terminal_height = self.terminal_total_height,
                 scroll_offset = self.scroll_offset,
@@ -409,11 +428,12 @@ impl ColumnCompositor {
                 "handle_pointer_button: click pressed"
             );
 
-            if let Some(index) = self.window_at(pointer_location) {
+            if let Some(index) = self.window_at(render_location) {
                 // Clicked on an external Wayland window
                 tracing::info!(
                     index,
-                    pointer_y = pointer_location.y,
+                    render_y = render_location.y,
+                    screen_y = screen_location.y,
                     "handle_pointer_button: hit window"
                 );
 
@@ -430,7 +450,7 @@ impl ColumnCompositor {
                         tracing::info!(index, "focused external window");
                     }
                 }
-            } else if self.is_on_terminal(pointer_location) {
+            } else if self.is_on_terminal(render_location) {
                 // Clicked on an internal terminal
                 self.external_window_focused = false;
 
@@ -439,9 +459,9 @@ impl ColumnCompositor {
                     keyboard.set_focus(self, None, serial);
                 }
 
-                // Focus the clicked terminal (pointer Y is in render coords)
+                // Focus the clicked terminal (render_location.y is in render coords)
                 if let Some(terminals) = terminals {
-                    let render_y = crate::coords::RenderY::new(pointer_location.y);
+                    let render_y = crate::coords::RenderY::new(render_location.y);
                     if let Some(id) = terminals.terminal_at_y(render_y, self.scroll_offset) {
                         terminals.focus(id);
                         tracing::info!(?id, "focused internal terminal");
@@ -449,7 +469,8 @@ impl ColumnCompositor {
                 }
             } else {
                 tracing::debug!(
-                    pointer_y = pointer_location.y,
+                    render_y = render_location.y,
+                    screen_y = screen_location.y,
                     "handle_pointer_button: click not on terminal or window"
                 );
             }
@@ -553,24 +574,28 @@ impl ColumnCompositor {
 
         let window_height = self.cached_window_heights.get(index).copied().unwrap_or(0);
 
-        // Calculate relative position within the window.
+        // Calculate position relative to window for hit testing
+        // point is in render coords (Y=0 at bottom)
+        // window_y is the window's BOTTOM in render coords
+        // We need client-local coords (Y=0 at top of window)
         //
-        // IMPORTANT: We flip the SOURCE texture during rendering, which means:
-        // - Client's Y=0 (top of content) appears at render Y = window_y + window_height
-        // - Client's Y=height (bottom of content) appears at render Y = window_y
+        // With source flip during rendering:
+        // - Client Y=0 (top) is at render Y = window_y + window_height
+        // - Client Y=height (bottom) is at render Y = window_y
         //
-        // So to get surface-local Y (where Y=0 is at top):
-        //   relative_y = (window_y + window_height) - point.y
-        //
-        // For X, no flip is needed.
+        // So: client_local_y = window_height - (point.y - window_y)
+        //                    = window_height - offset_from_window_bottom
         let relative_x = point.x;
-        let relative_y = (window_y + window_height as f64) - point.y;
+        let offset_from_bottom = point.y - window_y;
+        let relative_y = window_height as f64 - offset_from_bottom;
         let relative_point: Point<f64, Logical> = Point::from((relative_x, relative_y));
 
         tracing::info!(
             index,
             window_y,
             window_height,
+            offset_from_bottom,
+            relative_y,
             geometry_offset = ?(geometry.loc.x, geometry.loc.y),
             relative_point = ?(relative_point.x, relative_point.y),
             "surface_under: calculated relative point"
@@ -586,7 +611,20 @@ impl ColumnCompositor {
             "surface_under: result"
         );
 
-        result.map(|(surface, pt)| (surface, Point::from((pt.x as f64, pt.y as f64))))
+        // Return surface position in SCREEN coordinates (Y=0 at top)
+        // This must match the coordinate system of MotionEvent.location
+        //
+        // With source flip during rendering:
+        // - Client Y=0 (top) is at render Y = window_y + window_height
+        // - In screen coords: screen Y = output_height - (window_y + window_height)
+        //
+        // We return this as the surface's global position so that:
+        //   surface_local = screen_pointer - screen_surface_pos
+        // gives correct Y for the client
+        let output_height = self.output_size.h as f64;
+        let screen_surface_y = output_height - (window_y + window_height as f64);
+
+        result.map(|(surface, _pt)| (surface, Point::from((0.0, screen_surface_y))))
     }
 }
 
