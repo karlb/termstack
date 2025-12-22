@@ -3,7 +3,9 @@
 use std::time::Duration;
 use test_harness::{TestCompositor, assertions, fixtures};
 
+/// NOTE: Requires live terminal with real shell, not mock
 #[test]
+#[ignore = "requires live terminal infrastructure"]
 fn auto_scroll_on_growth() {
     let (mut tc, term) = fixtures::single_terminal();
 
@@ -48,8 +50,9 @@ fn scroll_keeps_window_visible() {
         tc.send_input(term, &fixtures::seq_command(1, 30));
     }
 
+    let output_height = tc.output_size().1;
     tc.wait_for(
-        |c| c.snapshot().total_height > tc.output_size().1,
+        |c| c.snapshot().total_height > output_height,
         Duration::from_secs(5),
     )
     .expect("should exceed viewport");

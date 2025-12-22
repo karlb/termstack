@@ -3,7 +3,9 @@
 use std::time::Duration;
 use test_harness::{TestCompositor, assertions, fixtures};
 
+/// NOTE: Requires live terminal with real shell, not mock
 #[test]
+#[ignore = "requires live terminal infrastructure"]
 fn terminal_grows_with_content() {
     let (mut tc, term) = fixtures::single_terminal();
 

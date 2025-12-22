@@ -21,7 +21,7 @@ pub struct ColumnLayout {
 }
 
 /// Position and visibility of a single window
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowPosition {
     /// Y coordinate (can be negative if scrolled off top)
     pub y: i32,
@@ -43,31 +43,28 @@ impl ColumnLayout {
         }
     }
 
-    /// Calculate layout from windows and scroll state
+    /// Calculate layout from an iterator of heights.
     ///
-    /// This is a pure function: same inputs always produce same outputs.
-    /// No side effects, no state mutation.
-    pub fn calculate(
-        windows: &[WindowEntry],
+    /// This is the core pure function: same inputs always produce same outputs.
+    /// No side effects, no state mutation. Can be tested without Wayland types.
+    pub fn calculate_from_heights(
+        heights: impl IntoIterator<Item = u32>,
         output_height: u32,
         scroll_offset: f64,
     ) -> Self {
-        if windows.is_empty() {
-            return Self::empty();
-        }
-
         let mut y_accumulator: i32 = 0;
-        let mut positions = Vec::with_capacity(windows.len());
+        let mut positions = Vec::new();
 
-        for window in windows {
-            let height = window.state.current_height();
+        for height in heights {
             let y = y_accumulator - scroll_offset as i32;
-
             let visible = y < output_height as i32 && y + height as i32 > 0;
 
             positions.push(WindowPosition { y, height, visible });
-
             y_accumulator += height as i32;
+        }
+
+        if positions.is_empty() {
+            return Self::empty();
         }
 
         let total_height = y_accumulator as u32;
@@ -77,6 +74,18 @@ impl ColumnLayout {
             total_height,
             visible_range: scroll_offset as u32..scroll_offset as u32 + output_height,
         }
+    }
+
+    /// Calculate layout from windows and scroll state.
+    ///
+    /// Convenience wrapper that extracts heights from WindowEntry slice.
+    pub fn calculate(
+        windows: &[WindowEntry],
+        output_height: u32,
+        scroll_offset: f64,
+    ) -> Self {
+        let heights = windows.iter().map(|w| w.state.current_height());
+        Self::calculate_from_heights(heights, output_height, scroll_offset)
     }
 
     /// Calculate scroll offset to show the bottom of a window
@@ -134,7 +143,6 @@ impl ColumnLayout {
     }
 
     /// Check invariants (for testing)
-    #[cfg(test)]
     pub fn check_invariants(&self) -> Result<(), String> {
         // Windows should not overlap
         for i in 1..self.window_positions.len() {
@@ -171,7 +179,6 @@ impl ColumnLayout {
 mod tests {
     use super::*;
 
-    // Layout tests that don't need WindowEntry
     #[test]
     fn empty_layout() {
         let layout = ColumnLayout::empty();
@@ -180,20 +187,185 @@ mod tests {
     }
 
     #[test]
-    fn layout_positions_are_pure() {
-        // Same inputs should produce same outputs
-        let positions1 = [
-            WindowPosition { y: 0, height: 100, visible: true },
-            WindowPosition { y: 100, height: 200, visible: true },
-        ];
-        let positions2 = [
-            WindowPosition { y: 0, height: 100, visible: true },
-            WindowPosition { y: 100, height: 200, visible: true },
-        ];
+    fn empty_heights_produces_empty_layout() {
+        let layout = ColumnLayout::calculate_from_heights([], 720, 0.0);
+        assert_eq!(layout.total_height, 0);
+        assert!(layout.window_positions.is_empty());
+    }
 
-        assert_eq!(positions1[0].y, positions2[0].y);
-        assert_eq!(positions1[0].height, positions2[0].height);
-        assert_eq!(positions1[1].y, positions2[1].y);
-        assert_eq!(positions1[1].height, positions2[1].height);
+    #[test]
+    fn single_window_at_origin() {
+        let layout = ColumnLayout::calculate_from_heights([200], 720, 0.0);
+
+        assert_eq!(layout.total_height, 200);
+        assert_eq!(layout.window_positions.len(), 1);
+        assert_eq!(
+            layout.window_positions[0],
+            WindowPosition { y: 0, height: 200, visible: true }
+        );
+    }
+
+    #[test]
+    fn multiple_windows_stack_vertically() {
+        let layout = ColumnLayout::calculate_from_heights([100, 200, 150], 720, 0.0);
+
+        assert_eq!(layout.total_height, 450);
+        assert_eq!(layout.window_positions.len(), 3);
+
+        assert_eq!(layout.window_positions[0], WindowPosition { y: 0, height: 100, visible: true });
+        assert_eq!(layout.window_positions[1], WindowPosition { y: 100, height: 200, visible: true });
+        assert_eq!(layout.window_positions[2], WindowPosition { y: 300, height: 150, visible: true });
+    }
+
+    #[test]
+    fn windows_never_overlap() {
+        let layout = ColumnLayout::calculate_from_heights([100, 200, 300, 150], 720, 0.0);
+
+        for i in 1..layout.window_positions.len() {
+            let prev = &layout.window_positions[i - 1];
+            let curr = &layout.window_positions[i];
+            let prev_bottom = prev.y + prev.height as i32;
+
+            assert_eq!(
+                prev_bottom, curr.y,
+                "window {} bottom ({}) should equal window {} top ({})",
+                i - 1, prev_bottom, i, curr.y
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_offset_shifts_all_positions() {
+        let no_scroll = ColumnLayout::calculate_from_heights([100, 200], 720, 0.0);
+        let with_scroll = ColumnLayout::calculate_from_heights([100, 200], 720, 50.0);
+
+        // All Y positions should be shifted by -50
+        assert_eq!(no_scroll.window_positions[0].y - 50, with_scroll.window_positions[0].y);
+        assert_eq!(no_scroll.window_positions[1].y - 50, with_scroll.window_positions[1].y);
+
+        // Heights unchanged
+        assert_eq!(no_scroll.window_positions[0].height, with_scroll.window_positions[0].height);
+        assert_eq!(no_scroll.window_positions[1].height, with_scroll.window_positions[1].height);
+
+        // Total height unchanged
+        assert_eq!(no_scroll.total_height, with_scroll.total_height);
+    }
+
+    #[test]
+    fn visibility_when_fully_on_screen() {
+        let layout = ColumnLayout::calculate_from_heights([200], 720, 0.0);
+        assert!(layout.window_positions[0].visible);
+    }
+
+    #[test]
+    fn visibility_when_partially_scrolled_off_top() {
+        // Window at y=-50 with height 200 is partially visible (150px showing)
+        let layout = ColumnLayout::calculate_from_heights([200], 720, 50.0);
+        assert_eq!(layout.window_positions[0].y, -50);
+        assert!(layout.window_positions[0].visible);
+    }
+
+    #[test]
+    fn visibility_when_fully_scrolled_off_top() {
+        // Window at y=-250 with height 200 is not visible (ends at -50)
+        let layout = ColumnLayout::calculate_from_heights([200], 720, 250.0);
+        assert_eq!(layout.window_positions[0].y, -250);
+        assert!(!layout.window_positions[0].visible);
+    }
+
+    #[test]
+    fn visibility_when_partially_below_viewport() {
+        // Window starts at y=600, viewport is 720, so 120px visible
+        let layout = ColumnLayout::calculate_from_heights([100, 100, 100, 100, 100, 100, 200], 720, 0.0);
+        let last = layout.window_positions.last().unwrap();
+        assert_eq!(last.y, 600);
+        assert!(last.visible);
+    }
+
+    #[test]
+    fn visibility_when_fully_below_viewport() {
+        // Window starts at y=800, viewport is 720
+        let layout = ColumnLayout::calculate_from_heights([800, 200], 720, 0.0);
+        assert!(!layout.window_positions[1].visible);
+    }
+
+    #[test]
+    fn total_height_is_sum_of_heights() {
+        let heights = [100, 200, 300, 50, 150];
+        let layout = ColumnLayout::calculate_from_heights(heights, 720, 0.0);
+        let expected: u32 = heights.iter().sum();
+        assert_eq!(layout.total_height, expected);
+    }
+
+    #[test]
+    fn visible_range_tracks_viewport() {
+        let layout = ColumnLayout::calculate_from_heights([100, 200, 300], 720, 100.0);
+        assert_eq!(layout.visible_range, 100..820);
+    }
+
+    #[test]
+    fn layout_is_deterministic() {
+        let heights = vec![100, 200, 150, 300];
+
+        let layout1 = ColumnLayout::calculate_from_heights(heights.clone(), 720, 50.0);
+        let layout2 = ColumnLayout::calculate_from_heights(heights, 720, 50.0);
+
+        assert_eq!(layout1.total_height, layout2.total_height);
+        assert_eq!(layout1.window_positions, layout2.window_positions);
+    }
+
+    #[test]
+    fn invariants_pass_for_valid_layout() {
+        let layout = ColumnLayout::calculate_from_heights([100, 200, 300], 720, 0.0);
+        assert!(layout.check_invariants().is_ok());
+    }
+
+    #[test]
+    fn scroll_to_show_when_window_below_viewport() {
+        let layout = ColumnLayout::calculate_from_heights([400, 400, 400], 720, 0.0);
+        // Window 2 starts at 800, ends at 1200 - need to scroll to see bottom
+        let scroll = layout.scroll_to_show(2, 720);
+        assert!(scroll.is_some());
+        assert_eq!(scroll.unwrap(), 480.0); // 1200 - 720 = 480
+    }
+
+    #[test]
+    fn scroll_to_show_when_window_above_viewport() {
+        let layout = ColumnLayout::calculate_from_heights([400, 400, 400], 720, 500.0);
+        // Window 0 is at y=-500, need to scroll up
+        let scroll = layout.scroll_to_show(0, 720);
+        assert!(scroll.is_some());
+        assert_eq!(scroll.unwrap(), 0.0); // Scroll to top to show window 0
+    }
+
+    #[test]
+    fn scroll_to_show_returns_none_when_visible() {
+        let layout = ColumnLayout::calculate_from_heights([200, 200], 720, 0.0);
+        // Window 0 is fully visible
+        let scroll = layout.scroll_to_show(0, 720);
+        assert!(scroll.is_none());
+    }
+
+    #[test]
+    fn visible_windows_iterator() {
+        let layout = ColumnLayout::calculate_from_heights([300, 300, 300, 300], 720, 200.0);
+        // Scroll=200, viewport=720, so visible range is 200..920
+        // Window 0: y=-200..100 (visible)
+        // Window 1: y=100..400 (visible)
+        // Window 2: y=400..700 (visible)
+        // Window 3: y=700..1000 (partially visible)
+        let visible: Vec<_> = layout.visible_windows().collect();
+        assert_eq!(visible, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn visible_windows_excludes_scrolled_off() {
+        let layout = ColumnLayout::calculate_from_heights([100, 100, 100, 100], 720, 250.0);
+        // Window 0: y=-250..-150 (not visible)
+        // Window 1: y=-150..-50 (not visible)
+        // Window 2: y=-50..50 (visible - partial)
+        // Window 3: y=50..150 (visible)
+        let visible: Vec<_> = layout.visible_windows().collect();
+        assert_eq!(visible, vec![2, 3]);
     }
 }
