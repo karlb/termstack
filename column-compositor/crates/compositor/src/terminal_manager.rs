@@ -366,7 +366,7 @@ impl TerminalManager {
 
         // For command terminals: use large PTY size (no scrolling) but small visual size
         // This ensures the echo line is preserved while the terminal stays minimal
-        let pty_rows = 100; // Large PTY so program doesn't scroll
+        let pty_rows = 1000; // Large PTY so program doesn't scroll
         let visual_rows = self.initial_rows; // Small visual size, will grow with content
 
         let mut terminal = ManagedTerminal::new_with_command(
