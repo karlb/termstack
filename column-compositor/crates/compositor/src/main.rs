@@ -145,7 +145,13 @@ fn main() -> anyhow::Result<()> {
 
         // Dispatch winit events
         let _ = winit_event_loop.dispatch_new_events(|event| {
-            tracing::trace!("winit event: {:?}", std::mem::discriminant(&event));
+            tracing::debug!("winit event: {:?}", std::mem::discriminant(&event));
+            match &event {
+                WinitEvent::Input(input_event) => {
+                    tracing::debug!("winit input event: {:?}", std::mem::discriminant(input_event));
+                }
+                _ => {}
+            }
             match event {
             WinitEvent::Resized { size, .. } => {
                 output.change_current_state(
@@ -233,12 +239,25 @@ fn main() -> anyhow::Result<()> {
 
         // Handle scroll requests
         if compositor.scroll_requested != 0.0 {
-            let total_height = terminal_manager.total_height();
+            // Total content height = terminals + external windows
+            let terminal_height = terminal_manager.total_height();
+            let window_height: i32 = compositor.cached_window_heights.iter().sum();
+            let total_height = terminal_height + window_height;
             let visible_height = compositor.output_size.h;
             let max_scroll = (total_height - visible_height).max(0) as f64;
             compositor.scroll_offset = (compositor.scroll_offset + compositor.scroll_requested)
                 .clamp(0.0, max_scroll);
             compositor.scroll_requested = 0.0;
+            tracing::debug!(
+                scroll_requested = compositor.scroll_requested,
+                terminal_height,
+                window_height,
+                total_height,
+                visible_height,
+                max_scroll,
+                new_offset = compositor.scroll_offset,
+                "scroll processed"
+            );
         }
 
         // Process terminal PTY output and handle sizing actions

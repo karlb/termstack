@@ -386,7 +386,10 @@ impl ColumnCompositor {
 
     /// Scroll by a delta
     pub fn scroll(&mut self, delta: f64) {
-        let max_scroll = (self.layout.total_height as f64 - self.output_size.h as f64).max(0.0);
+        // Total content = terminals + external windows
+        let window_height: i32 = self.cached_window_heights.iter().sum();
+        let total_height = self.terminal_total_height + window_height;
+        let max_scroll = (total_height as f64 - self.output_size.h as f64).max(0.0);
         self.scroll_offset = (self.scroll_offset + delta).clamp(0.0, max_scroll);
         self.recalculate_layout();
     }

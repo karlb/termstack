@@ -43,7 +43,7 @@ impl ColumnCompositor {
             InputEvent::PointerMotion { .. } => tracing::trace!("INPUT: PointerMotion"),
             InputEvent::PointerMotionAbsolute { .. } => tracing::trace!("INPUT: PointerMotionAbsolute"),
             InputEvent::PointerButton { .. } => tracing::info!("INPUT: PointerButton"),
-            InputEvent::PointerAxis { .. } => tracing::trace!("INPUT: PointerAxis"),
+            InputEvent::PointerAxis { .. } => tracing::info!("INPUT: PointerAxis"),
             _ => tracing::info!("INPUT: Other event"),
         }
         match event {
@@ -481,7 +481,13 @@ impl ColumnCompositor {
 
         if vertical != 0.0 {
             // Queue scroll for main loop (uses terminal_manager's total height)
-            self.scroll_requested += vertical * SCROLL_WHEEL_MULTIPLIER;
+            // Negate because we flipped Y coordinates for OpenGL compatibility
+            self.scroll_requested -= vertical * SCROLL_WHEEL_MULTIPLIER;
+            tracing::info!(
+                vertical,
+                scroll_requested = self.scroll_requested,
+                "handle_pointer_axis: scroll event"
+            );
         }
 
         // Forward horizontal scroll to clients
