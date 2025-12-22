@@ -190,10 +190,19 @@ fn main() -> anyhow::Result<()> {
             // Fallback for new cells: use texture size or default
             match cell {
                 ColumnCell::Terminal(id) => {
+                    // Skip hidden terminals (return 0 height)
                     terminal_manager.get(*id)
+                        .filter(|t| !t.hidden)
                         .and_then(|t| t.get_texture())
                         .map(|tex| tex.size().h)
-                        .unwrap_or(200)
+                        .unwrap_or_else(|| {
+                            // Check if it's hidden
+                            if terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false) {
+                                0
+                            } else {
+                                200 // Default for visible terminals without texture
+                            }
+                        })
                 }
                 ColumnCell::External(entry) => {
                     // For new external windows, use state height as initial guess
@@ -311,37 +320,71 @@ fn main() -> anyhow::Result<()> {
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
             } else {
                 // Echo the command first, then run it
-                // Escape single quotes in command for the echo
+                // Simple echo before the command
                 let escaped = request.command.replace("'", "'\\''");
                 format!("echo '> {}'; {}", escaped, request.command)
             };
 
-            match terminal_manager.spawn_command(&command, &request.cwd, &request.env) {
+            // Modify environment to disable pagers and fancy terminal features
+            // This prevents commands like `git log` from clearing the echo line
+            let mut env = request.env.clone();
+            env.insert("GIT_PAGER".to_string(), "cat".to_string());
+            env.insert("PAGER".to_string(), "cat".to_string());
+            // Disable alternate screen buffer for less (if used)
+            env.insert("LESS".to_string(), "-FRX".to_string());
+
+            // Hide the focused terminal while command runs
+            let parent = terminal_manager.focused;
+
+            match terminal_manager.spawn_command(&command, &request.cwd, &env, parent) {
                 Ok(id) => {
                     compositor.add_terminal(id);
 
-                    // Update cached_cell_heights to include the new terminal
-                    let new_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
-                        if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-                            if cached > 0 {
-                                return cached;
+                    // Focus the new command terminal (it was inserted above the old focus)
+                    // Find its cell index and set focus
+                    for (i, cell) in compositor.cells.iter().enumerate() {
+                        if let ColumnCell::Terminal(tid) = cell {
+                            if *tid == id {
+                                compositor.focused_index = Some(i);
+                                tracing::info!(id = id.0, index = i, "focused new command terminal");
+                                break;
                             }
                         }
+                    }
+
+                    // Update cached_cell_heights to include the new terminal
+                    // Hidden terminals get 0 height
+                    let new_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
                         match cell {
                             ColumnCell::Terminal(tid) => {
+                                // Check if hidden first
+                                if terminal_manager.get(*tid).map(|t| t.hidden).unwrap_or(false) {
+                                    return 0;
+                                }
+                                // Use cached if available
+                                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                                    if cached > 0 {
+                                        return cached;
+                                    }
+                                }
                                 terminal_manager.get(*tid)
                                     .and_then(|t| t.get_texture())
                                     .map(|tex| tex.size().h)
                                     .unwrap_or(200)
                             }
                             ColumnCell::External(entry) => {
+                                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                                    if cached > 0 {
+                                        return cached;
+                                    }
+                                }
                                 entry.state.current_height() as i32
                             }
                         }
                     }).collect();
                     compositor.update_cached_cell_heights(new_heights);
 
-                    tracing::info!(id = id.0, command = %command, "spawned command terminal from IPC");
+                    tracing::info!(id = id.0, command = %command, ?parent, "spawned command terminal from IPC");
                 }
                 Err(e) => {
                     tracing::error!("failed to spawn command terminal: {}", e);
@@ -409,11 +452,25 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Cleanup dead terminals
-        let dead = terminal_manager.cleanup();
+        // Cleanup dead terminals and handle focus changes
+        let (dead, focus_changed_to) = terminal_manager.cleanup();
         for dead_id in &dead {
             compositor.remove_terminal(*dead_id);
             tracing::info!(id = dead_id.0, "removed dead terminal from cells");
+        }
+
+        // Sync compositor focus if a command terminal exited
+        if let Some(new_focus_id) = focus_changed_to {
+            // Find the cell index for this terminal
+            for (i, cell) in compositor.cells.iter().enumerate() {
+                if let ColumnCell::Terminal(tid) = cell {
+                    if *tid == new_focus_id {
+                        compositor.focused_index = Some(i);
+                        tracing::info!(id = new_focus_id.0, index = i, "synced compositor focus to parent terminal");
+                        break;
+                    }
+                }
+            }
         }
 
         if !dead.is_empty() {
@@ -478,10 +535,18 @@ fn main() -> anyhow::Result<()> {
 
                 match cell {
                     ColumnCell::Terminal(id) => {
+                        // Hidden terminals have 0 height
                         let height = terminal_manager.get(*id)
+                            .filter(|t| !t.hidden)
                             .and_then(|t| t.get_texture())
                             .map(|tex| tex.size().h)
-                            .unwrap_or(cached_height);
+                            .unwrap_or_else(|| {
+                                if terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false) {
+                                    0
+                                } else {
+                                    cached_height
+                                }
+                            });
                         actual_heights.push(height);
                         external_elements.push(Vec::new());
                     }
@@ -526,6 +591,19 @@ fn main() -> anyhow::Result<()> {
 
                 match cell {
                     ColumnCell::Terminal(id) => {
+                        // Debug: log terminal render state
+                        if let Some(term) = terminal_manager.get(*id) {
+                            let has_texture = term.get_texture().is_some();
+                            tracing::debug!(
+                                id = id.0,
+                                hidden = term.hidden,
+                                height,
+                                render_y,
+                                has_texture,
+                                content_rows = term.content_rows(),
+                                "terminal render state"
+                            );
+                        }
                         render_data.push(CellRenderData::Terminal {
                             id: *id,
                             y: render_y,
@@ -562,6 +640,10 @@ fn main() -> anyhow::Result<()> {
                 match data {
                     CellRenderData::Terminal { id, y, height } => {
                         if let Some(terminal) = terminal_manager.get(id) {
+                            // Skip hidden terminals entirely
+                            if terminal.hidden {
+                                continue;
+                            }
                             if let Some(texture) = terminal.get_texture() {
                                 // Only render if visible
                                 if y + height > 0 && y < physical_size.h {

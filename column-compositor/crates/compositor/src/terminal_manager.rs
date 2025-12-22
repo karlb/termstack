@@ -45,6 +45,14 @@ pub struct ManagedTerminal {
 
     /// Whether the process has exited (for hiding cursor)
     exited: bool,
+
+    /// Whether this terminal is temporarily hidden
+    /// (e.g., parent hidden while child command runs)
+    pub hidden: bool,
+
+    /// Parent terminal that spawned this one (if any)
+    /// When this terminal exits, the parent is unhidden
+    pub parent: Option<TerminalId>,
 }
 
 impl ManagedTerminal {
@@ -61,31 +69,41 @@ impl ManagedTerminal {
             dirty: true,
             keep_open: false,
             exited: false,
+            hidden: false,
+            parent: None,
         })
     }
 
     /// Create a new managed terminal running a specific command
+    ///
+    /// - `pty_rows`: Size reported to the PTY (program sees this many rows)
+    /// - `visual_rows`: Initial visual size for display
+    /// - `parent`: Parent terminal to unhide when this one exits
     pub fn new_with_command(
         id: TerminalId,
         cols: u16,
-        rows: u16,
+        pty_rows: u16,
+        visual_rows: u16,
         cell_width: u32,
         cell_height: u32,
         command: &str,
         working_dir: &Path,
         env: &HashMap<String, String>,
+        parent: Option<TerminalId>,
     ) -> Result<Self, terminal::state::TerminalError> {
-        let terminal = Terminal::new_with_command(cols, rows, command, working_dir, env)?;
+        let terminal = Terminal::new_with_command(cols, pty_rows, visual_rows, command, working_dir, env)?;
 
         Ok(Self {
             terminal,
             id,
             width: cols as u32 * cell_width,
-            height: rows as u32 * cell_height,
+            height: visual_rows as u32 * cell_height, // Use visual rows for display
             texture: None,
             dirty: true,
             keep_open: true, // Command terminals stay open after exit
             exited: false,
+            hidden: false,
+            parent,
         })
     }
 
@@ -257,9 +275,12 @@ impl TerminalManager {
         self.terminals.get_mut(&id)
     }
 
-    /// Calculate total height of all terminals
+    /// Calculate total height of visible (non-hidden) terminals
     pub fn total_height(&self) -> i32 {
-        self.terminals.values().map(|t| t.height as i32).sum()
+        self.terminals.values()
+            .filter(|t| !t.hidden)
+            .map(|t| t.height as i32)
+            .sum()
     }
 
     /// Update cell dimensions (called after font loads)
@@ -320,24 +341,45 @@ impl TerminalManager {
     }
 
     /// Spawn a new terminal running a specific command
+    ///
+    /// If `parent` is provided, that terminal will be hidden while this one runs.
+    /// When this terminal's command exits, the parent will be unhidden.
     pub fn spawn_command(
         &mut self,
         command: &str,
         working_dir: &Path,
         env: &HashMap<String, String>,
+        parent: Option<TerminalId>,
     ) -> Result<TerminalId, terminal::state::TerminalError> {
         let id = TerminalId(self.next_id);
         self.next_id += 1;
 
+        // Hide the parent terminal while command runs
+        if let Some(parent_id) = parent {
+            if let Some(parent_term) = self.terminals.get_mut(&parent_id) {
+                parent_term.hidden = true;
+                tracing::info!(parent = parent_id.0, new_child = id.0, "hiding parent terminal");
+            }
+        } else {
+            tracing::warn!(new_child = id.0, "no parent to hide - terminal_manager.focused was None");
+        }
+
+        // For command terminals: use large PTY size (no scrolling) but small visual size
+        // This ensures the echo line is preserved while the terminal stays minimal
+        let pty_rows = 100; // Large PTY so program doesn't scroll
+        let visual_rows = self.initial_rows; // Small visual size, will grow with content
+
         let mut terminal = ManagedTerminal::new_with_command(
             id,
             self.default_cols,
-            self.initial_rows,
+            pty_rows,
+            visual_rows,
             self.cell_width,
             self.cell_height,
             command,
             working_dir,
             env,
+            parent,
         )?;
 
         // Get actual cell dimensions from the font and update
@@ -346,13 +388,23 @@ impl TerminalManager {
             self.cell_width = actual_cell_width;
             self.cell_height = actual_cell_height;
             terminal.width = self.default_cols as u32 * actual_cell_width;
-            terminal.height = self.initial_rows as u32 * actual_cell_height;
         }
 
-        tracing::info!(id = id.0, cols = self.default_cols, rows = self.initial_rows,
-                       command, "spawned command terminal");
+        // Set small visual height (will grow based on content)
+        terminal.height = visual_rows as u32 * self.cell_height;
+
+        tracing::info!(id = id.0, cols = self.default_cols, pty_rows, visual_rows,
+                       ?parent, command, "spawned command terminal");
 
         self.terminals.insert(id, terminal);
+
+        // Focus the new command terminal
+        self.focused = Some(id);
+
+        // Debug: show which terminals are hidden/visible
+        for (tid, term) in &self.terminals {
+            tracing::info!(tid = tid.0, hidden = term.hidden, height = term.height, "terminal state after spawn");
+        }
 
         Ok(id)
     }
@@ -379,9 +431,24 @@ impl TerminalManager {
         ids
     }
 
+    /// Get visible (non-hidden) terminal IDs in order
+    pub fn visible_ids(&self) -> Vec<TerminalId> {
+        let mut ids: Vec<_> = self.terminals.iter()
+            .filter(|(_, term)| !term.hidden)
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_by_key(|id| id.0);
+        ids
+    }
+
     /// Number of terminals
     pub fn count(&self) -> usize {
         self.terminals.len()
+    }
+
+    /// Number of visible terminals
+    pub fn visible_count(&self) -> usize {
+        self.terminals.values().filter(|t| !t.hidden).count()
     }
 
     /// Process all terminal PTY output
@@ -403,27 +470,77 @@ impl TerminalManager {
     }
 
     /// Remove dead terminals (except those marked keep_open)
-    pub fn cleanup(&mut self) -> Vec<TerminalId> {
+    /// Also handles unhiding parent terminals when command terminals exit
+    ///
+    /// Returns (dead_terminals, focus_changed_to)
+    /// - dead_terminals: terminals that were removed
+    /// - focus_changed_to: if Some, the focus should be updated to this terminal
+    pub fn cleanup(&mut self) -> (Vec<TerminalId>, Option<TerminalId>) {
         // First collect IDs to check
         let ids: Vec<_> = self.terminals.keys().copied().collect();
 
-        // Check each terminal and collect dead ones (skip keep_open terminals)
+        // Check each terminal for exit status
         let mut dead = Vec::new();
+        let mut parents_to_unhide = Vec::new();
+        let mut terminals_to_hide = Vec::new();
+        let mut focus_changed_to = None;
+
         for id in ids {
             if let Some(term) = self.terminals.get_mut(&id) {
-                if !term.is_running() && !term.keep_open {
-                    dead.push(id);
+                // Check exited BEFORE is_running() since is_running() sets exited as side effect
+                let was_already_exited = term.exited;
+                let running = term.is_running();
+
+                if !running {
+                    // Terminal has exited
+                    if !was_already_exited {
+                        // First time detecting exit - handle parent unhiding
+                        if let Some(parent_id) = term.parent {
+                            parents_to_unhide.push(parent_id);
+                            focus_changed_to = Some(parent_id);
+                            tracing::info!(child = id.0, parent = parent_id.0, "command exited, will unhide parent");
+
+                            // Check if command terminal has meaningful content
+                            // If content_rows <= 1 (just the echo line or empty), hide it
+                            let content_rows = term.content_rows();
+                            if content_rows <= 1 {
+                                terminals_to_hide.push(id);
+                                tracing::info!(id = id.0, content_rows, "hiding empty command terminal");
+                            }
+                        }
+                    }
+
+                    if !term.keep_open {
+                        dead.push(id);
+                    }
                 }
+            }
+        }
+
+        // Unhide parent terminals
+        for parent_id in parents_to_unhide {
+            if let Some(parent) = self.terminals.get_mut(&parent_id) {
+                parent.hidden = false;
+                tracing::info!(id = parent_id.0, "unhiding parent terminal");
+            }
+            // Focus the parent
+            self.focused = Some(parent_id);
+        }
+
+        // Hide empty command terminals
+        for id in terminals_to_hide {
+            if let Some(term) = self.terminals.get_mut(&id) {
+                term.hidden = true;
             }
         }
 
         // Remove dead terminals
         for id in &dead {
             self.terminals.remove(id);
-            tracing::info!(id = id.0, "terminal exited");
+            tracing::info!(id = id.0, "terminal removed");
         }
 
-        dead
+        (dead, focus_changed_to)
     }
 
     /// Iterate over all terminals
@@ -436,9 +553,9 @@ impl TerminalManager {
         self.terminals.iter_mut()
     }
 
-    /// Focus the next terminal (by ID order)
+    /// Focus the next visible terminal (by ID order)
     pub fn focus_next(&mut self) -> bool {
-        let ids = self.ids();
+        let ids = self.visible_ids();
         if ids.is_empty() {
             return false;
         }
@@ -453,9 +570,9 @@ impl TerminalManager {
         true
     }
 
-    /// Focus the previous terminal (by ID order)
+    /// Focus the previous visible terminal (by ID order)
     pub fn focus_prev(&mut self) -> bool {
-        let ids = self.ids();
+        let ids = self.visible_ids();
         if ids.is_empty() {
             return false;
         }
@@ -470,10 +587,10 @@ impl TerminalManager {
         true
     }
 
-    /// Get the Y position of a terminal (for scrolling to it)
+    /// Get the Y position of a visible terminal (for scrolling to it)
     pub fn terminal_y_position(&self, target_id: TerminalId) -> Option<i32> {
         let mut y = 0i32;
-        for id in self.ids() {
+        for id in self.visible_ids() {
             if id == target_id {
                 return Some(y);
             }
@@ -492,7 +609,7 @@ impl TerminalManager {
         Some((y, height))
     }
 
-    /// Find which terminal is at a given render Y position
+    /// Find which visible terminal is at a given render Y position
     ///
     /// Takes a render Y coordinate (Y=0 at bottom, from pointer location)
     /// and converts it to content coordinates to find which terminal is there.
@@ -502,7 +619,7 @@ impl TerminalManager {
         let content_y = render_y.to_content(scroll_offset);
 
         let mut y = 0.0;
-        for id in self.ids() {
+        for id in self.visible_ids() {
             if let Some(term) = self.terminals.get(&id) {
                 let height = term.height as f64;
                 if content_y.value() >= y && content_y.value() < y + height {

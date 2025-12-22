@@ -148,25 +148,32 @@ impl Terminal {
     ///
     /// The command is run via `/bin/sh -c "command"` with the given
     /// working directory and environment variables.
+    ///
+    /// - `pty_rows`: Size reported to the PTY (program sees this many rows)
+    /// - `visual_rows`: Initial visual size (sizing state uses this for growth triggers)
+    ///
+    /// Using a large pty_rows with small visual_rows prevents programs from
+    /// scrolling while keeping the terminal visually minimal.
     pub fn new_with_command(
         cols: u16,
-        rows: u16,
+        pty_rows: u16,
+        visual_rows: u16,
         command: &str,
         working_dir: &Path,
         env: &HashMap<String, String>,
     ) -> Result<Self, TerminalError> {
-        // Create PTY with command
-        let pty = Pty::spawn_command(command, working_dir, env, cols, rows)?;
+        // Create PTY with large size (no scrolling)
+        let pty = Pty::spawn_command(command, working_dir, env, cols, pty_rows)?;
 
         // Create event channel
         let (sender, receiver) = std::sync::mpsc::channel();
         let event_proxy = TerminalEventProxy { sender };
 
-        // Create terminal
+        // Create terminal grid with large size to store all output
         let config = TermConfig::default();
         let size = Size {
             cols: cols as usize,
-            rows: rows as usize,
+            rows: pty_rows as usize,
         };
 
         let term = Term::new(config, &size, event_proxy);
@@ -179,8 +186,8 @@ impl Terminal {
         let font_config = crate::render::FontConfig::default_font();
         let renderer = TerminalRenderer::with_font(font_config);
 
-        // Create sizing state
-        let sizing = TerminalSizingState::new(rows);
+        // Create sizing state with VISUAL rows (triggers growth based on visual size)
+        let sizing = TerminalSizingState::new(visual_rows);
 
         Ok(Self {
             term,
@@ -190,7 +197,7 @@ impl Terminal {
             renderer,
             events: receiver,
             cols,
-            rows,
+            rows: pty_rows,
         })
     }
 
