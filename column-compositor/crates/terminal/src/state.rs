@@ -190,7 +190,7 @@ impl Terminal {
 
     /// Write input to terminal
     pub fn write(&mut self, data: &[u8]) -> Result<(), TerminalError> {
-        self.pty.write(data).map_err(PtyError::from)?;
+        self.pty.write(data)?;
         Ok(())
     }
 

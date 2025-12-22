@@ -146,11 +146,8 @@ fn main() -> anyhow::Result<()> {
         // Dispatch winit events
         let _ = winit_event_loop.dispatch_new_events(|event| {
             tracing::debug!("winit event: {:?}", std::mem::discriminant(&event));
-            match &event {
-                WinitEvent::Input(input_event) => {
-                    tracing::debug!("winit input event: {:?}", std::mem::discriminant(input_event));
-                }
-                _ => {}
+            if let WinitEvent::Input(input_event) = &event {
+                tracing::debug!("winit input event: {:?}", std::mem::discriminant(input_event));
             }
             match event {
             WinitEvent::Resized { size, .. } => {
@@ -411,9 +408,9 @@ fn main() -> anyhow::Result<()> {
                             let is_focused = Some(id) == focused_id;
                             if is_focused && y_offset >= 0 {
                                 let border_height = 2;
-                                let focus_damage = Rectangle::from_loc_and_size(
-                                    (0, y_offset),
-                                    (physical_size.w, border_height),
+                                let focus_damage = Rectangle::new(
+                                    (0, y_offset).into(),
+                                    (physical_size.w, border_height).into(),
                                 );
                                 frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
                             }

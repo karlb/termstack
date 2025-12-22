@@ -118,7 +118,7 @@ impl ColumnLayout {
                 .iter()
                 .map(|p| p.height as i32)
                 .sum::<i32>();
-            return Some((accumulated_y as i32 - output_height as i32).max(0) as f64);
+            return Some((accumulated_y - output_height as i32).max(0) as f64);
         }
 
         None
@@ -171,12 +171,6 @@ impl ColumnLayout {
 mod tests {
     use super::*;
 
-    fn mock_entry(height: u32) -> WindowEntry {
-        // Create a minimal WindowEntry for testing
-        // In real tests we'd use proper mocks
-        unimplemented!("Use integration tests with proper WindowEntry")
-    }
-
     // Layout tests that don't need WindowEntry
     #[test]
     fn empty_layout() {
@@ -188,11 +182,11 @@ mod tests {
     #[test]
     fn layout_positions_are_pure() {
         // Same inputs should produce same outputs
-        let positions1 = vec![
+        let positions1 = [
             WindowPosition { y: 0, height: 100, visible: true },
             WindowPosition { y: 100, height: 200, visible: true },
         ];
-        let positions2 = vec![
+        let positions2 = [
             WindowPosition { y: 0, height: 100, visible: true },
             WindowPosition { y: 100, height: 200, visible: true },
         ];

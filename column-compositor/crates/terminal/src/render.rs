@@ -176,7 +176,7 @@ impl TerminalRenderer {
                 continue;
             }
 
-            self.render_cell(x, y, &cell.cell);
+            self.render_cell(x, y, cell.cell);
         }
 
         // Render cursor
@@ -244,7 +244,7 @@ impl TerminalRenderer {
         let cache_key = (c, size_key);
 
         // Get or rasterize glyph
-        if !self.glyph_cache.contains_key(&cache_key) {
+        self.glyph_cache.entry(cache_key).or_insert_with(|| {
             let (metrics, bitmap) = font.font.rasterize(c, font.size);
 
             tracing::debug!(
@@ -253,16 +253,14 @@ impl TerminalRenderer {
                 metrics.advance_width, bitmap.len()
             );
 
-            let glyph = GlyphData {
+            GlyphData {
                 bitmap,
                 width: metrics.width as u32,
                 height: metrics.height as u32,
                 x_offset: metrics.xmin,
                 y_offset: metrics.ymin,
-            };
-
-            self.glyph_cache.insert(cache_key, glyph);
-        }
+            }
+        });
 
         let glyph = &self.glyph_cache[&cache_key];
 
@@ -272,9 +270,9 @@ impl TerminalRenderer {
         let glyph_y = (baseline_y as i32 - glyph.height as i32 - glyph.y_offset).max(0) as u32;
 
         // Draw glyph bitmap
-        let fg_r = ((fg >> 16) & 0xFF) as u32;
-        let fg_g = ((fg >> 8) & 0xFF) as u32;
-        let fg_b = (fg & 0xFF) as u32;
+        let fg_r = (fg >> 16) & 0xFF;
+        let fg_g = (fg >> 8) & 0xFF;
+        let fg_b = fg & 0xFF;
 
         for gy in 0..glyph.height {
             let py = glyph_y + gy;
@@ -300,9 +298,9 @@ impl TerminalRenderer {
 
                 // Alpha blend
                 let bg = self.buffer[idx];
-                let bg_r = ((bg >> 16) & 0xFF) as u32;
-                let bg_g = ((bg >> 8) & 0xFF) as u32;
-                let bg_b = (bg & 0xFF) as u32;
+                let bg_r = (bg >> 16) & 0xFF;
+                let bg_g = (bg >> 8) & 0xFF;
+                let bg_b = bg & 0xFF;
 
                 let r = (fg_r * alpha + bg_r * (255 - alpha)) / 255;
                 let g = (fg_g * alpha + bg_g * (255 - alpha)) / 255;

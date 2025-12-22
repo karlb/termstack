@@ -60,8 +60,8 @@ impl Pty {
             .map_err(|e| PtyError::Open(std::io::Error::from_raw_os_error(e.raw_os_error())))?;
 
         // Get slave name
-        let mut slave_name_buf = [0u8; 256];
-        let slave_name = rustix::pty::ptsname(&master_fd, &mut slave_name_buf)
+        let slave_name_buf = [0u8; 256];
+        let slave_name = rustix::pty::ptsname(&master_fd, slave_name_buf)
             .map_err(|e| PtyError::Open(std::io::Error::from_raw_os_error(e.raw_os_error())))?;
 
         // Convert CStr to str for path

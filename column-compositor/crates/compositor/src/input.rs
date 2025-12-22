@@ -255,12 +255,10 @@ impl ColumnCompositor {
         }
 
         // Ctrl+Shift+Q: Alternative quit (when Super is grabbed)
-        if modifiers.ctrl && modifiers.shift {
-            if matches!(keysym, Keysym::q | Keysym::Q) {
-                tracing::info!("quit requested (Ctrl+Shift+Q)");
-                self.running = false;
-                return true;
-            }
+        if modifiers.ctrl && modifiers.shift && matches!(keysym, Keysym::q | Keysym::Q) {
+            tracing::info!("quit requested (Ctrl+Shift+Q)");
+            self.running = false;
+            return true;
         }
 
         // Super (Mod4) + key bindings
@@ -454,7 +452,7 @@ impl ColumnCompositor {
             self,
             &ButtonEvent {
                 button,
-                state: state.into(),
+                state,
                 serial,
                 time: event.time_msec(),
             },
@@ -678,7 +676,7 @@ fn keysym_to_bytes(keysym: Keysym, modifiers: &ModifiersState) -> Vec<u8> {
         _ => {
             // Try to get the UTF-8 representation
             let raw = keysym.raw();
-            if raw >= 0x20 && raw < 0x7f {
+            if (0x20..0x7f).contains(&raw) {
                 // ASCII printable
                 vec![raw as u8]
             } else if raw >= 0x100 {

@@ -1,6 +1,6 @@
 //! Test assertions for compositor state
 
-use crate::headless::{CompositorSnapshot, RenderedElement, TestCompositor};
+use crate::headless::{CompositorSnapshot, TestCompositor};
 
 /// Assert that windows don't overlap
 pub fn assert_windows_dont_overlap(snapshot: &CompositorSnapshot) {

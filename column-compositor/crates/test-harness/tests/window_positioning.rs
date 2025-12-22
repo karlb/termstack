@@ -274,9 +274,9 @@ fn ten_small_windows() {
     let pos = tc.render_positions();
 
     // All 10 windows should stack correctly
-    for i in 0..10 {
-        assert_eq!(pos[i].0, i as i32 * 50, "window {} y position", i);
-        assert_eq!(pos[i].1, 50, "window {} height", i);
+    for (i, p) in pos.iter().enumerate().take(10) {
+        assert_eq!(p.0, i as i32 * 50, "window {} y position", i);
+        assert_eq!(p.1, 50, "window {} height", i);
     }
 
     // Click detection for each
@@ -702,8 +702,6 @@ fn bug_detection_all_windows_same_flip_if_wrong_y_used() {
     assert_eq!(window_1_correct, 220); // 720 - 200 - 300 = 220
 
     // No overlap: Window 0 at 520-720, Window 1 at 220-520
-    let w0c_top = window_0_correct + 200; // 720
-    let w1c_bottom = window_1_correct;     // 220
     let w1c_top = window_1_correct + 300;  // 520
 
     assert_eq!(w1c_top, window_0_correct, "correct: window 1 ends where window 0 starts");
@@ -1107,7 +1105,7 @@ fn exact_main_rs_rendering_iteration_pattern() {
     assert_eq!(rendered_dests.len(), 2);
 
     let (win0_idx, win0_dest_y, win0_h) = rendered_dests[0];
-    let (win1_idx, win1_dest_y, win1_h) = rendered_dests[1];
+    let (win1_idx, win1_dest_y, _win1_h) = rendered_dests[1];
 
     assert_eq!(win0_idx, 0, "first element from window 0");
     assert_eq!(win1_idx, 1, "second element from window 1");
@@ -1346,8 +1344,8 @@ fn must_use_actual_element_heights_for_positioning() {
     // This simulates what SHOULD happen in main.rs
 
     let terminal_height = 100;
-    let cached_heights = vec![400, 200]; // What bbox() returned
-    let actual_heights = vec![600, 200]; // What geo.size.h actually is
+    let cached_heights = [400, 200]; // What bbox() returned
+    let actual_heights = [600, 200]; // What geo.size.h actually is
 
     // BUGGY approach: advance by cached_height
     let mut y = terminal_height;
@@ -1584,7 +1582,7 @@ fn window_at_and_relative_point_consistent() {
     let window_y = 100.0; // terminal_height - scroll_offset
     let relative_y = click_y - window_y;
     assert_eq!(relative_y, 150.0);
-    assert!(relative_y >= 0.0 && relative_y < 200.0, "relative_y within window 0 bounds");
+    assert!((0.0..200.0).contains(&relative_y), "relative_y within window 0 bounds");
 
     // Click at Y=350 (middle of window 1)
     let click_y = 350.0;
@@ -1595,7 +1593,7 @@ fn window_at_and_relative_point_consistent() {
     let window_1_y = 300.0;
     let relative_y = click_y - window_1_y;
     assert_eq!(relative_y, 50.0);
-    assert!(relative_y >= 0.0 && relative_y < 200.0, "relative_y within window 1 bounds");
+    assert!((0.0..200.0).contains(&relative_y), "relative_y within window 1 bounds");
 }
 
 /// Test that new windows get initialized with bbox, but existing are preserved
