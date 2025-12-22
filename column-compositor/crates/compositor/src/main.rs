@@ -3,6 +3,7 @@
 //! This compositor arranges terminal windows in a scrollable vertical column,
 //! with windows dynamically sizing based on their content.
 
+use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
 use smithay::backend::winit::{self, WinitEvent};
@@ -12,7 +13,7 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Element, RenderElement};
 use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
@@ -101,6 +102,45 @@ fn main() -> anyhow::Result<()> {
             compositor_state: Default::default(),
         })).expect("failed to insert client");
     }).expect("failed to insert socket source");
+
+    // Create IPC socket for column-term commands
+    let ipc_socket_path = compositor::ipc::socket_path();
+    let _ = std::fs::remove_file(&ipc_socket_path); // Clean up old socket
+    let ipc_listener = UnixListener::bind(&ipc_socket_path)
+        .expect("failed to create IPC socket");
+    ipc_listener.set_nonblocking(true).expect("failed to set nonblocking");
+
+    // Set environment variable for child processes
+    std::env::set_var("COLUMN_COMPOSITOR_SOCKET", &ipc_socket_path);
+
+    tracing::info!(path = ?ipc_socket_path, "IPC socket created");
+
+    // Insert IPC socket source into event loop
+    event_loop.handle().insert_source(
+        Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
+        |_, listener, state| {
+            // Accept incoming connections
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        tracing::info!("IPC connection received");
+                        if let Some(request) = compositor::ipc::read_spawn_request(stream) {
+                            tracing::info!(command = %request.command, "IPC spawn request queued");
+                            state.pending_spawn_requests.push(request);
+                        } else {
+                            tracing::warn!("failed to parse IPC spawn request");
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        tracing::warn!("IPC accept error: {}", e);
+                        break;
+                    }
+                }
+            }
+            Ok(smithay::reexports::calloop::PostAction::Continue)
+        },
+    ).expect("failed to insert IPC socket source");
 
     tracing::info!("entering main loop");
 
@@ -259,6 +299,52 @@ fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     tracing::error!("failed to spawn terminal: {}", e);
+                }
+            }
+        }
+
+        // Handle command spawn requests from IPC (column-term)
+        while let Some(request) = compositor.pending_spawn_requests.pop() {
+            // Decide what command to run
+            let command = if request.command.is_empty() {
+                // Empty command = spawn interactive shell
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+            } else {
+                // Echo the command first, then run it
+                // Escape single quotes in command for the echo
+                let escaped = request.command.replace("'", "'\\''");
+                format!("echo '> {}'; {}", escaped, request.command)
+            };
+
+            match terminal_manager.spawn_command(&command, &request.cwd, &request.env) {
+                Ok(id) => {
+                    compositor.add_terminal(id);
+
+                    // Update cached_cell_heights to include the new terminal
+                    let new_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
+                        if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                            if cached > 0 {
+                                return cached;
+                            }
+                        }
+                        match cell {
+                            ColumnCell::Terminal(tid) => {
+                                terminal_manager.get(*tid)
+                                    .and_then(|t| t.get_texture())
+                                    .map(|tex| tex.size().h)
+                                    .unwrap_or(200)
+                            }
+                            ColumnCell::External(entry) => {
+                                entry.state.current_height() as i32
+                            }
+                        }
+                    }).collect();
+                    compositor.update_cached_cell_heights(new_heights);
+
+                    tracing::info!(id = id.0, command = %command, "spawned command terminal from IPC");
+                }
+                Err(e) => {
+                    tracing::error!("failed to spawn command terminal: {}", e);
                 }
             }
         }

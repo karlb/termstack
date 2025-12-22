@@ -2,6 +2,8 @@
 //!
 //! Wraps alacritty_terminal with PTY and sizing state machine.
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -142,6 +144,56 @@ impl Terminal {
         })
     }
 
+    /// Create a new terminal running a specific command
+    ///
+    /// The command is run via `/bin/sh -c "command"` with the given
+    /// working directory and environment variables.
+    pub fn new_with_command(
+        cols: u16,
+        rows: u16,
+        command: &str,
+        working_dir: &Path,
+        env: &HashMap<String, String>,
+    ) -> Result<Self, TerminalError> {
+        // Create PTY with command
+        let pty = Pty::spawn_command(command, working_dir, env, cols, rows)?;
+
+        // Create event channel
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let event_proxy = TerminalEventProxy { sender };
+
+        // Create terminal
+        let config = TermConfig::default();
+        let size = Size {
+            cols: cols as usize,
+            rows: rows as usize,
+        };
+
+        let term = Term::new(config, &size, event_proxy);
+        let term = Arc::new(FairMutex::new(term));
+
+        // Create VTE parser
+        let parser = ansi::Processor::new();
+
+        // Create renderer with font
+        let font_config = crate::render::FontConfig::default_font();
+        let renderer = TerminalRenderer::with_font(font_config);
+
+        // Create sizing state
+        let sizing = TerminalSizingState::new(rows);
+
+        Ok(Self {
+            term,
+            parser,
+            pty,
+            sizing,
+            renderer,
+            events: receiver,
+            cols,
+            rows,
+        })
+    }
+
     /// Process PTY output
     pub fn process_pty(&mut self) -> Vec<SizingAction> {
         let mut actions = Vec::new();
@@ -225,9 +277,9 @@ impl Terminal {
     }
 
     /// Render to pixel buffer
-    pub fn render(&mut self, width: u32, height: u32) {
+    pub fn render(&mut self, width: u32, height: u32, show_cursor: bool) {
         let term = self.term.lock();
-        self.renderer.render(&term, width, height);
+        self.renderer.render(&term, width, height, show_cursor);
     }
 
     /// Get rendered pixel buffer

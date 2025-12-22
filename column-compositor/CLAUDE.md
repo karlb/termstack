@@ -16,7 +16,7 @@ cargo clippy                    # linting
 ## Running the Compositor
 
 ```bash
-cargo run --release                           # Winit backend (development)
+cargo run --release --bin column-compositor   # Winit backend (development)
 WINIT_UNIX_BACKEND=x11 cargo run --release    # Force X11 backend
 RUST_LOG=column_compositor=debug cargo run    # With debug logging
 ```

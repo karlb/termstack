@@ -34,6 +34,7 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
+use crate::ipc::SpawnRequest;
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
@@ -88,6 +89,9 @@ pub struct ColumnCompositor {
     /// Cached cell heights for consistent positioning between input and render
     /// Updated at start of each frame before input processing
     pub cached_cell_heights: Vec<i32>,
+
+    /// Pending spawn requests from IPC (column-term commands)
+    pub pending_spawn_requests: Vec<SpawnRequest>,
 }
 
 /// A window entry in our column
@@ -192,6 +196,7 @@ impl ColumnCompositor {
             focus_change_requested: 0,
             scroll_requested: 0.0,
             cached_cell_heights: Vec::new(),
+            pending_spawn_requests: Vec::new(),
         };
 
         (compositor, display)

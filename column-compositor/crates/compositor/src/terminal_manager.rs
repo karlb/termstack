@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::os::fd::RawFd;
+use std::path::Path;
 
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::gles::GlesTexture;
@@ -38,6 +39,12 @@ pub struct ManagedTerminal {
 
     /// Whether the terminal needs re-rendering
     dirty: bool,
+
+    /// Keep window open after process exits (for command terminals)
+    pub keep_open: bool,
+
+    /// Whether the process has exited (for hiding cursor)
+    exited: bool,
 }
 
 impl ManagedTerminal {
@@ -52,6 +59,33 @@ impl ManagedTerminal {
             height: rows as u32 * cell_height,
             texture: None,
             dirty: true,
+            keep_open: false,
+            exited: false,
+        })
+    }
+
+    /// Create a new managed terminal running a specific command
+    pub fn new_with_command(
+        id: TerminalId,
+        cols: u16,
+        rows: u16,
+        cell_width: u32,
+        cell_height: u32,
+        command: &str,
+        working_dir: &Path,
+        env: &HashMap<String, String>,
+    ) -> Result<Self, terminal::state::TerminalError> {
+        let terminal = Terminal::new_with_command(cols, rows, command, working_dir, env)?;
+
+        Ok(Self {
+            terminal,
+            id,
+            width: cols as u32 * cell_width,
+            height: rows as u32 * cell_height,
+            texture: None,
+            dirty: true,
+            keep_open: true, // Command terminals stay open after exit
+            exited: false,
         })
     }
 
@@ -87,7 +121,11 @@ impl ManagedTerminal {
 
     /// Check if terminal is still running
     pub fn is_running(&mut self) -> bool {
-        self.terminal.is_running()
+        let running = self.terminal.is_running();
+        if !running {
+            self.exited = true;
+        }
+        running
     }
 
     /// Get content row count
@@ -106,8 +144,8 @@ impl ManagedTerminal {
             return self.texture.as_ref();
         }
 
-        // Render terminal to pixel buffer
-        self.terminal.render(self.width, self.height);
+        // Render terminal to pixel buffer (hide cursor if process exited)
+        self.terminal.render(self.width, self.height, !self.exited);
         let buffer = self.terminal.buffer();
 
         if buffer.is_empty() {
@@ -281,6 +319,44 @@ impl TerminalManager {
         Ok(id)
     }
 
+    /// Spawn a new terminal running a specific command
+    pub fn spawn_command(
+        &mut self,
+        command: &str,
+        working_dir: &Path,
+        env: &HashMap<String, String>,
+    ) -> Result<TerminalId, terminal::state::TerminalError> {
+        let id = TerminalId(self.next_id);
+        self.next_id += 1;
+
+        let mut terminal = ManagedTerminal::new_with_command(
+            id,
+            self.default_cols,
+            self.initial_rows,
+            self.cell_width,
+            self.cell_height,
+            command,
+            working_dir,
+            env,
+        )?;
+
+        // Get actual cell dimensions from the font and update
+        let (actual_cell_width, actual_cell_height) = terminal.cell_size();
+        if actual_cell_width != self.cell_width || actual_cell_height != self.cell_height {
+            self.cell_width = actual_cell_width;
+            self.cell_height = actual_cell_height;
+            terminal.width = self.default_cols as u32 * actual_cell_width;
+            terminal.height = self.initial_rows as u32 * actual_cell_height;
+        }
+
+        tracing::info!(id = id.0, cols = self.default_cols, rows = self.initial_rows,
+                       command, "spawned command terminal");
+
+        self.terminals.insert(id, terminal);
+
+        Ok(id)
+    }
+
     /// Get a terminal by ID
     pub fn get(&self, id: TerminalId) -> Option<&ManagedTerminal> {
         self.terminals.get(&id)
@@ -326,16 +402,16 @@ impl TerminalManager {
             .collect()
     }
 
-    /// Remove dead terminals
+    /// Remove dead terminals (except those marked keep_open)
     pub fn cleanup(&mut self) -> Vec<TerminalId> {
         // First collect IDs to check
         let ids: Vec<_> = self.terminals.keys().copied().collect();
 
-        // Check each terminal and collect dead ones
+        // Check each terminal and collect dead ones (skip keep_open terminals)
         let mut dead = Vec::new();
         for id in ids {
             if let Some(term) = self.terminals.get_mut(&id) {
-                if !term.is_running() {
+                if !term.is_running() && !term.keep_open {
                     dead.push(id);
                 }
             }

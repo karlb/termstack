@@ -2,10 +2,12 @@
 //!
 //! Handles spawning shells and communicating with them via PTY.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 use rustix::termios::{tcsetwinsize, Winsize};
@@ -37,6 +39,9 @@ pub struct Pty {
 
     /// Current window size
     winsize: Winsize,
+
+    /// Whether we've already detected the child exited
+    exited: bool,
 }
 
 impl Pty {
@@ -121,6 +126,104 @@ impl Pty {
             master,
             child,
             winsize,
+            exited: false,
+        })
+    }
+
+    /// Spawn a new PTY running a specific command
+    ///
+    /// The command is run via `/bin/sh -c "command"` with the given
+    /// working directory and environment variables.
+    pub fn spawn_command(
+        command: &str,
+        working_dir: &Path,
+        env: &HashMap<String, String>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self, PtyError> {
+        let winsize = Winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+
+        // Open PTY master/slave pair
+        let master_fd = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)
+            .map_err(|e| PtyError::Open(std::io::Error::from_raw_os_error(e.raw_os_error())))?;
+
+        // Grant access and unlock
+        rustix::pty::grantpt(&master_fd)
+            .map_err(|e| PtyError::Open(std::io::Error::from_raw_os_error(e.raw_os_error())))?;
+        rustix::pty::unlockpt(&master_fd)
+            .map_err(|e| PtyError::Open(std::io::Error::from_raw_os_error(e.raw_os_error())))?;
+
+        // Get slave name
+        let slave_name_buf = [0u8; 256];
+        let slave_name = rustix::pty::ptsname(&master_fd, slave_name_buf)
+            .map_err(|e| PtyError::Open(std::io::Error::from_raw_os_error(e.raw_os_error())))?;
+
+        // Convert CStr to str for path
+        let slave_path = slave_name.to_str()
+            .map_err(|_| PtyError::Open(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid PTY slave name",
+            )))?;
+
+        // Set window size on master
+        tcsetwinsize(&master_fd, winsize).map_err(PtyError::Winsize)?;
+
+        // Open slave and transfer ownership to raw fd
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(slave_path)
+            .map_err(PtyError::Open)?;
+
+        // Transfer ownership from File to raw fd
+        let slave_fd = slave.into_raw_fd();
+
+        // Dup the fd for stdout and stderr
+        let slave_fd_out = unsafe { libc::dup(slave_fd) };
+        let slave_fd_err = unsafe { libc::dup(slave_fd) };
+
+        if slave_fd_out < 0 || slave_fd_err < 0 {
+            unsafe {
+                libc::close(slave_fd);
+                if slave_fd_out >= 0 { libc::close(slave_fd_out); }
+            }
+            return Err(PtyError::Open(std::io::Error::last_os_error()));
+        }
+
+        // Spawn command with /bin/sh -c
+        let child = unsafe {
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(working_dir)
+                .env_clear()
+                .envs(env.iter())
+                .stdin(Stdio::from_raw_fd(slave_fd))
+                .stdout(Stdio::from_raw_fd(slave_fd_out))
+                .stderr(Stdio::from_raw_fd(slave_fd_err))
+                .pre_exec(move || {
+                    libc::setsid();
+                    libc::ioctl(slave_fd, libc::TIOCSCTTY, 0);
+                    Ok(())
+                })
+                .spawn()
+                .map_err(PtyError::Spawn)?
+        };
+
+        // Transfer ownership from OwnedFd to File
+        let master = unsafe { File::from_raw_fd(master_fd.as_raw_fd()) };
+        std::mem::forget(master_fd);
+
+        Ok(Self {
+            master,
+            child,
+            winsize,
+            exited: false,
         })
     }
 
@@ -176,13 +279,19 @@ impl Pty {
 
     /// Check if child process is still running
     pub fn is_running(&mut self) -> bool {
+        if self.exited {
+            return false;
+        }
+
         match self.child.try_wait() {
             Ok(None) => true,
             Ok(Some(status)) => {
-                tracing::warn!("shell exited with status: {:?}", status);
+                self.exited = true;
+                tracing::debug!("shell exited with status: {:?}", status);
                 false
             }
             Err(e) => {
+                self.exited = true;
                 tracing::warn!("error checking shell status: {:?}", e);
                 false
             }

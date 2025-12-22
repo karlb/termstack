@@ -150,7 +150,7 @@ impl TerminalRenderer {
     }
 
     /// Render terminal to buffer
-    pub fn render<T: EventListener>(&mut self, term: &Term<T>, width: u32, height: u32) {
+    pub fn render<T: EventListener>(&mut self, term: &Term<T>, width: u32, height: u32, show_cursor: bool) {
         // Resize buffer if needed
         if self.width != width || self.height != height {
             self.width = width;
@@ -179,13 +179,15 @@ impl TerminalRenderer {
             self.render_cell(x, y, cell.cell);
         }
 
-        // Render cursor
-        let cursor = content.cursor;
-        let x = cursor.point.column.0 as u32 * self.cell_width;
-        let y = cursor.point.line.0 as u32 * self.cell_height;
+        // Render cursor (only if process is running)
+        if show_cursor {
+            let cursor = content.cursor;
+            let x = cursor.point.column.0 as u32 * self.cell_width;
+            let y = cursor.point.line.0 as u32 * self.cell_height;
 
-        if x < width && y < height {
-            self.render_cursor(x, y);
+            if x < width && y < height {
+                self.render_cursor(x, y);
+            }
         }
     }
 
