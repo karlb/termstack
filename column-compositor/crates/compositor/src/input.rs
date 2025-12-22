@@ -8,7 +8,7 @@ use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
-use crate::coords::{RenderY, ScreenPoint};
+use crate::coords::{ScreenPoint, ScreenY};
 use crate::state::ColumnCompositor;
 use crate::terminal_manager::TerminalManager;
 
@@ -344,35 +344,38 @@ impl ColumnCompositor {
         let output_size = self.output_size;
 
         // Input from Winit is in screen coordinates (Y=0 at top)
+        // Clients expect screen coordinates, so we use these for pointer.motion()
         let screen_point = ScreenPoint::new(
             event.x_transformed(output_size.w),
             event.y_transformed(output_size.h),
         );
 
-        // Convert to render coordinates (Y=0 at bottom, for OpenGL/Smithay)
-        // This is the canonical Y-flip between screen and render coordinate systems
+        // Convert to render coordinates (Y=0 at bottom) for hit detection only
+        // Our windows are positioned in render coordinates for OpenGL rendering
         let render_point = screen_point.to_render(output_size.h);
 
         tracing::trace!(
             screen_y = screen_point.y.value(),
             render_y = render_point.y.value(),
             output_height = output_size.h,
-            "screen -> render Y conversion"
+            "pointer motion"
         );
-
-        // Convert to tuple for Smithay APIs
-        let position = (render_point.x, render_point.y.value());
 
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
 
-        let under = self.surface_under(Point::from(position));
+        // Hit detection uses render coordinates (matches our window positions)
+        let render_position = (render_point.x, render_point.y.value());
+        let under = self.surface_under(Point::from(render_position));
+
+        // But send screen coordinates to clients (what they expect)
+        let screen_position = (screen_point.x, screen_point.y.value());
 
         pointer.motion(
             self,
             under,
             &MotionEvent {
-                location: position.into(),
+                location: screen_position.into(),
                 serial,
                 time: event.time_msec(),
             },
@@ -395,11 +398,19 @@ impl ColumnCompositor {
 
         // Focus window on click
         if state == ButtonState::Pressed {
-            let pointer_location = pointer.current_location();
+            // Pointer location is in screen coordinates (Y=0 at top)
+            let screen_location = pointer.current_location();
+
+            // Convert to render coordinates for hit detection (Y=0 at bottom)
+            let screen_y = ScreenY::new(screen_location.y);
+            let render_y = screen_y.to_render(self.output_size.h);
+            let render_location: Point<f64, Logical> =
+                Point::from((screen_location.x, render_y.value()));
 
             // Log detailed position info for debugging
             tracing::debug!(
-                pointer_location = ?(pointer_location.x, pointer_location.y),
+                screen_location = ?(screen_location.x, screen_location.y),
+                render_location = ?(render_location.x, render_location.y),
                 output_size = ?(self.output_size.w, self.output_size.h),
                 terminal_height = self.terminal_total_height,
                 scroll_offset = self.scroll_offset,
@@ -407,11 +418,11 @@ impl ColumnCompositor {
                 "handle_pointer_button: click pressed"
             );
 
-            if let Some(index) = self.window_at(pointer_location) {
+            if let Some(index) = self.window_at(render_location) {
                 // Clicked on an external Wayland window
                 tracing::info!(
                     index,
-                    pointer_y = pointer_location.y,
+                    render_y = render_location.y,
                     "handle_pointer_button: hit window"
                 );
 
@@ -428,7 +439,7 @@ impl ColumnCompositor {
                         tracing::info!(index, "focused external window");
                     }
                 }
-            } else if self.is_on_terminal(pointer_location) {
+            } else if self.is_on_terminal(render_location) {
                 // Clicked on an internal terminal
                 self.external_window_focused = false;
 
@@ -438,9 +449,7 @@ impl ColumnCompositor {
                 }
 
                 // Focus the clicked terminal
-                // pointer_location.y is in render coordinates (Y=0 at bottom)
                 if let Some(terminals) = terminals {
-                    let render_y = RenderY::new(pointer_location.y);
                     if let Some(id) = terminals.terminal_at_y(render_y, self.scroll_offset) {
                         terminals.focus(id);
                         tracing::info!(?id, "focused internal terminal");
@@ -448,7 +457,7 @@ impl ColumnCompositor {
                 }
             } else {
                 tracing::debug!(
-                    pointer_y = pointer_location.y,
+                    render_y = render_location.y,
                     "handle_pointer_button: click not on terminal or window"
                 );
             }
