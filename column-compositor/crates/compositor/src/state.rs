@@ -261,8 +261,9 @@ impl ColumnCompositor {
         let insert_index = self.focused_index.unwrap_or(self.cells.len());
         self.cells.insert(insert_index, ColumnCell::External(entry));
 
-        // Focus the new cell
-        self.focused_index = Some(insert_index);
+        // Keep focus on the previously focused cell (which moved down by 1)
+        // If nothing was focused, focus the new cell
+        self.focused_index = Some(self.focused_index.map(|idx| idx + 1).unwrap_or(insert_index));
 
         self.recalculate_layout();
 
@@ -281,8 +282,9 @@ impl ColumnCompositor {
 
         self.cells.insert(insert_index, ColumnCell::Terminal(id));
 
-        // Focus the new cell
-        self.focused_index = Some(insert_index);
+        // Keep focus on the previously focused cell (which moved down by 1)
+        // If nothing was focused, focus the new cell
+        self.focused_index = Some(self.focused_index.map(|idx| idx + 1).unwrap_or(insert_index));
 
         self.recalculate_layout();
 
@@ -906,5 +908,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_new_terminals_insert_above_focused() {
+        use crate::terminal_manager::TerminalId;
+        use crate::state::ColumnCell;
+
+        // Simulate cell insertion behavior
+        let mut cells: Vec<ColumnCell> = Vec::new();
+        let mut focused_index: Option<usize> = None;
+
+        // Helper to add terminal with the same logic as add_terminal
+        let add_terminal = |id: u32, cells: &mut Vec<ColumnCell>, focused: &mut Option<usize>| {
+            let insert_index = focused.unwrap_or(cells.len());
+            cells.insert(insert_index, ColumnCell::Terminal(TerminalId(id)));
+            *focused = Some(focused.map(|idx| idx + 1).unwrap_or(insert_index));
+        };
+
+        // Add first terminal - should be focused
+        add_terminal(0, &mut cells, &mut focused_index);
+        assert_eq!(cells.len(), 1);
+        assert_eq!(focused_index, Some(0));
+        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(0))));
+
+        // Add second terminal - should appear above T0, focus stays on T0
+        add_terminal(1, &mut cells, &mut focused_index);
+        assert_eq!(cells.len(), 2);
+        assert_eq!(focused_index, Some(1), "focus should move to index 1 (still T0)");
+        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0 (top)");
+        assert!(matches!(cells[1], ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 1");
+
+        // Add third terminal - should appear above T0 (at index 1), focus stays on T0
+        add_terminal(2, &mut cells, &mut focused_index);
+        assert_eq!(cells.len(), 3);
+        assert_eq!(focused_index, Some(2), "focus should move to index 2 (still T0)");
+        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0");
+        assert!(matches!(cells[1], ColumnCell::Terminal(TerminalId(2))), "T2 should be at index 1");
+        assert!(matches!(cells[2], ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 2 (bottom)");
     }
 }
