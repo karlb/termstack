@@ -18,8 +18,8 @@ use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
 use compositor::config::Config;
-use compositor::state::{ClientState, ColumnCompositor};
-use compositor::terminal_manager::TerminalManager;
+use compositor::state::{ClientState, ColumnCell, ColumnCompositor};
+use compositor::terminal_manager::{TerminalId, TerminalManager};
 
 fn main() -> anyhow::Result<()> {
     // Initialize logging
@@ -118,26 +118,38 @@ fn main() -> anyhow::Result<()> {
     );
 
     // Spawn initial terminal
-    if let Err(e) = terminal_manager.spawn() {
-        tracing::error!("failed to spawn initial terminal: {}", e);
+    match terminal_manager.spawn() {
+        Ok(id) => {
+            compositor.add_terminal(id);
+            tracing::info!(id = id.0, "spawned initial terminal");
+        }
+        Err(e) => {
+            tracing::error!("failed to spawn initial terminal: {}", e);
+        }
     }
 
     // Main event loop
     while compositor.running {
-        // Update terminal_total_height BEFORE processing input events
+        // Update cell heights BEFORE processing input events
         // so click detection uses the correct positions
-        let mut current_terminal_height: i32 = 0;
-        for id in terminal_manager.ids() {
-            if let Some(term) = terminal_manager.get(id) {
-                if let Some(tex) = term.get_texture() {
-                    current_terminal_height += tex.size().h;
+        // Calculate heights for all cells
+        let cell_heights: Vec<i32> = compositor.cells.iter().map(|cell| {
+            match cell {
+                ColumnCell::Terminal(id) => {
+                    terminal_manager.get(*id)
+                        .and_then(|t| t.get_texture())
+                        .map(|tex| tex.size().h)
+                        .unwrap_or(200)
+                }
+                ColumnCell::External(entry) => {
+                    let bbox = entry.window.bbox();
+                    if bbox.size.h > 0 { bbox.size.h } else { entry.state.current_height() as i32 }
                 }
             }
-        }
-        compositor.terminal_total_height = current_terminal_height;
+        }).collect();
 
-        // Cache window heights for consistent positioning between input and render
-        compositor.update_cached_window_heights();
+        // Cache heights for consistent positioning between input and render
+        compositor.update_cached_cell_heights(cell_heights);
 
         // Update Space positions to match current terminal height and scroll
         // This ensures Space.element_under works correctly for click detection
@@ -185,70 +197,82 @@ fn main() -> anyhow::Result<()> {
         if compositor.spawn_terminal_requested {
             compositor.spawn_terminal_requested = false;
 
-            if let Err(e) = terminal_manager.spawn() {
-                tracing::error!("failed to spawn terminal: {}", e);
-            } else {
-                // Calculate scroll position AFTER spawning to show new terminal
-                let total_height = terminal_manager.total_height();
-                let visible_height = compositor.output_size.h;
-                let terminal_count = terminal_manager.count();
+            match terminal_manager.spawn() {
+                Ok(id) => {
+                    compositor.add_terminal(id);
 
-                // Log each terminal's position
-                let mut y = 0i32;
-                for id in terminal_manager.ids() {
-                    if let Some(term) = terminal_manager.get(id) {
-                        tracing::info!(id = id.0, y, height = term.height,
-                                      "terminal position");
-                        y += term.height as i32;
+                    // Update cached_cell_heights to include the new terminal
+                    // (it won't have a texture yet, so use a default height)
+                    let new_heights: Vec<i32> = compositor.cells.iter().map(|cell| {
+                        match cell {
+                            ColumnCell::Terminal(tid) => {
+                                terminal_manager.get(*tid)
+                                    .and_then(|t| t.get_texture())
+                                    .map(|tex| tex.size().h)
+                                    .unwrap_or(200) // Default height for new terminals
+                            }
+                            ColumnCell::External(entry) => {
+                                let bbox = entry.window.bbox();
+                                if bbox.size.h > 0 { bbox.size.h } else { 200 }
+                            }
+                        }
+                    }).collect();
+                    compositor.update_cached_cell_heights(new_heights);
+
+                    // Scroll to show the newly focused cell (the new terminal)
+                    if let Some(focused_idx) = compositor.focused_index {
+                        let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
+                        let total_height: i32 = compositor.cached_cell_heights.iter().sum();
+                        let visible_height = compositor.output_size.h;
+                        let max_scroll = (total_height - visible_height).max(0) as f64;
+                        compositor.scroll_offset = (y as f64).clamp(0.0, max_scroll);
+
+                        tracing::info!(
+                            id = id.0,
+                            cell_count = compositor.cells.len(),
+                            focused_idx,
+                            scroll = compositor.scroll_offset,
+                            "spawned terminal, scrolling to show"
+                        );
                     }
                 }
-
-                if total_height > visible_height {
-                    compositor.scroll_offset = (total_height - visible_height) as f64;
+                Err(e) => {
+                    tracing::error!("failed to spawn terminal: {}", e);
                 }
-                tracing::info!(terminal_count, total_height, visible_height,
-                              scroll = compositor.scroll_offset,
-                              focused = ?terminal_manager.focused,
-                              "spawned terminal, scrolling to show");
             }
         }
 
         // Handle focus change requests
         if compositor.focus_change_requested != 0 {
-            let changed = if compositor.focus_change_requested > 0 {
-                terminal_manager.focus_next()
+            if compositor.focus_change_requested > 0 {
+                compositor.focus_next();
             } else {
-                terminal_manager.focus_prev()
-            };
+                compositor.focus_prev();
+            }
             compositor.focus_change_requested = 0;
 
-            // Scroll to show the newly focused terminal
-            if changed {
-                if let Some((y, _height)) = terminal_manager.focused_position() {
-                    let visible_height = compositor.output_size.h;
-                    let total_height = terminal_manager.total_height();
-                    let max_scroll = (total_height - visible_height).max(0) as f64;
-                    // Scroll so focused terminal is at top
-                    compositor.scroll_offset = (y as f64).clamp(0.0, max_scroll);
-                }
+            // Scroll to show the newly focused cell
+            if let Some(focused_idx) = compositor.focused_index {
+                // Calculate y position of focused cell
+                let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
+                let visible_height = compositor.output_size.h;
+                let total_height: i32 = compositor.cached_cell_heights.iter().sum();
+                let max_scroll = (total_height - visible_height).max(0) as f64;
+                // Scroll so focused cell is at top
+                compositor.scroll_offset = (y as f64).clamp(0.0, max_scroll);
             }
         }
 
         // Handle scroll requests
         if compositor.scroll_requested != 0.0 {
-            // Total content height = terminals + external windows
-            let terminal_height = terminal_manager.total_height();
-            let window_height: i32 = compositor.cached_window_heights.iter().sum();
-            let total_height = terminal_height + window_height;
+            // Total content height from all cells
+            let total_height: i32 = compositor.cached_cell_heights.iter().sum();
             let visible_height = compositor.output_size.h;
             let max_scroll = (total_height - visible_height).max(0) as f64;
             compositor.scroll_offset = (compositor.scroll_offset + compositor.scroll_requested)
                 .clamp(0.0, max_scroll);
             compositor.scroll_requested = 0.0;
             tracing::debug!(
-                scroll_requested = compositor.scroll_requested,
-                terminal_height,
-                window_height,
                 total_height,
                 visible_height,
                 max_scroll,
@@ -280,10 +304,15 @@ fn main() -> anyhow::Result<()> {
 
         // Cleanup dead terminals
         let dead = terminal_manager.cleanup();
+        for dead_id in &dead {
+            compositor.remove_terminal(*dead_id);
+            tracing::info!(id = dead_id.0, "removed dead terminal from cells");
+        }
+
         if !dead.is_empty() {
-            // If all terminals died, quit
-            if terminal_manager.count() == 0 {
-                tracing::info!("all terminals exited, shutting down");
+            // If all cells are gone, quit (only terminals can trigger this)
+            if compositor.cells.is_empty() {
+                tracing::info!("all cells removed, shutting down");
                 break;
             }
         }
@@ -310,69 +339,107 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Pre-compute window render elements before starting frame
+            // Pre-compute render data for all cells
             let scale = Scale::from(1.0);
-            // Use the terminal_total_height computed at start of loop (for consistent click detection)
-            let terminal_total_height = compositor.terminal_total_height;
-            let mut window_y = -(compositor.scroll_offset as i32) + terminal_total_height;
 
-            // Build window_elements using ACTUAL element heights, not cached heights
-            // This prevents overlap when element geometry differs from cached bbox
-            let mut window_elements: Vec<(i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = Vec::new();
+            // Build render data for each cell
+            #[allow(dead_code)]
+            enum CellRenderData {
+                Terminal {
+                    id: TerminalId,
+                    y: i32,
+                    height: i32,
+                },
+                External {
+                    y: i32,
+                    height: i32,
+                    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+                },
+                // Placeholder for terminals without textures
+                Empty { height: i32 },
+            }
 
-            for (win_idx, (entry, &cached_height)) in compositor.windows.iter().zip(compositor.cached_window_heights.iter()).enumerate() {
-                let window = &entry.window;
-                let y = window_y;
+            // First pass: collect heights for ALL cells (not using cached heights which may be stale)
+            let mut actual_heights: Vec<i32> = Vec::new();
+            let mut external_elements: Vec<Vec<WaylandSurfaceRenderElement<GlesRenderer>>> = Vec::new();
 
-                // Get elements first
-                let elements = if y + cached_height > 0 && y < physical_size.h {
-                    let location: Point<i32, Physical> = Point::from((0, 0));
-                    window.render_elements(renderer, location, scale, 1.0)
-                } else {
-                    Vec::new()
-                };
+            for cell in compositor.cells.iter() {
+                // Get cached height if available, otherwise use default
+                let cached_height = compositor.cached_cell_heights.get(actual_heights.len())
+                    .copied()
+                    .unwrap_or(200);
 
-                // Calculate ACTUAL height from elements (max of element bottoms)
-                let actual_height = if elements.is_empty() {
-                    cached_height
-                } else {
-                    elements.iter()
-                        .map(|e: &WaylandSurfaceRenderElement<GlesRenderer>| {
-                            let geo = e.geometry(scale);
-                            geo.loc.y + geo.size.h
-                        })
-                        .max()
-                        .unwrap_or(cached_height)
-                };
+                match cell {
+                    ColumnCell::Terminal(id) => {
+                        let height = terminal_manager.get(*id)
+                            .and_then(|t| t.get_texture())
+                            .map(|tex| tex.size().h)
+                            .unwrap_or(cached_height);
+                        actual_heights.push(height);
+                        external_elements.push(Vec::new());
+                    }
+                    ColumnCell::External(entry) => {
+                        let window = &entry.window;
+                        let location: Point<i32, Physical> = Point::from((0, 0));
+                        let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                            window.render_elements(renderer, location, scale, 1.0);
 
-                // Log element geometries for debugging click detection
-                for (elem_idx, elem) in elements.iter().enumerate() {
-                    let geo = elem.geometry(scale);
-                    tracing::debug!(
-                        win_idx,
-                        elem_idx,
-                        window_y = y,
-                        geo_loc = ?(geo.loc.x, geo.loc.y),
-                        geo_size = ?(geo.size.w, geo.size.h),
-                        render_dest_y = y + geo.loc.y,
-                        "element geometry"
-                    );
+                        let actual_height = if elements.is_empty() {
+                            cached_height
+                        } else {
+                            elements.iter()
+                                .map(|e| {
+                                    let geo = e.geometry(scale);
+                                    geo.loc.y + geo.size.h
+                                })
+                                .max()
+                                .unwrap_or(cached_height)
+                        };
+
+                        actual_heights.push(actual_height);
+                        external_elements.push(elements);
+                    }
+                }
+            }
+
+            // Second pass: compute Y positions
+            // OpenGL has y=0 at BOTTOM, but we want index 0 at TOP
+            // So we need to flip: render_y = screen_height - content_y - cell_height
+
+            let mut render_data: Vec<CellRenderData> = Vec::new();
+
+            // Calculate content Y positions (index 0 at content_y=0)
+            let mut content_y: i32 = -(compositor.scroll_offset as i32);
+
+            for (cell_idx, cell) in compositor.cells.iter().enumerate() {
+                let height = actual_heights[cell_idx];
+
+                // Flip Y for OpenGL: convert from top-down to bottom-up
+                let render_y = physical_size.h - content_y - height;
+
+                match cell {
+                    ColumnCell::Terminal(id) => {
+                        render_data.push(CellRenderData::Terminal {
+                            id: *id,
+                            y: render_y,
+                            height,
+                        });
+                    }
+                    ColumnCell::External(_) => {
+                        let elements = std::mem::take(&mut external_elements[cell_idx]);
+                        render_data.push(CellRenderData::External {
+                            y: render_y,
+                            height,
+                            elements,
+                        });
+                    }
                 }
 
-                tracing::debug!(
-                    win_idx,
-                    window_y = y,
-                    cached_height,
-                    actual_height,
-                    element_count = elements.len(),
-                    "window render position"
-                );
-
-                window_elements.push((y, actual_height, elements));
-
-                // Advance by ACTUAL height to prevent overlap
-                window_y += actual_height;
+                content_y += height;
             }
+
+            // Update cached heights with actual heights for next frame's click detection
+            compositor.update_cached_cell_heights(actual_heights);
 
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;
@@ -381,74 +448,72 @@ fn main() -> anyhow::Result<()> {
             frame.clear(bg_color, &[damage])
                 .map_err(|e| anyhow::anyhow!("clear error: {e:?}"))?;
 
-            // Render terminals
-            let focused_id = terminal_manager.focused;
-            let mut y_offset: i32 = -(compositor.scroll_offset as i32);
-            for id in terminal_manager.ids() {
-                if let Some(terminal) = terminal_manager.get(id) {
-                    if let Some(texture) = terminal.get_texture() {
-                        let tex_size = texture.size();
+            // Render all cells in order
+            for (cell_idx, data) in render_data.into_iter().enumerate() {
+                let is_focused = compositor.focused_index == Some(cell_idx);
 
-                        // Only render if visible
-                        if y_offset + tex_size.h > 0 && y_offset < physical_size.h {
-                            // Render the texture with vertical flip to compensate for
-                            // OpenGL's Y-up coordinate system
-                            frame.render_texture_at(
-                                texture,
-                                Point::from((0, y_offset)),
-                                1,     // texture_scale
-                                1.0,   // output_scale
-                                Transform::Flipped180,  // Flip for correct orientation
-                                &[damage],  // damage
-                                &[],   // opaque_regions
-                                1.0,   // alpha
-                            ).ok();
+                match data {
+                    CellRenderData::Terminal { id, y, height } => {
+                        if let Some(terminal) = terminal_manager.get(id) {
+                            if let Some(texture) = terminal.get_texture() {
+                                // Only render if visible
+                                if y + height > 0 && y < physical_size.h {
+                                    frame.render_texture_at(
+                                        texture,
+                                        Point::from((0, y)),
+                                        1,     // texture_scale
+                                        1.0,   // output_scale
+                                        Transform::Flipped180,
+                                        &[damage],
+                                        &[],
+                                        1.0,
+                                    ).ok();
 
-                            // Draw focus indicator on top (2px green border at top)
-                            let is_focused = Some(id) == focused_id;
-                            if is_focused && y_offset >= 0 {
-                                let border_height = 2;
-                                let focus_damage = Rectangle::new(
-                                    (0, y_offset).into(),
-                                    (physical_size.w, border_height).into(),
-                                );
-                                frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
+                                    // Draw focus indicator
+                                    if is_focused && y >= 0 {
+                                        let border_height = 2;
+                                        let focus_damage = Rectangle::new(
+                                            (0, y).into(),
+                                            (physical_size.w, border_height).into(),
+                                        );
+                                        frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
+                                    }
+                                }
                             }
                         }
-
-                        y_offset += tex_size.h;
                     }
-                }
-            }
+                    CellRenderData::External { y, height: _, elements } => {
+                        // Draw focus indicator for external windows
+                        if is_focused && y >= 0 && y < physical_size.h {
+                            let border_height = 2;
+                            let focus_damage = Rectangle::new(
+                                (0, y).into(),
+                                (physical_size.w, border_height).into(),
+                            );
+                            frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
+                        }
 
-            // Update cached_window_heights with ACTUAL heights for next frame's click detection
-            // This ensures click detection uses the same heights as rendering
-            compositor.cached_window_heights = window_elements.iter()
-                .map(|(_, actual_height, _)| *actual_height)
-                .collect();
+                        // Render external window elements
+                        for element in elements {
+                            let geo = element.geometry(scale);
+                            let src = element.src();
 
-            // Render external Wayland windows after terminals
-            // Smithay's geometry() does NOT include the location offset we pass to render_elements
-            // We must manually offset each element's destination by window_y
-            for (window_y, _window_height, elements) in window_elements {
-                for element in elements {
-                    let geo = element.geometry(scale);
-                    let src = element.src();
+                            let dest = Rectangle::new(
+                                Point::from((geo.loc.x, geo.loc.y + y)),
+                                geo.size,
+                            );
 
-                    // Offset the destination geometry by our calculated window_y
-                    // geo.loc.y is relative to window origin, we need to add window position
-                    let dest = Rectangle::new(
-                        Point::from((geo.loc.x, geo.loc.y + window_y)),
-                        geo.size,
-                    );
+                            let flipped_src = Rectangle::new(
+                                Point::from((src.loc.x, src.loc.y + src.size.h)),
+                                Size::from((src.size.w, -src.size.h)),
+                            );
 
-                    // Flip source Y for correct content orientation
-                    let flipped_src = Rectangle::new(
-                        Point::from((src.loc.x, src.loc.y + src.size.h)),
-                        Size::from((src.size.w, -src.size.h)),
-                    );
-
-                    element.draw(&mut frame, flipped_src, dest, &[damage], &[]).ok();
+                            element.draw(&mut frame, flipped_src, dest, &[damage], &[]).ok();
+                        }
+                    }
+                    CellRenderData::Empty { .. } => {
+                        // Nothing to render
+                    }
                 }
             }
         }

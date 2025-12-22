@@ -75,7 +75,7 @@ impl ColumnCompositor {
         let keyboard = self.seat.get_keyboard().unwrap();
 
         // If an external Wayland window has focus, forward events via Wayland protocol
-        if self.external_window_focused {
+        if self.is_external_focused() {
             // Still check for compositor bindings first
             let binding_handled = keyboard.input::<bool, _>(
                 self,
@@ -422,49 +422,51 @@ impl ColumnCompositor {
                 screen_location = ?(screen_location.x, screen_location.y),
                 render_location = ?(render_location.x, render_location.y),
                 output_size = ?(self.output_size.w, self.output_size.h),
-                terminal_height = self.terminal_total_height,
                 scroll_offset = self.scroll_offset,
-                window_count = self.windows.len(),
+                cell_count = self.cells.len(),
                 "handle_pointer_button: click pressed"
             );
 
-            if let Some(index) = self.window_at(render_location) {
-                // Clicked on an external Wayland window
-                tracing::info!(
-                    index,
-                    render_y = render_location.y,
-                    screen_y = screen_location.y,
-                    "handle_pointer_button: hit window"
-                );
-
+            if let Some(index) = self.cell_at(render_location) {
+                // Clicked on a cell - focus it
                 self.focused_index = Some(index);
-                self.external_window_focused = true;
 
-                if let Some(keyboard) = self.seat.get_keyboard() {
-                    if let Some(entry) = self.windows.get(index) {
-                        keyboard.set_focus(
-                            self,
-                            Some(entry.toplevel.wl_surface().clone()),
-                            serial,
-                        );
-                        tracing::info!(index, "focused external window");
+                // Extract cell info before doing mutable operations
+                let cell_info = match &self.cells[index] {
+                    crate::state::ColumnCell::External(entry) => {
+                        Some((true, Some(entry.toplevel.wl_surface().clone()), None))
                     }
-                }
-            } else if self.is_on_terminal(render_location) {
-                // Clicked on an internal terminal
-                self.external_window_focused = false;
+                    crate::state::ColumnCell::Terminal(id) => {
+                        Some((false, None, Some(*id)))
+                    }
+                };
 
-                // Clear keyboard focus from external windows
-                if let Some(keyboard) = self.seat.get_keyboard() {
-                    keyboard.set_focus(self, None, serial);
-                }
+                if let Some((is_external, surface, terminal_id)) = cell_info {
+                    if is_external {
+                        tracing::info!(
+                            index,
+                            render_y = render_location.y,
+                            "handle_pointer_button: hit external window"
+                        );
 
-                // Focus the clicked terminal (render_location.y is in render coords)
-                if let Some(terminals) = terminals {
-                    let render_y = crate::coords::RenderY::new(render_location.y);
-                    if let Some(id) = terminals.terminal_at_y(render_y, self.scroll_offset) {
-                        terminals.focus(id);
-                        tracing::info!(?id, "focused internal terminal");
+                        if let Some(keyboard) = self.seat.get_keyboard() {
+                            keyboard.set_focus(self, surface, serial);
+                        }
+                    } else if let Some(id) = terminal_id {
+                        tracing::info!(
+                            index,
+                            terminal_id = ?id,
+                            render_y = render_location.y,
+                            "handle_pointer_button: hit terminal"
+                        );
+
+                        if let Some(keyboard) = self.seat.get_keyboard() {
+                            keyboard.set_focus(self, None, serial);
+                        }
+
+                        if let Some(terminals) = terminals {
+                            terminals.focus(id);
+                        }
                     }
                 }
             } else {
@@ -531,26 +533,26 @@ impl ColumnCompositor {
         pointer.frame(self);
     }
 
-    /// Find the surface under a point
+    /// Find the surface under a point (only for external windows)
     fn surface_under(
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> {
-        // Find which window is under the point
-        let index = self.window_at(point);
+        // Find which cell is under the point (only external windows have surfaces)
+        let index = self.window_at(point)?;
+
+        let crate::state::ColumnCell::External(entry) = &self.cells[index] else {
+            return None;
+        };
 
         tracing::info!(
             screen_point = ?point,
-            terminal_height = self.terminal_total_height,
             scroll_offset = self.scroll_offset,
-            cached_heights = ?self.cached_window_heights,
-            window_count = self.windows.len(),
-            hit_index = ?index,
+            cached_heights = ?self.cached_cell_heights,
+            cell_count = self.cells.len(),
+            hit_index = index,
             "surface_under: checking point"
         );
-
-        let index = index?;
-        let entry = self.windows.get(index)?;
 
         // Log window geometry info
         let bbox = entry.window.bbox();
@@ -562,38 +564,37 @@ impl ColumnCompositor {
             "surface_under: window geometry"
         );
 
-        // Calculate the window's screen Y position using cached heights
-        let terminal_height = self.terminal_total_height as f64;
-        let mut window_y = terminal_height - self.scroll_offset;
-        for (i, &h) in self.cached_window_heights.iter().enumerate() {
+        // Calculate the cell's Y position using cached heights
+        let mut cell_y = -self.scroll_offset;
+        for (i, &h) in self.cached_cell_heights.iter().enumerate() {
             if i == index {
                 break;
             }
-            window_y += h as f64;
+            cell_y += h as f64;
         }
 
-        let window_height = self.cached_window_heights.get(index).copied().unwrap_or(0);
+        let cell_height = self.cached_cell_heights.get(index).copied().unwrap_or(0);
 
         // Calculate position relative to window for hit testing
         // point is in render coords (Y=0 at bottom)
-        // window_y is the window's BOTTOM in render coords
+        // cell_y is the cell's BOTTOM in render coords
         // We need client-local coords (Y=0 at top of window)
         //
         // With source flip during rendering:
-        // - Client Y=0 (top) is at render Y = window_y + window_height
-        // - Client Y=height (bottom) is at render Y = window_y
+        // - Client Y=0 (top) is at render Y = cell_y + cell_height
+        // - Client Y=height (bottom) is at render Y = cell_y
         //
-        // So: client_local_y = window_height - (point.y - window_y)
-        //                    = window_height - offset_from_window_bottom
+        // So: client_local_y = cell_height - (point.y - cell_y)
+        //                    = cell_height - offset_from_cell_bottom
         let relative_x = point.x;
-        let offset_from_bottom = point.y - window_y;
-        let relative_y = window_height as f64 - offset_from_bottom;
+        let offset_from_bottom = point.y - cell_y;
+        let relative_y = cell_height as f64 - offset_from_bottom;
         let relative_point: Point<f64, Logical> = Point::from((relative_x, relative_y));
 
         tracing::info!(
             index,
-            window_y,
-            window_height,
+            cell_y,
+            cell_height,
             offset_from_bottom,
             relative_y,
             geometry_offset = ?(geometry.loc.x, geometry.loc.y),
@@ -615,14 +616,14 @@ impl ColumnCompositor {
         // This must match the coordinate system of MotionEvent.location
         //
         // With source flip during rendering:
-        // - Client Y=0 (top) is at render Y = window_y + window_height
-        // - In screen coords: screen Y = output_height - (window_y + window_height)
+        // - Client Y=0 (top) is at render Y = cell_y + cell_height
+        // - In screen coords: screen Y = output_height - (cell_y + cell_height)
         //
         // We return this as the surface's global position so that:
         //   surface_local = screen_pointer - screen_surface_pos
         // gives correct Y for the client
         let output_height = self.output_size.h as f64;
-        let screen_surface_y = output_height - (window_y + window_height as f64);
+        let screen_surface_y = output_height - (cell_y + cell_height as f64);
 
         result.map(|(surface, _pt)| (surface, Point::from((0.0, screen_surface_y))))
     }
