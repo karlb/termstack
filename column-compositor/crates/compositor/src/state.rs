@@ -493,13 +493,30 @@ impl ColumnCompositor {
         self.cached_cell_heights.get(index).copied()
     }
 
+    /// Scroll to ensure a cell's bottom edge is visible on screen.
+    /// Returns the new scroll offset if it changed, None otherwise.
+    pub fn scroll_to_show_cell_bottom(&mut self, cell_index: usize) -> Option<f64> {
+        let y: i32 = self.cached_cell_heights.iter().take(cell_index).sum();
+        let height = self.cached_cell_heights.get(cell_index).copied().unwrap_or(200);
+        let bottom_y = y + height;
+        let visible_height = self.output_size.h;
+        let total_height: i32 = self.cached_cell_heights.iter().sum();
+        let max_scroll = (total_height - visible_height).max(0) as f64;
+        let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
+        let new_scroll = min_scroll_for_bottom.min(max_scroll);
+
+        if (new_scroll - self.scroll_offset).abs() > 0.5 {
+            self.scroll_offset = new_scroll;
+            Some(new_scroll)
+        } else {
+            None
+        }
+    }
+
     /// Ensure the focused cell is visible
     fn ensure_focused_visible(&mut self) {
         if let Some(index) = self.focused_index {
-            if let Some(new_scroll) = self.layout.scroll_to_show(index, self.output_size.h as u32) {
-                self.scroll_offset = new_scroll;
-                self.recalculate_layout();
-            }
+            self.scroll_to_show_cell_bottom(index);
         }
     }
 

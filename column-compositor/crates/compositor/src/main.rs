@@ -208,28 +208,14 @@ fn main() -> anyhow::Result<()> {
 
             // Scroll to show the focused cell (the terminal that launched the window)
             if let Some(focused_idx) = compositor.focused_index {
-                let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
-                let height = compositor.cached_cell_heights.get(focused_idx).copied().unwrap_or(200);
-                let bottom_y = y + height;
-                let visible_height = compositor.output_size.h;
-                let total_height: i32 = compositor.cached_cell_heights.iter().sum();
-                let max_scroll = (total_height - visible_height).max(0) as f64;
-                let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
-
-                compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
-                tracing::info!(
-                    window_idx,
-                    focused_idx,
-                    y,
-                    height,
-                    bottom_y,
-                    total_height,
-                    visible_height,
-                    max_scroll,
-                    min_scroll_for_bottom,
-                    new_scroll = compositor.scroll_offset,
-                    "scrolled to show focused cell after external window added"
-                );
+                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                    tracing::info!(
+                        window_idx,
+                        focused_idx,
+                        new_scroll,
+                        "scrolled to show focused cell after external window added"
+                    );
+                }
             }
         }
 
@@ -251,28 +237,14 @@ fn main() -> anyhow::Result<()> {
             // to keep the focused cell's bottom visible
             if let Some(focused_idx) = compositor.focused_index {
                 if focused_idx >= resized_idx {
-                    let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
-                    let height = compositor.cached_cell_heights.get(focused_idx).copied().unwrap_or(200);
-                    let bottom_y = y + height;
-                    let visible_height = compositor.output_size.h;
-                    let total_height: i32 = compositor.cached_cell_heights.iter().sum();
-                    let max_scroll = (total_height - visible_height).max(0) as f64;
-                    let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
-
-                    compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
-                    tracing::info!(
-                        resized_idx,
-                        focused_idx,
-                        y,
-                        height,
-                        bottom_y,
-                        total_height,
-                        visible_height,
-                        max_scroll,
-                        min_scroll_for_bottom,
-                        new_scroll = compositor.scroll_offset,
-                        "scrolled to show focused cell after external window resize"
-                    );
+                    if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                        tracing::info!(
+                            resized_idx,
+                            focused_idx,
+                            new_scroll,
+                            "scrolled to show focused cell after external window resize"
+                        );
+                    }
                 }
             }
         }
@@ -398,19 +370,15 @@ fn main() -> anyhow::Result<()> {
 
                     // Scroll to show the newly focused cell (the new terminal)
                     if let Some(focused_idx) = compositor.focused_index {
-                        let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
-                        let total_height: i32 = compositor.cached_cell_heights.iter().sum();
-                        let visible_height = compositor.output_size.h;
-                        let max_scroll = (total_height - visible_height).max(0) as f64;
-                        compositor.scroll_offset = (y as f64).clamp(0.0, max_scroll);
-
-                        tracing::info!(
-                            id = id.0,
-                            cell_count = compositor.cells.len(),
-                            focused_idx,
-                            scroll = compositor.scroll_offset,
-                            "spawned terminal, scrolling to show"
-                        );
+                        if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                            tracing::info!(
+                                id = id.0,
+                                cell_count = compositor.cells.len(),
+                                focused_idx,
+                                new_scroll,
+                                "spawned terminal, scrolling to show"
+                            );
+                        }
                     }
                 }
                 Err(e) => {
@@ -520,13 +488,7 @@ fn main() -> anyhow::Result<()> {
 
             // Scroll to show the newly focused cell
             if let Some(focused_idx) = compositor.focused_index {
-                // Calculate y position of focused cell
-                let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
-                let visible_height = compositor.output_size.h;
-                let total_height: i32 = compositor.cached_cell_heights.iter().sum();
-                let max_scroll = (total_height - visible_height).max(0) as f64;
-                // Scroll so focused cell is at top
-                compositor.scroll_offset = (y as f64).clamp(0.0, max_scroll);
+                compositor.scroll_to_show_cell_bottom(focused_idx);
             }
         }
 
@@ -581,20 +543,11 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
 
-                            let y: i32 = compositor.cached_cell_heights.iter().take(idx).sum();
-                            let height = compositor.cached_cell_heights.get(idx).copied().unwrap_or(0);
-                            let bottom_y = y + height;
-                            let visible_height = compositor.output_size.h;
-                            let total_height: i32 = compositor.cached_cell_heights.iter().sum();
-                            let max_scroll = (total_height - visible_height).max(0) as f64;
-                            let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
-
-                            if compositor.scroll_offset < min_scroll_for_bottom {
-                                compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
+                            // Scroll to keep focused terminal bottom visible during growth
+                            if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(idx) {
                                 tracing::debug!(
                                     id = id.0,
-                                    bottom_y,
-                                    new_scroll = compositor.scroll_offset,
+                                    new_scroll,
                                     "scrolled to keep focused terminal bottom visible"
                                 );
                             }
@@ -644,25 +597,14 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                let y: i32 = compositor.cached_cell_heights.iter().take(idx).sum();
-                let height = compositor.cached_cell_heights.get(idx).copied().unwrap_or(0);
-                let bottom_y = y + height;
-                let visible_height = compositor.output_size.h;
-                let total_height: i32 = compositor.cached_cell_heights.iter().sum();
-
-                let max_scroll = (total_height - visible_height).max(0) as f64;
-                let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
-
                 // Scroll so the bottom of the terminal is at the bottom of the screen
-                compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
-                tracing::info!(
-                    id = new_focus_id.0,
-                    y,
-                    height,
-                    total_height,
-                    new_scroll = compositor.scroll_offset,
-                    "scrolled to show unhidden parent terminal"
-                );
+                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(idx) {
+                    tracing::info!(
+                        id = new_focus_id.0,
+                        new_scroll,
+                        "scrolled to show unhidden parent terminal"
+                    );
+                }
             }
         }
 
@@ -872,28 +814,12 @@ fn main() -> anyhow::Result<()> {
             // If heights changed, recalculate scroll to keep focused cell visible
             if heights_changed {
                 if let Some(focused_idx) = compositor.focused_index {
-                    let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
-                    let height = compositor.cached_cell_heights.get(focused_idx).copied().unwrap_or(51);
-                    let bottom_y = y + height;
-                    let visible_height = physical_size.h;
-                    let total_height: i32 = compositor.cached_cell_heights.iter().sum();
-                    let max_scroll = (total_height - visible_height).max(0) as f64;
-                    let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
-                    let new_scroll = min_scroll_for_bottom.min(max_scroll);
-
-                    if (new_scroll - compositor.scroll_offset).abs() > 5.0 {
+                    if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                         tracing::info!(
                             focused_idx,
-                            y,
-                            height,
-                            bottom_y,
-                            total_height,
-                            visible_height,
-                            old_scroll = compositor.scroll_offset,
                             new_scroll,
                             "scroll adjusted due to actual height change"
                         );
-                        compositor.scroll_offset = new_scroll;
                     }
                 }
             }
