@@ -8,6 +8,7 @@ use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
+use crate::coords::{RenderY, ScreenPoint};
 use crate::state::ColumnCompositor;
 use crate::terminal_manager::TerminalManager;
 
@@ -341,26 +342,26 @@ impl ColumnCompositor {
         event: impl AbsolutePositionEvent<I>,
     ) {
         let output_size = self.output_size;
-        let raw_position = (
+
+        // Input from Winit is in screen coordinates (Y=0 at top)
+        let screen_point = ScreenPoint::new(
             event.x_transformed(output_size.w),
             event.y_transformed(output_size.h),
         );
 
-        // Flip Y coordinate to account for OpenGL's Y-up coordinate system
-        // OpenGL has Y=0 at bottom, but winit/screen has Y=0 at top
-        // When we render at GL Y=100, it appears at screen Y=(height-100)
-        // So pointer at screen Y needs to be flipped to match our rendering positions
-        let position = (
-            raw_position.0,
-            output_size.h as f64 - raw_position.1,
-        );
+        // Convert to render coordinates (Y=0 at bottom, for OpenGL/Smithay)
+        // This is the canonical Y-flip between screen and render coordinate systems
+        let render_point = screen_point.to_render(output_size.h);
 
         tracing::trace!(
-            raw_y = raw_position.1,
-            flipped_y = position.1,
+            screen_y = screen_point.y.value(),
+            render_y = render_point.y.value(),
             output_height = output_size.h,
-            "pointer Y flip"
+            "screen -> render Y conversion"
         );
+
+        // Convert to tuple for Smithay APIs
+        let position = (render_point.x, render_point.y.value());
 
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
@@ -434,8 +435,10 @@ impl ColumnCompositor {
                 }
 
                 // Focus the clicked terminal
+                // pointer_location.y is in render coordinates (Y=0 at bottom)
                 if let Some(terminals) = terminals {
-                    if let Some(id) = terminals.terminal_at_y(pointer_location.y, self.scroll_offset) {
+                    let render_y = RenderY::new(pointer_location.y);
+                    if let Some(id) = terminals.terminal_at_y(render_y, self.scroll_offset) {
                         terminals.focus(id);
                         tracing::info!(?id, "focused internal terminal");
                     }

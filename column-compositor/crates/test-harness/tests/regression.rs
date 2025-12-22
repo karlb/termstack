@@ -1,7 +1,7 @@
 //! Regression tests for bugs found in v1
 
 use std::time::Duration;
-use test_harness::{TestCompositor, assertions, fixtures};
+use test_harness::{assertions, fixtures};
 
 /// Regression: empty rows after command (v1 issue-003)
 #[test]

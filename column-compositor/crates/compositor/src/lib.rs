@@ -3,6 +3,7 @@
 //! This library exposes the compositor modules for testing.
 
 pub mod config;
+pub mod coords;
 pub mod input;
 pub mod layout;
 pub mod state;

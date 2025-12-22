@@ -451,6 +451,10 @@ impl ColumnCompositor {
     }
 
     /// Get the window under a point (returns None if point is on internal terminals)
+    ///
+    /// The point must be in render coordinates (Y=0 at bottom).
+    /// This matches the coordinate system used by the pointer location after
+    /// the screen-to-render conversion in input handling.
     pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
         // First check if point is on terminal area
         if self.is_on_terminal(point) {
@@ -499,6 +503,8 @@ impl ColumnCompositor {
     }
 
     /// Check if a point is on the internal terminal area
+    ///
+    /// The point must be in render coordinates (Y=0 at bottom).
     pub fn is_on_terminal(&self, point: Point<f64, smithay::utils::Logical>) -> bool {
         // Terminals are rendered from Y = -scroll_offset to Y = terminal_height - scroll_offset
         // On screen, this means the terminal area ends at terminal_height - scroll_offset

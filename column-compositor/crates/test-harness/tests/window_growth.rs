@@ -1,7 +1,7 @@
 //! Tests for terminal window growth
 
 use std::time::Duration;
-use test_harness::{TestCompositor, assertions, fixtures};
+use test_harness::{assertions, fixtures};
 
 /// NOTE: Requires live terminal with real shell, not mock
 #[test]
@@ -26,7 +26,7 @@ fn terminal_grows_with_content() {
 
 #[test]
 fn multiple_terminals_stack_vertically() {
-    let (mut tc, terminals) = fixtures::multiple_terminals(3);
+    let (mut tc, _terminals) = fixtures::multiple_terminals(3);
 
     tc.wait_for(
         |c| c.snapshot().window_count == 3,

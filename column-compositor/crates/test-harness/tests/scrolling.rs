@@ -1,7 +1,7 @@
 //! Tests for scrolling behavior
 
 use std::time::Duration;
-use test_harness::{TestCompositor, assertions, fixtures};
+use test_harness::fixtures;
 
 /// NOTE: Requires live terminal with real shell, not mock
 #[test]

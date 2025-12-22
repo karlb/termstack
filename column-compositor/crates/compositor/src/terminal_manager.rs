@@ -13,6 +13,8 @@ use smithay::utils::Size;
 use terminal::Terminal;
 use terminal::sizing::SizingAction;
 
+use crate::coords::RenderY;
+
 /// Unique identifier for a managed terminal
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TerminalId(pub u32);
@@ -414,17 +416,20 @@ impl TerminalManager {
         Some((y, height))
     }
 
-    /// Find which terminal is at a given screen Y position
-    /// Returns the terminal ID if a terminal is at that position
-    pub fn terminal_at_y(&self, screen_y: f64, scroll_offset: f64) -> Option<TerminalId> {
-        // Convert screen Y to content Y (accounting for scroll)
-        let content_y = screen_y + scroll_offset;
+    /// Find which terminal is at a given render Y position
+    ///
+    /// Takes a render Y coordinate (Y=0 at bottom, from pointer location)
+    /// and converts it to content coordinates to find which terminal is there.
+    pub fn terminal_at_y(&self, render_y: RenderY, scroll_offset: f64) -> Option<TerminalId> {
+        // Convert render Y to content Y (accounting for scroll)
+        // content_y = render_y + scroll_offset
+        let content_y = render_y.to_content(scroll_offset);
 
         let mut y = 0.0;
         for id in self.ids() {
             if let Some(term) = self.terminals.get(&id) {
                 let height = term.height as f64;
-                if content_y >= y && content_y < y + height {
+                if content_y.value() >= y && content_y.value() < y + height {
                     return Some(id);
                 }
                 y += height;
