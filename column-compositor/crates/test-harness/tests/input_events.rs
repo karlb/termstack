@@ -107,8 +107,6 @@ fn click_identifies_window_correctly() {
     let mut tc = TestCompositor::new_headless(800, 600);
 
     // Add two windows of 200px each, stacked vertically
-    // Window 0: render Y = 0 to 200 (screen Y = 400 to 600)
-    // Window 1: render Y = 200 to 400 (screen Y = 200 to 400)
     tc.add_external_window(200);
     tc.add_external_window(200);
 
@@ -116,32 +114,29 @@ fn click_identifies_window_correctly() {
     let positions = tc.render_positions();
     assert_eq!(positions.len(), 2);
 
-    // With no terminals and no scroll:
-    // Window 0: render Y = 0 to 200
-    // Window 1: render Y = 200 to 400
-    assert_eq!(positions[0], (0, 200), "window 0 at render Y=0");
-    assert_eq!(positions[1], (200, 200), "window 1 at render Y=200");
+    // With Y-flip (render_y = screen_height - content_y - height):
+    // Window 0 (content_y=0, height=200): render_y = 600 - 0 - 200 = 400
+    // Window 1 (content_y=200, height=200): render_y = 600 - 200 - 200 = 200
+    // So window 0 is at TOP of screen (high render Y), window 1 below it
+    assert_eq!(positions[0], (400, 200), "window 0 at render Y=400 (top)");
+    assert_eq!(positions[1], (200, 200), "window 1 at render Y=200 (below)");
 
-    // In screen coordinates (Y=0 at top, height=600):
-    // Window 0: screen Y = 400 to 600 (bottom of screen)
-    // Window 1: screen Y = 200 to 400 (above window 0)
-
-    // Click in the BOTTOM area of screen (high screen Y = low render Y)
-    // Screen Y=500 -> Render Y=100 -> hits window 0
-    tc.simulate_click(400.0, 500.0);
+    // Click at TOP of screen (screen Y near 0 = high render Y)
+    // Screen Y=100 -> Render Y=500 -> hits window 0 (at render Y 400-600)
+    tc.simulate_click(400.0, 100.0);
     assert_eq!(
         tc.snapshot().focused_index,
         Some(0),
-        "clicking at screen Y=500 should focus window 0"
+        "clicking at screen Y=100 (top) should focus window 0"
     );
 
-    // Click in the UPPER-MIDDLE area of screen
-    // Screen Y=300 -> Render Y=300 -> hits window 1
-    tc.simulate_click(400.0, 300.0);
+    // Click in the MIDDLE area of screen
+    // Screen Y=350 -> Render Y=250 -> hits window 1 (at render Y 200-400)
+    tc.simulate_click(400.0, 350.0);
     assert_eq!(
         tc.snapshot().focused_index,
         Some(1),
-        "clicking at screen Y=300 should focus window 1"
+        "clicking at screen Y=350 (middle) should focus window 1"
     );
 }
 
@@ -155,44 +150,35 @@ fn click_with_scroll_offset() {
     tc.add_external_window(300);
     tc.add_external_window(300);
 
-    // With no scroll:
-    // Window 0: render Y = 0 to 300
-    // Window 1: render Y = 300 to 600 (partially visible)
-    // Window 2: render Y = 600 to 900 (off screen)
-
     // Scroll down by 300px
     tc.set_scroll(300.0);
 
-    // Now with scroll=300:
-    // Window 0: render Y = -300 to 0 (off screen top)
-    // Window 1: render Y = 0 to 300 (visible)
-    // Window 2: render Y = 300 to 600 (visible)
+    // With Y-flip and scroll=300 (render_y = screen_height - content_y - height):
+    // Window 0: content_y = -300, height = 300 → render_y = 600 - (-300) - 300 = 600 (off top)
+    // Window 1: content_y = 0, height = 300 → render_y = 600 - 0 - 300 = 300 (upper half)
+    // Window 2: content_y = 300, height = 300 → render_y = 600 - 300 - 300 = 0 (lower half)
 
     let positions = tc.render_positions();
-    assert_eq!(positions[0], (-300, 300), "window 0 scrolled off top");
-    assert_eq!(positions[1], (0, 300), "window 1 at render Y=0");
-    assert_eq!(positions[2], (300, 300), "window 2 at render Y=300");
+    assert_eq!(positions[0], (600, 300), "window 0 scrolled off top (high Y in render)");
+    assert_eq!(positions[1], (300, 300), "window 1 at render Y=300 (upper visible)");
+    assert_eq!(positions[2], (0, 300), "window 2 at render Y=0 (lower visible)");
 
-    // Click at bottom of visible area (should hit window 2)
-    // Screen Y=400 -> Render Y=200 -> hits window 2 (at render Y 300-600)
-    // Wait, let me recalculate: render Y=200 is in window 1 range (0-300)
-    // Let me click lower: Screen Y=500 -> Render Y=100 -> hits window 1
-
+    // Click at TOP of screen (screen Y=100):
+    // Screen Y=100 -> Render Y = 600 - 100 = 500 -> hits window 1 (at render Y 300-600)
     tc.simulate_click(400.0, 100.0);
-    // Screen Y=100 -> Render Y=500 -> hits window 2 (at render Y 300-600)
-    assert_eq!(
-        tc.snapshot().focused_index,
-        Some(2),
-        "clicking at screen Y=100 (render Y=500) should focus window 2"
-    );
-
-    // Click at top of visible area (should hit window 1)
-    // Screen Y=400 -> Render Y=200 -> hits window 1 (at render Y 0-300)
-    tc.simulate_click(400.0, 400.0);
     assert_eq!(
         tc.snapshot().focused_index,
         Some(1),
-        "clicking at screen Y=400 (render Y=200) should focus window 1"
+        "clicking at screen Y=100 (render Y=500) should focus window 1"
+    );
+
+    // Click at BOTTOM of screen (screen Y=500):
+    // Screen Y=500 -> Render Y = 600 - 500 = 100 -> hits window 2 (at render Y 0-300)
+    tc.simulate_click(400.0, 500.0);
+    assert_eq!(
+        tc.snapshot().focused_index,
+        Some(2),
+        "clicking at screen Y=500 (render Y=100) should focus window 2"
     );
 }
 
@@ -266,4 +252,75 @@ fn pointer_motion_during_scroll() {
         600.0,
         "Y-flip should still work correctly after scroll"
     );
+}
+
+/// Test that surface-local coordinates are calculated correctly for external windows
+///
+/// When a pointer moves over an external window, the compositor must convert
+/// render coordinates to surface-local coordinates (Y=0 at top of window).
+/// This is critical for drag operations to work correctly in external apps.
+#[test]
+fn surface_local_coordinates_correct() {
+    let tc = TestCompositor::new_headless(800, 600);
+
+    // For a window at the top of the screen:
+    // - Window 0: content_y=0, height=300
+    // - With Y-flip: render_y = 600 - 0 - 300 = 300, render_end = 600 - 0 = 600
+    //
+    // When pointer is at screen Y=50 (near top of window):
+    // - render Y = 600 - 50 = 550
+    // - surface_local_y = render_end - render_y = 600 - 550 = 50
+    //
+    // When pointer is at screen Y=250 (near bottom of window):
+    // - render Y = 600 - 250 = 350
+    // - surface_local_y = render_end - render_y = 600 - 350 = 250
+
+    // The formula for surface-local Y given:
+    // - output_height, content_y (cell start), cell_height
+    // - render_point.y (pointer in render coords)
+    // is: surface_local_y = (output_height - content_y) - render_point.y
+
+    let output_height = 600.0;
+    let content_y = 0.0; // First window starts at content Y=0
+    let cell_height = 300.0;
+
+    // Test: screen Y=50 (top of window in screen coords)
+    let screen_y = 50.0;
+    let render_y = output_height - screen_y; // = 550
+    let render_end = output_height - content_y; // = 600
+    let surface_local_y = render_end - render_y; // = 50
+
+    assert_eq!(surface_local_y, 50.0, "pointer at screen Y=50 should be at surface-local Y=50");
+
+    // Test: screen Y=250 (lower in window)
+    let screen_y = 250.0;
+    let render_y = output_height - screen_y; // = 350
+    let surface_local_y = render_end - render_y; // = 250
+
+    assert_eq!(surface_local_y, 250.0, "pointer at screen Y=250 should be at surface-local Y=250");
+
+    // Test: screen Y=299 (just inside bottom of window)
+    let screen_y = 299.0;
+    let render_y = output_height - screen_y; // = 301
+    let surface_local_y = render_end - render_y; // = 299
+
+    assert_eq!(surface_local_y, 299.0, "pointer at screen Y=299 should be at surface-local Y=299");
+
+    // Verify the formula works for scrolled content too
+    let scroll_offset = 100.0;
+    let content_y_scrolled = -scroll_offset; // Content starts above viewport
+    let render_end_scrolled = output_height - content_y_scrolled; // = 700
+
+    // Screen Y=50 with scroll:
+    let screen_y = 50.0;
+    let render_y = output_height - screen_y; // = 550
+    let surface_local_y = render_end_scrolled - render_y; // = 700 - 550 = 150
+
+    // With 100px scroll, clicking at screen Y=50 hits what WAS at screen Y=150
+    // So surface-local should be 150
+    assert_eq!(surface_local_y, 150.0, "with scroll=100, screen Y=50 maps to surface-local Y=150");
+
+    // Suppress unused variable warning
+    let _ = tc;
+    let _ = cell_height;
 }

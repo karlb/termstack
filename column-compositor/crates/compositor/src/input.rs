@@ -534,6 +534,8 @@ impl ColumnCompositor {
     }
 
     /// Find the surface under a point (only for external windows)
+    ///
+    /// `point` is in RENDER coordinates (Y=0 at bottom, for OpenGL).
     fn surface_under(
         &self,
         point: Point<f64, Logical>,
@@ -545,8 +547,8 @@ impl ColumnCompositor {
             return None;
         };
 
-        tracing::info!(
-            screen_point = ?point,
+        tracing::debug!(
+            render_point = ?point,
             scroll_offset = self.scroll_offset,
             cached_heights = ?self.cached_cell_heights,
             cell_count = self.cells.len(),
@@ -554,50 +556,37 @@ impl ColumnCompositor {
             "surface_under: checking point"
         );
 
-        // Log window geometry info
-        let bbox = entry.window.bbox();
-        let geometry = entry.window.geometry();
-        tracing::info!(
-            index,
-            bbox = ?(bbox.loc.x, bbox.loc.y, bbox.size.w, bbox.size.h),
-            geometry = ?(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h),
-            "surface_under: window geometry"
-        );
+        let output_height = self.output_size.h as f64;
 
-        // Calculate the cell's Y position using cached heights
-        let mut cell_y = -self.scroll_offset;
+        // Calculate the cell's content_y position (Y from top in content space)
+        let mut content_y = -self.scroll_offset;
         for (i, &h) in self.cached_cell_heights.iter().enumerate() {
             if i == index {
                 break;
             }
-            cell_y += h as f64;
+            content_y += h as f64;
         }
 
-        let cell_height = self.cached_cell_heights.get(index).copied().unwrap_or(0);
+        let cell_height = self.cached_cell_heights.get(index).copied().unwrap_or(0) as f64;
 
-        // Calculate position relative to window for hit testing
-        // point is in render coords (Y=0 at bottom)
-        // cell_y is the cell's BOTTOM in render coords
-        // We need client-local coords (Y=0 at top of window)
+        // With Y-flip, the cell's position in render coordinates:
+        // - render_y = output_height - content_y - height (bottom of cell in render)
+        // - render_end = output_height - content_y (top of cell in render)
         //
-        // With source flip during rendering:
-        // - Client Y=0 (top) is at render Y = cell_y + cell_height
-        // - Client Y=height (bottom) is at render Y = cell_y
-        //
-        // So: client_local_y = cell_height - (point.y - cell_y)
-        //                    = cell_height - offset_from_cell_bottom
+        // For client-local coordinates (Y=0 at top of window):
+        // - Client Y=0 corresponds to render_end (top of cell in render coords)
+        // - client_local_y = render_end - point.y = (output_height - content_y) - point.y
+        let render_end = output_height - content_y;
         let relative_x = point.x;
-        let offset_from_bottom = point.y - cell_y;
-        let relative_y = cell_height as f64 - offset_from_bottom;
+        let relative_y = render_end - point.y;
         let relative_point: Point<f64, Logical> = Point::from((relative_x, relative_y));
 
-        tracing::info!(
+        tracing::debug!(
             index,
-            cell_y,
+            content_y,
             cell_height,
-            offset_from_bottom,
+            render_end,
             relative_y,
-            geometry_offset = ?(geometry.loc.x, geometry.loc.y),
             relative_point = ?(relative_point.x, relative_point.y),
             "surface_under: calculated relative point"
         );
@@ -606,7 +595,7 @@ impl ColumnCompositor {
             .window
             .surface_under(relative_point, smithay::desktop::WindowSurfaceType::ALL);
 
-        tracing::info!(
+        tracing::debug!(
             found_surface = result.is_some(),
             surface_point = ?result.as_ref().map(|(_, pt)| (pt.x, pt.y)),
             "surface_under: result"
@@ -615,15 +604,11 @@ impl ColumnCompositor {
         // Return surface position in SCREEN coordinates (Y=0 at top)
         // This must match the coordinate system of MotionEvent.location
         //
-        // With source flip during rendering:
-        // - Client Y=0 (top) is at render Y = cell_y + cell_height
-        // - In screen coords: screen Y = output_height - (cell_y + cell_height)
-        //
-        // We return this as the surface's global position so that:
-        //   surface_local = screen_pointer - screen_surface_pos
-        // gives correct Y for the client
-        let output_height = self.output_size.h as f64;
-        let screen_surface_y = output_height - (cell_y + cell_height as f64);
+        // The cell's top in screen coords: screen_y = output_height - render_end
+        //                                          = output_height - (output_height - content_y)
+        //                                          = content_y
+        // But with scroll, content_y can be negative (scrolled off top)
+        let screen_surface_y = content_y;
 
         result.map(|(surface, _pt)| (surface, Point::from((0.0, screen_surface_y))))
     }

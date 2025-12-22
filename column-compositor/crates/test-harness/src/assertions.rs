@@ -42,55 +42,76 @@ pub fn assert_render_matches_click_detection(tc: &TestCompositor) {
     }
 }
 
-/// Assert that clicking at Y hits the expected window index
-pub fn assert_click_at_y_hits_window(tc: &TestCompositor, y: f64, expected: Option<usize>) {
-    let result = tc.window_at(y);
+/// Assert that clicking at screen Y hits the expected window index
+///
+/// Takes screen coordinates (Y=0 at top) and converts to render coordinates
+/// before checking which window is under the click.
+pub fn assert_click_at_y_hits_window(tc: &TestCompositor, screen_y: f64, expected: Option<usize>) {
+    // Convert screen Y to render Y (Y-flip for OpenGL)
+    let (_width, height) = tc.output_size();
+    let render_y = height as f64 - screen_y;
+    let result = tc.window_at(render_y);
     assert_eq!(
         result, expected,
-        "click at Y={} should hit window {:?}, got {:?}",
-        y, expected, result
+        "click at screen Y={} (render Y={}) should hit window {:?}, got {:?}",
+        screen_y, render_y, expected, result
     );
 }
 
 /// Assert that windows are rendered in correct order (top to bottom = index 0 to N)
+///
+/// With Y-flip (render Y=0 at bottom), window 0 has the HIGHEST render Y.
+/// Each subsequent window has a LOWER render Y.
+/// Contiguous stacking means: window[i].render_y + window[i].height == window[i-1].render_y
 pub fn assert_window_order_correct(tc: &TestCompositor) {
     let render_pos = tc.render_positions();
+    if render_pos.len() < 2 {
+        return;
+    }
 
-    // Check that each window starts after the previous one
+    // With Y-flip, windows are contiguous when:
+    // curr.render_y + curr.height == prev.render_y
     for i in 1..render_pos.len() {
-        let prev_end = render_pos[i - 1].0 + render_pos[i - 1].1;
+        let prev_start = render_pos[i - 1].0;
         let curr_start = render_pos[i].0;
+        let curr_height = render_pos[i].1;
+        let curr_end = curr_start + curr_height;
+
         assert_eq!(
-            prev_end, curr_start,
-            "window {} should start at {} (after window {} ends at {}), but starts at {}",
-            i, prev_end, i - 1, prev_end, curr_start
+            curr_end, prev_start,
+            "window {} ends at {} but window {} starts at {} (not contiguous with Y-flip)",
+            i, curr_end, i - 1, prev_start
         );
     }
 }
 
 /// Assert click targets are NOT vertically flipped
 /// (clicking near top of screen should hit window 0, not the last window)
+///
+/// With Y-flip, the window at the TOP of the screen has the HIGHEST render Y.
 pub fn assert_click_targets_not_flipped(tc: &TestCompositor) {
     let render_pos = tc.render_positions();
     if render_pos.is_empty() {
         return;
     }
 
-    // Find window rendered at lowest Y (topmost on screen)
+    // With Y-flip: highest render Y = top of screen
+    // Window 0 should have the highest render Y (it's at the top of content)
     let topmost_window = render_pos.iter().enumerate()
-        .min_by_key(|(_, (y, _))| *y)
+        .max_by_key(|(_, (y, _))| *y)
         .map(|(i, _)| i);
 
-    // Click near the top of that window should hit it
+    // Click near the top of that window (high render Y) should hit it
     if let Some(top_idx) = topmost_window {
-        let (y, _) = render_pos[top_idx];
-        let click_y = y as f64 + 10.0; // 10 pixels into the window
-        let clicked = tc.window_at(click_y);
+        let (render_y, height) = render_pos[top_idx];
+        // Click near the top of the window in render coords (high Y)
+        let click_render_y = (render_y + height - 10).max(render_y) as f64;
+        let clicked = tc.window_at(click_render_y);
 
         assert_eq!(
             clicked, Some(top_idx),
-            "clicking at Y={} should hit topmost window {} (rendered at Y={}), got {:?}",
-            click_y, top_idx, y, clicked
+            "clicking at render Y={} should hit topmost window {} (rendered at Y={} to {}), got {:?}",
+            click_render_y, top_idx, render_y, render_y + height, clicked
         );
     }
 }
@@ -175,16 +196,32 @@ pub fn assert_no_element_overlaps(tc: &TestCompositor) {
 
 /// Assert that all elements from a window are within the window's allocated region
 /// on screen (no elements extending above or below the window boundary)
+///
+/// Note: rendered_elements() returns content coordinates including terminal offset,
+/// so we must calculate content positions the same way.
 pub fn assert_elements_within_window_bounds(tc: &TestCompositor) {
     let elements = tc.rendered_elements();
-    let render_pos = tc.render_positions();
+    let actual_heights = tc.actual_heights();
+    let (_, terminal_height) = tc.terminal_info();
+
+    // Calculate content positions matching rendered_elements() behavior
+    // (includes terminal_total_height offset)
+    let mut content_y = terminal_height;
+    let content_positions: Vec<(i32, i32)> = actual_heights
+        .iter()
+        .map(|&h| {
+            let pos = content_y;
+            content_y += h;
+            (pos, h)
+        })
+        .collect();
 
     for elem in &elements {
-        if elem.window_index >= render_pos.len() {
+        if elem.window_index >= content_positions.len() {
             panic!("Element references non-existent window {}", elem.window_index);
         }
 
-        let (window_y, window_height) = render_pos[elem.window_index];
+        let (window_y, window_height) = content_positions[elem.window_index];
         let window_end = window_y + window_height;
         let elem_end = elem.screen_y + elem.height;
 

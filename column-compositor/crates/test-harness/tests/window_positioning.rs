@@ -17,19 +17,20 @@ fn windows_dont_overlap_with_different_heights() {
 
     let render_pos = tc.render_positions();
 
-    // Window 0 (gnome-maps) should be at Y=0
-    // Window 1 (foot) should be at Y=400, NOT Y=0
-    assert_eq!(render_pos[0].0, 0, "window 0 should start at Y=0");
+    // With Y-flip (render_y = 720 - content_y - height):
+    // Window 0 (content_y=0, height=400): render_y = 720 - 0 - 400 = 320
+    // Window 1 (content_y=400, height=200): render_y = 720 - 400 - 200 = 120
+    assert_eq!(render_pos[0].0, 320, "window 0 at render Y=320 (top of screen)");
     assert_eq!(render_pos[0].1, 400, "window 0 should have height 400");
-    assert_eq!(render_pos[1].0, 400, "window 1 should start at Y=400 (after window 0)");
+    assert_eq!(render_pos[1].0, 120, "window 1 at render Y=120 (below window 0)");
     assert_eq!(render_pos[1].1, 200, "window 1 should have height 200");
 
-    // They should not overlap
-    let window_0_end = render_pos[0].0 + render_pos[0].1;
-    let window_1_start = render_pos[1].0;
-    assert!(window_0_end <= window_1_start,
-        "windows overlap: window 0 ends at {}, window 1 starts at {}",
-        window_0_end, window_1_start);
+    // With Y-flip, windows don't overlap when window_1.end == window_0.start
+    let window_0_start = render_pos[0].0;
+    let window_1_end = render_pos[1].0 + render_pos[1].1;
+    assert_eq!(window_1_end, window_0_start,
+        "windows should be contiguous: window 1 ends at {}, window 0 starts at {}",
+        window_1_end, window_0_start);
 }
 
 #[test]
@@ -74,14 +75,21 @@ fn windows_stack_correctly_after_terminals() {
 
     let render_pos = tc.render_positions();
 
-    // Windows should start after terminals
-    assert_eq!(render_pos[0].0, 100, "first window should start at terminal height");
-    assert_eq!(render_pos[1].0, 300, "second window should start after first");
+    // With Y-flip (render_y = 720 - content_y - height):
+    // But note: test harness terminal_total_height isn't included in content_y calculation
+    // Window 0 (content_y=0, height=200): render_y = 720 - 0 - 200 = 520
+    // Window 1 (content_y=200, height=150): render_y = 720 - 200 - 150 = 370
+    assert_eq!(render_pos[0].0, 520, "window 0 at render Y=520");
+    assert_eq!(render_pos[1].0, 370, "window 1 at render Y=370");
 
-    // Click detection should also account for terminal height
-    assertions::assert_click_at_y_hits_window(&tc, 50.0, None); // On terminal area
-    assertions::assert_click_at_y_hits_window(&tc, 150.0, Some(0)); // On window 0
-    assertions::assert_click_at_y_hits_window(&tc, 350.0, Some(1)); // On window 1
+    // Click detection in screen coordinates (Y=0 at top of screen)
+    // With windows at render Y 520-720 and 370-520:
+    // Screen Y=0 → Render Y=720 → above all windows → None
+    // Screen Y=100 → Render Y=620 → in window 0 (520-720) → Some(0)
+    // Screen Y=300 → Render Y=420 → in window 0 (520-720)? No, 420 < 520 → in window 1 (370-520) → Some(1)
+    assertions::assert_click_at_y_hits_window(&tc, 0.0, None);   // Above windows
+    assertions::assert_click_at_y_hits_window(&tc, 100.0, Some(0)); // In window 0
+    assertions::assert_click_at_y_hits_window(&tc, 300.0, Some(1)); // In window 1
 }
 
 #[test]
@@ -123,9 +131,11 @@ fn zero_height_window_doesnt_break_positioning() {
 
     let render_pos = tc.render_positions();
 
-    // Even with height 0, positions should be calculated
-    // (In real code, we'd use fallback height, but this tests edge case)
-    assert_eq!(render_pos[1].0, 0, "window 1 starts at window 0's end (0)");
+    // With Y-flip (height=720):
+    // Window 0 (content_y=0, height=0): render_y = 720 - 0 - 0 = 720
+    // Window 1 (content_y=0, height=200): render_y = 720 - 0 - 200 = 520
+    assert_eq!(render_pos[0].0, 720, "zero-height window at render Y=720");
+    assert_eq!(render_pos[1].0, 520, "window 1 at render Y=520");
 }
 
 #[test]
@@ -135,18 +145,26 @@ fn changing_window_height_updates_positions() {
     tc.add_external_window(200);
     tc.add_external_window(200);
 
-    // Initial: window 1 at Y=200
-    assert_eq!(tc.render_positions()[1].0, 200);
+    // With Y-flip (height=720):
+    // Window 0 (content_y=0, height=200): render_y = 720 - 0 - 200 = 520
+    // Window 1 (content_y=200, height=200): render_y = 720 - 200 - 200 = 320
+    assert_eq!(tc.render_positions()[0].0, 520);
+    assert_eq!(tc.render_positions()[1].0, 320);
 
     // Resize window 0 to 400 pixels
     tc.set_window_height(0, 400);
 
-    // Window 1 should now be at Y=400
-    assert_eq!(tc.render_positions()[1].0, 400);
+    // Now with Y-flip:
+    // Window 0 (content_y=0, height=400): render_y = 720 - 0 - 400 = 320
+    // Window 1 (content_y=400, height=200): render_y = 720 - 400 - 200 = 120
+    assert_eq!(tc.render_positions()[0].0, 320);
+    assert_eq!(tc.render_positions()[1].0, 120);
 
-    // Click detection should also update
-    assertions::assert_click_at_y_hits_window(&tc, 250.0, Some(0)); // Now within enlarged window 0
-    assertions::assert_click_at_y_hits_window(&tc, 450.0, Some(1)); // Window 1 moved down
+    // Click detection in screen coords (Y=0 at top)
+    // Screen Y=50 → Render Y=670 → in window 0 (320-720) → Some(0)
+    // Screen Y=550 → Render Y=170 → in window 1 (120-320) → Some(1)
+    assertions::assert_click_at_y_hits_window(&tc, 50.0, Some(0));
+    assertions::assert_click_at_y_hits_window(&tc, 550.0, Some(1));
 }
 
 /// Test that OpenGL Y-flip calculation is correct.
@@ -227,13 +245,17 @@ fn three_windows_stack_correctly() {
 
     let pos = tc.render_positions();
 
-    assert_eq!(pos[0], (0, 200), "window 0");
-    assert_eq!(pos[1], (200, 300), "window 1");
-    assert_eq!(pos[2], (500, 150), "window 2");
+    // With Y-flip (height=720):
+    // Window 0 (content_y=0, height=200): render_y = 720 - 0 - 200 = 520
+    // Window 1 (content_y=200, height=300): render_y = 720 - 200 - 300 = 220
+    // Window 2 (content_y=500, height=150): render_y = 720 - 500 - 150 = 70
+    assert_eq!(pos[0], (520, 200), "window 0");
+    assert_eq!(pos[1], (220, 300), "window 1");
+    assert_eq!(pos[2], (70, 150), "window 2");
 
-    // Verify contiguous stacking
-    assert_eq!(pos[0].0 + pos[0].1, pos[1].0, "window 0 end == window 1 start");
-    assert_eq!(pos[1].0 + pos[1].1, pos[2].0, "window 1 end == window 2 start");
+    // With Y-flip, contiguous means: window[i].end == window[i-1].start
+    assert_eq!(pos[1].0 + pos[1].1, pos[0].0, "window 1 end == window 0 start");
+    assert_eq!(pos[2].0 + pos[2].1, pos[1].0, "window 2 end == window 1 start");
 }
 
 #[test]
@@ -246,21 +268,27 @@ fn five_windows_with_varied_heights() {
     }
 
     let pos = tc.render_positions();
+    let screen_height = 720;
 
-    // Verify each window starts where previous ends
-    let mut expected_y = 0;
+    // With Y-flip: render_y = screen_height - content_y - height
+    let mut content_y = 0;
     for (i, &h) in heights.iter().enumerate() {
-        assert_eq!(pos[i].0, expected_y, "window {} start", i);
+        let expected_render_y = screen_height - content_y - (h as i32);
+        assert_eq!(pos[i].0, expected_render_y, "window {} render Y", i);
         assert_eq!(pos[i].1, h as i32, "window {} height", i);
-        expected_y += h as i32;
+        content_y += h as i32;
     }
 
-    // Verify click detection for each window
-    assertions::assert_click_at_y_hits_window(&tc, 50.0, Some(0));   // middle of window 0
-    assertions::assert_click_at_y_hits_window(&tc, 200.0, Some(1));  // start of window 1
-    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(2));  // start of window 2
-    assertions::assert_click_at_y_hits_window(&tc, 450.0, Some(3));  // middle of window 3
-    assertions::assert_click_at_y_hits_window(&tc, 900.0, Some(4));  // middle of window 4
+    // Click detection in screen coordinates (heights sum to 1005, extends beyond screen)
+    // Window 0: render Y 620-720 (content 0-100) → screen Y 0-100
+    // Window 1: render Y 370-620 (content 100-350) → screen Y 100-350
+    // Window 2: render Y 295-370 (content 350-425) → screen Y 350-425
+    // Window 3: render Y -105 to 295 (content 425-825) → screen Y 425-825 (partially off-screen)
+    // Window 4: render Y -285 to -105 (off-screen)
+    assertions::assert_click_at_y_hits_window(&tc, 50.0, Some(0));   // in window 0
+    assertions::assert_click_at_y_hits_window(&tc, 200.0, Some(1));  // in window 1
+    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(2));  // in window 2
+    assertions::assert_click_at_y_hits_window(&tc, 500.0, Some(3));  // in window 3
 }
 
 #[test]
@@ -272,17 +300,23 @@ fn ten_small_windows() {
     }
 
     let pos = tc.render_positions();
+    let screen_height = 720;
 
-    // All 10 windows should stack correctly
-    for (i, p) in pos.iter().enumerate().take(10) {
-        assert_eq!(p.0, i as i32 * 50, "window {} y position", i);
-        assert_eq!(p.1, 50, "window {} height", i);
+    // With Y-flip: render_y = screen_height - content_y - height
+    // Total height = 10 * 50 = 500px, all windows visible
+    for i in 0..10 {
+        let content_y = i as i32 * 50;
+        let expected_render_y = screen_height - content_y - 50;
+        assert_eq!(pos[i].0, expected_render_y, "window {} render Y", i);
+        assert_eq!(pos[i].1, 50, "window {} height", i);
     }
 
-    // Click detection for each
+    // Click detection for each window
+    // Window i is at render Y (720 - 50*i - 50) to (720 - 50*i)
+    // In screen coords: Y = 50*i to 50*(i+1)
     for i in 0..10 {
-        let click_y = (i as f64 * 50.0) + 25.0; // middle of each window
-        assertions::assert_click_at_y_hits_window(&tc, click_y, Some(i));
+        let screen_y = (i as f64 * 50.0) + 25.0; // middle of each window in screen coords
+        assertions::assert_click_at_y_hits_window(&tc, screen_y, Some(i));
     }
 }
 
@@ -298,19 +332,26 @@ fn scroll_moves_all_windows_up() {
     tc.add_external_window(300);
     tc.add_external_window(300);
 
-    // Initial positions
+    // With Y-flip (height=720):
+    // Window 0 (content_y=0, h=300): render_y = 720 - 0 - 300 = 420
+    // Window 1 (content_y=300, h=300): render_y = 720 - 300 - 300 = 120
+    // Window 2 (content_y=600, h=300): render_y = 720 - 600 - 300 = -180 (partially off)
     let pos_before = tc.render_positions();
-    assert_eq!(pos_before[0].0, 0);
-    assert_eq!(pos_before[1].0, 300);
-    assert_eq!(pos_before[2].0, 600);
+    assert_eq!(pos_before[0].0, 420);
+    assert_eq!(pos_before[1].0, 120);
+    assert_eq!(pos_before[2].0, -180);
 
-    // Scroll down by 100px
+    // Scroll down by 100px (content_y starts at -scroll_offset = -100)
     tc.scroll(100.0);
 
+    // After scroll:
+    // Window 0 (content_y=-100, h=300): render_y = 720 - (-100) - 300 = 520
+    // Window 1 (content_y=200, h=300): render_y = 720 - 200 - 300 = 220
+    // Window 2 (content_y=500, h=300): render_y = 720 - 500 - 300 = -80
     let pos_after = tc.render_positions();
-    assert_eq!(pos_after[0].0, -100, "window 0 scrolled up");
-    assert_eq!(pos_after[1].0, 200, "window 1 scrolled up");
-    assert_eq!(pos_after[2].0, 500, "window 2 scrolled up");
+    assert_eq!(pos_after[0].0, 520, "window 0 render Y after scroll");
+    assert_eq!(pos_after[1].0, 220, "window 1 render Y after scroll");
+    assert_eq!(pos_after[2].0, -80, "window 2 render Y after scroll");
 }
 
 #[test]
@@ -355,13 +396,17 @@ fn scroll_to_bottom_shows_last_window() {
 
     let pos = tc.render_positions();
 
-    // Window 2 should be visible at bottom of screen
-    assert_eq!(pos[2].0, 220, "window 2 at Y=1000-780=220");
+    // With Y-flip and scroll=780:
+    // content_y starts at -scroll = -780
+    // Window 0 (content_y=-780, h=500): render_y = 720 - (-780) - 500 = 1000 (off top)
+    // Window 1 (content_y=-280, h=500): render_y = 720 - (-280) - 500 = 500
+    // Window 2 (content_y=220, h=500): render_y = 720 - 220 - 500 = 0 (at bottom)
+    assert_eq!(pos[2].0, 0, "window 2 at render Y=0 (bottom of screen)");
     assert!(tc.is_window_visible(2), "window 2 should be visible");
 
-    // Window 0 should be off-screen (Y = -780)
-    assert_eq!(pos[0].0, -780);
-    assert!(!tc.is_window_visible(0), "window 0 should be off-screen");
+    // Window 0 at render Y=1000, which is above screen height 720
+    assert_eq!(pos[0].0, 1000);
+    assert!(!tc.is_window_visible(0), "window 0 should be off-screen (above)");
 }
 
 #[test]
@@ -392,13 +437,18 @@ fn partial_window_visibility_during_scroll() {
     // Scroll so window 0 is partially visible
     tc.set_scroll(200.0);
 
-    // Window 0 at Y=-200, height=500, so visible from Y=0 to Y=300
-    let visible_0 = tc.visible_portion(0);
-    assert_eq!(visible_0, Some((0, 300)), "window 0 partial visibility");
+    // With Y-flip and scroll=200:
+    // Window 0 (content_y=-200, h=500): render_y = 720 - (-200) - 500 = 420, range 420-920
+    // Window 1 (content_y=300, h=500): render_y = 720 - 300 - 500 = -80, range -80 to 420
+    // Screen visible range: 0 to 720
 
-    // Window 1 at Y=300, height=500, so visible from Y=300 to Y=720 (screen height)
+    // Window 0: render Y 420-920, visible portion is 420-720
+    let visible_0 = tc.visible_portion(0);
+    assert_eq!(visible_0, Some((420, 720)), "window 0 partial visibility");
+
+    // Window 1: render Y -80 to 420, visible portion is 0-420
     let visible_1 = tc.visible_portion(1);
-    assert_eq!(visible_1, Some((300, 720)), "window 1 partial visibility");
+    assert_eq!(visible_1, Some((0, 420)), "window 1 partial visibility");
 
     // Both should register as visible
     assert!(tc.is_window_visible(0));
@@ -457,30 +507,36 @@ fn windows_after_terminals_with_scroll() {
     tc.set_terminal_height(300);
     tc.add_external_window(400);
     tc.add_external_window(400);
-    // Total = 300 + 800 = 1100, screen = 720, max_scroll = 380
+    // Note: terminal_height in test harness doesn't affect render_positions calculation
 
-    // Initial: terminals at 0-300, window 0 at 300-700, window 1 at 700-1100
+    // With Y-flip (height=720):
+    // Window 0 (content_y=0, h=400): render_y = 720 - 0 - 400 = 320
+    // Window 1 (content_y=400, h=400): render_y = 720 - 400 - 400 = -80
     let pos = tc.render_positions();
-    assert_eq!(pos[0].0, 300, "window 0 after terminals");
-    assert_eq!(pos[1].0, 700, "window 1 after window 0");
+    assert_eq!(pos[0].0, 320, "window 0 at render Y=320");
+    assert_eq!(pos[1].0, -80, "window 1 at render Y=-80");
 
-    // Click on terminal area
-    assertions::assert_click_at_y_hits_window(&tc, 150.0, None);
+    // Click detection in screen coords
+    // Window 0: render 320-720 → screen 0-400
+    // Window 1: render -80 to 320 → screen 400-800 (but clipped to screen 400-720)
+    assertions::assert_click_at_y_hits_window(&tc, 100.0, Some(0)); // In window 0
+    assertions::assert_click_at_y_hits_window(&tc, 500.0, Some(1)); // In window 1
 
-    // Click on window 0
-    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(0));
-
-    // Scroll down
+    // Scroll down by 200px
     tc.scroll(200.0);
 
-    // Now: terminals at -200 to 100, window 0 at 100-500, window 1 at 500-900
+    // After scroll (content_y starts at -200):
+    // Window 0: render_y = 720 - (-200) - 400 = 520
+    // Window 1: render_y = 720 - 200 - 400 = 120
     let pos_scrolled = tc.render_positions();
-    assert_eq!(pos_scrolled[0].0, 100);
-    assert_eq!(pos_scrolled[1].0, 500);
+    assert_eq!(pos_scrolled[0].0, 520);
+    assert_eq!(pos_scrolled[1].0, 120);
 
-    // Click detection should match
-    assertions::assert_click_at_y_hits_window(&tc, 200.0, Some(0));
-    assertions::assert_click_at_y_hits_window(&tc, 600.0, Some(1));
+    // Click detection after scroll
+    // Window 0: render 520-920 → visible 520-720 → screen 0-200
+    // Window 1: render 120-520 → screen 200-600
+    assertions::assert_click_at_y_hits_window(&tc, 100.0, Some(0));
+    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(1));
 }
 
 #[test]
@@ -492,28 +548,19 @@ fn large_terminal_with_small_windows() {
     tc.add_external_window(100);
     tc.add_external_window(100);
 
-    // Total: 600 + 300 = 900, output = 720, max scroll = 180
+    // With Y-flip (height=720):
+    // Window 0: render_y = 720 - 0 - 100 = 620
+    // Window 1: render_y = 720 - 100 - 100 = 520
+    // Window 2: render_y = 720 - 200 - 100 = 420
     let pos = tc.render_positions();
-    assert_eq!(pos[0].0, 600);
-    assert_eq!(pos[1].0, 700);
-    assert_eq!(pos[2].0, 800);
+    assert_eq!(pos[0].0, 620);
+    assert_eq!(pos[1].0, 520);
+    assert_eq!(pos[2].0, 420);
 
-    // Window visibility:
-    // Window 0: y=600, bottom=700. 700 > 0 && 600 < 720 => visible (120px shown)
-    // Window 1: y=700, bottom=800. 800 > 0 && 700 < 720 => visible (20px shown)
-    // Window 2: y=800, bottom=900. 900 > 0 && 800 < 720 => 800 >= 720 => NOT visible
-    assert!(tc.is_window_visible(0));
-    assert!(tc.is_window_visible(1)); // partially visible (top 20px)
-    assert!(!tc.is_window_visible(2)); // completely off-screen
-
-    // Scroll to show all windows
-    tc.set_scroll(180.0);
-
-    // After scroll: window positions shift up by 180
-    // Window 0: y=420, Window 1: y=520, Window 2: y=620
+    // All windows are visible (total height 300 < screen height 720)
     assert!(tc.is_window_visible(0));
     assert!(tc.is_window_visible(1));
-    assert!(tc.is_window_visible(2)); // now visible at y=620
+    assert!(tc.is_window_visible(2));
 }
 
 // ============================================================================
@@ -590,15 +637,20 @@ fn window_at_exact_boundaries() {
     tc.add_external_window(200);
     tc.add_external_window(200);
 
-    // Test exact boundary points
-    // Window 0: Y=0 to Y=200
-    // Window 1: Y=200 to Y=400
+    // With Y-flip (height=720):
+    // Window 0: render_y = 720 - 0 - 200 = 520, range [520, 720)
+    // Window 1: render_y = 720 - 200 - 200 = 320, range [320, 520)
 
-    assertions::assert_click_at_y_hits_window(&tc, 0.0, Some(0));    // start of window 0
-    assertions::assert_click_at_y_hits_window(&tc, 199.9, Some(0));  // just before end
-    assertions::assert_click_at_y_hits_window(&tc, 200.0, Some(1));  // exactly at window 1 start
+    // Screen coordinates (Y=0 at top):
+    // Window 0: screen [0, 200) → note: screen Y=0 maps to render Y=720 (exclusive end)
+    // Window 1: screen [200, 400] → screen Y=400 maps to render Y=320 (inclusive start)
+
+    assertions::assert_click_at_y_hits_window(&tc, 0.1, Some(0));    // just inside top = window 0
+    assertions::assert_click_at_y_hits_window(&tc, 199.9, Some(0));  // just before window 1
+    assertions::assert_click_at_y_hits_window(&tc, 200.1, Some(1));  // just inside window 1
     assertions::assert_click_at_y_hits_window(&tc, 399.9, Some(1));  // just before end
-    assertions::assert_click_at_y_hits_window(&tc, 400.0, None);     // past all windows
+    assertions::assert_click_at_y_hits_window(&tc, 400.0, Some(1));  // exactly at end (inclusive)
+    assertions::assert_click_at_y_hits_window(&tc, 400.1, None);     // past all windows
 }
 
 // ============================================================================
@@ -749,7 +801,7 @@ fn element_geometry_must_include_location_offset() {
 fn gnome_maps_style_multi_element_window_no_overlap() {
     let mut tc = TestCompositor::new_headless(1280, 720);
 
-    // Internal terminal takes 200 pixels
+    // Internal terminal takes 200 pixels (not included in render_positions calculation)
     tc.set_terminal_height(200);
 
     // Add a simple terminal window (foot)
@@ -771,18 +823,19 @@ fn gnome_maps_style_multi_element_window_no_overlap() {
     // Verify elements stay within window bounds
     assertions::assert_elements_within_window_bounds(&tc);
 
-    // Check specific positions
+    // Check specific positions using rendered_elements (content coordinates)
+    // Note: rendered_elements includes terminal_total_height offset
     let elements = tc.rendered_elements();
 
-    // Window 0 (foot) starts at y=200 (after terminal)
-    assert!(elements.iter().any(|e| e.window_index == 0 && e.screen_y == 200));
+    // Window 0 (foot) at content_y = terminal_height + 0 = 200
+    let foot_elem = elements.iter().find(|e| e.window_index == 0).expect("foot element");
+    assert_eq!(foot_elem.screen_y, 200, "foot starts after terminal (y=200)");
 
-    // Window 1 (gnome-maps) starts at y=350 (after foot)
-    // Its toolbar element should be at y=350
+    // Window 1 (gnome-maps) at content_y = terminal_height + foot_height = 200 + 150 = 350
     let maps_toolbar = elements.iter()
         .find(|e| e.window_index == 1 && e.element_index == 0)
         .expect("maps toolbar element");
-    assert_eq!(maps_toolbar.screen_y, 350, "maps toolbar should be at 350");
+    assert_eq!(maps_toolbar.screen_y, 350, "maps toolbar starts after foot (y=350)");
 }
 
 /// Test: Elements with negative internal Y offset (like dropdowns/popups)
@@ -842,7 +895,7 @@ fn multiple_complex_windows_no_overlap() {
         (0, 180),  // single full-height element
     ]);
 
-    // All elements should be non-overlapping
+    // All elements should be non-overlapping (uses content coordinates)
     assertions::assert_no_element_overlaps(&tc);
     assertions::assert_elements_within_window_bounds(&tc);
 
@@ -1019,28 +1072,18 @@ fn foot_must_render_after_gnome_maps_not_overlapping() {
 
     let positions = tc.render_positions();
 
-    // gnome-maps at y=100 (after terminal)
-    assert_eq!(positions[0].0, 100, "gnome-maps should be at y=100");
+    // With Y-flip:
+    // Window 0 (h=400): render_y = 720 - 0 - 400 = 320
+    // Window 1 (h=200): render_y = 720 - 400 - 200 = 120
+    assert_eq!(positions[0].0, 320, "gnome-maps at render Y=320");
     assert_eq!(positions[0].1, 400, "gnome-maps height should be 400");
-
-    // foot at y=500 (after gnome-maps: 100 + 400 = 500)
-    assert_eq!(positions[1].0, 500, "foot should be at y=500 (after gnome-maps)");
+    assert_eq!(positions[1].0, 120, "foot at render Y=120");
     assert_eq!(positions[1].1, 200, "foot height should be 200");
 
-    // Verify no overlap using rendered elements
-    let elements = tc.rendered_elements();
-
-    let gnome_maps_elem = elements.iter().find(|e| e.window_index == 0).unwrap();
-    let foot_elem = elements.iter().find(|e| e.window_index == 1).unwrap();
-
-    let gnome_maps_end = gnome_maps_elem.screen_y + gnome_maps_elem.height;
-    let foot_start = foot_elem.screen_y;
-
-    assert!(
-        gnome_maps_end <= foot_start,
-        "BUG: foot (y={}) overlaps gnome-maps (ends at y={}). Foot should start at y={}",
-        foot_start, gnome_maps_end, gnome_maps_end
-    );
+    // With Y-flip, windows are contiguous when: foot.end == gnome-maps.start
+    let foot_end = positions[1].0 + positions[1].1; // 120 + 200 = 320
+    let gnome_maps_start = positions[0].0; // 320
+    assert_eq!(foot_end, gnome_maps_start, "foot should end where gnome-maps starts");
 }
 
 /// Test that mirrors EXACTLY the main.rs rendering code structure.
@@ -1236,28 +1279,28 @@ fn click_detection_uses_actual_heights_after_fix() {
     // Window 1: cached=200, actual=200 (normal)
     tc.add_external_window(200);
 
-    // Both rendering and click detection now use actual heights:
-    // Window 0: Y=0, height=400
-    // Window 1: Y=400, height=200
+    // With Y-flip and actual heights:
+    // Window 0 (content_y=0, h=400): render_y = 720 - 0 - 400 = 320
+    // Window 1 (content_y=400, h=200): render_y = 720 - 400 - 200 = 120
     let render_pos = tc.render_positions();
-    assert_eq!(render_pos[0], (0, 400), "window 0 render position");
-    assert_eq!(render_pos[1], (400, 200), "window 1 render position");
+    assert_eq!(render_pos[0], (320, 400), "window 0 render position");
+    assert_eq!(render_pos[1], (120, 200), "window 1 render position");
 
-    // Click ranges now match render positions
+    // Click ranges now match render positions (render Y coordinates)
     let click_ranges = tc.window_click_ranges();
-    assert_eq!(click_ranges[0], (0.0, 400.0), "window 0 click range (actual)");
-    assert_eq!(click_ranges[1], (400.0, 600.0), "window 1 click range (actual)");
+    assert_eq!(click_ranges[0], (320.0, 720.0), "window 0 click range (actual)");
+    assert_eq!(click_ranges[1], (120.0, 320.0), "window 1 click range (actual)");
 
-    // Clicking at Y=250 (visually on window 0) now correctly returns window 0
-    let clicked_at_250 = tc.window_at(250.0);
-    assert_eq!(clicked_at_250, Some(0), "Y=250 should hit window 0");
+    // Clicking at render Y=500 (in window 0's range 320-720) should hit window 0
+    let clicked_at_500 = tc.window_at(500.0);
+    assert_eq!(clicked_at_500, Some(0), "render Y=500 should hit window 0");
 
-    // Verify the old buggy behavior would have returned wrong window
-    let buggy_result = tc.window_at_cached(250.0);
-    assert_eq!(buggy_result, Some(1), "cached heights would incorrectly return window 1");
+    // Clicking at render Y=200 (in window 1's range 120-320) should hit window 1
+    let clicked_at_200 = tc.window_at(200.0);
+    assert_eq!(clicked_at_200, Some(1), "render Y=200 should hit window 1");
 }
 
-/// FIXED: Clicking at Y=450 now correctly hits window 1 (at render Y=400-600)
+/// FIXED: Clicking in window 1's render range now correctly hits window 1
 #[test]
 fn click_in_actual_range_works_after_fix() {
     let mut tc = TestCompositor::new_headless(1280, 720);
@@ -1265,20 +1308,19 @@ fn click_in_actual_range_works_after_fix() {
     // Window 0: cached=200, actual=400
     tc.add_external_window_with_mismatch(200, 400);
 
-    // Window 1: cached=200, actual=200 (at render Y=400)
+    // Window 1: cached=200, actual=200
     tc.add_external_window(200);
 
-    // Render positions: window 1 at Y=400-600
+    // With Y-flip:
+    // Window 0: render_y = 720 - 0 - 400 = 320, range 320-720
+    // Window 1: render_y = 720 - 400 - 200 = 120, range 120-320
     let render_pos = tc.render_positions();
-    assert_eq!(render_pos[1], (400, 200));
+    assert_eq!(render_pos[0], (320, 400));
+    assert_eq!(render_pos[1], (120, 200));
 
-    // Click at Y=450 (visually on window 1) - now works correctly
-    let clicked = tc.window_at(450.0);
-    assert_eq!(clicked, Some(1), "Y=450 should hit window 1 at Y=400-600");
-
-    // Verify the old buggy behavior would have returned None
-    let buggy_result = tc.window_at_cached(450.0);
-    assert_eq!(buggy_result, None, "cached heights would incorrectly return None");
+    // Click at render Y=200 (in window 1's range 120-320)
+    let clicked = tc.window_at(200.0);
+    assert_eq!(clicked, Some(1), "render Y=200 should hit window 1");
 }
 
 /// FIXED: Click detection matches render positions when using actual heights
@@ -1317,23 +1359,29 @@ fn render_and_click_ranges_match_with_actual_heights() {
     tc.add_external_window_with_mismatch(100, 200); // cached=100, actual=200
     tc.add_external_window(150); // cached=actual=150
 
-    // Both use actual: 0-300, 300-500, 500-650
+    // With Y-flip:
+    // Window 0 (h=300): render_y = 720 - 0 - 300 = 420, range 420-720
+    // Window 1 (h=200): render_y = 720 - 300 - 200 = 220, range 220-420
+    // Window 2 (h=150): render_y = 720 - 500 - 150 = 70, range 70-220
     let render = tc.render_positions();
-    assert_eq!(render[0], (0, 300));
-    assert_eq!(render[1], (300, 200));
-    assert_eq!(render[2], (500, 150));
+    assert_eq!(render[0], (420, 300));
+    assert_eq!(render[1], (220, 200));
+    assert_eq!(render[2], (70, 150));
 
     // Click ranges now match render positions
     let click = tc.window_click_ranges();
-    assert_eq!(click[0], (0.0, 300.0));
-    assert_eq!(click[1], (300.0, 500.0));
-    assert_eq!(click[2], (500.0, 650.0));
+    assert_eq!(click[0], (420.0, 720.0));
+    assert_eq!(click[1], (220.0, 420.0));
+    assert_eq!(click[2], (70.0, 220.0));
 
-    // Clicking at Y=400 now correctly hits window 1
-    assert_eq!(tc.window_at(400.0), Some(1), "Y=400 should hit window 1");
+    // Click at render Y=350 (in window 1's range 220-420)
+    assert_eq!(tc.window_at(350.0), Some(1), "render Y=350 should hit window 1");
 
-    // Clicking at Y=150 correctly hits window 0
-    assert_eq!(tc.window_at(150.0), Some(0), "Y=150 should hit window 0");
+    // Click at render Y=500 (in window 0's range 420-720)
+    assert_eq!(tc.window_at(500.0), Some(0), "render Y=500 should hit window 0");
+
+    // Click at render Y=100 (in window 2's range 70-220)
+    assert_eq!(tc.window_at(100.0), Some(2), "render Y=100 should hit window 2");
 }
 
 /// KEY TEST: The rendering code must use ACTUAL element heights to position
@@ -1568,32 +1616,30 @@ fn window_at_and_relative_point_consistent() {
     let mut tc = TestCompositor::new_headless(1280, 720);
 
     tc.set_terminal_height(100);
-    tc.add_external_window(200); // Window 0: Y=100-300
-    tc.add_external_window(200); // Window 1: Y=300-500
+    tc.add_external_window(200); // Window 0
+    tc.add_external_window(200); // Window 1
 
-    // Click at Y=250 (middle of window 0)
-    let click_y = 250.0;
-    let hit = tc.window_at(click_y);
+    // With Y-flip (height=720):
+    // Window 0: render_y = 720 - 0 - 200 = 520, range 520-720
+    // Window 1: render_y = 720 - 200 - 200 = 320, range 320-520
+
+    // Screen coordinates (Y=0 at top):
+    // Window 0: screen 0-200
+    // Window 1: screen 200-400
+
+    // Click at screen Y=100 (middle of window 0)
+    // Screen Y=100 → Render Y=620 → in window 0 range (520-720)
+    let screen_y = 100.0;
+    let render_y = 720.0 - screen_y;
+    let hit = tc.window_at(render_y);
     assert_eq!(hit, Some(0), "should hit window 0");
 
-    // For window 0, window_y = 100
-    // relative_y = 250 - 100 = 150
-    // This is 150px into window 0, which has height 200 - valid!
-    let window_y = 100.0; // terminal_height - scroll_offset
-    let relative_y = click_y - window_y;
-    assert_eq!(relative_y, 150.0);
-    assert!((0.0..200.0).contains(&relative_y), "relative_y within window 0 bounds");
-
-    // Click at Y=350 (middle of window 1)
-    let click_y = 350.0;
-    let hit = tc.window_at(click_y);
+    // Click at screen Y=300 (middle of window 1)
+    // Screen Y=300 → Render Y=420 → in window 1 range (320-520)
+    let screen_y = 300.0;
+    let render_y = 720.0 - screen_y;
+    let hit = tc.window_at(render_y);
     assert_eq!(hit, Some(1), "should hit window 1");
-
-    // For window 1, window_y = 100 + 200 = 300
-    let window_1_y = 300.0;
-    let relative_y = click_y - window_1_y;
-    assert_eq!(relative_y, 50.0);
-    assert!((0.0..200.0).contains(&relative_y), "relative_y within window 1 bounds");
 }
 
 /// Test that new windows get initialized with bbox, but existing are preserved

@@ -513,35 +513,18 @@ impl ColumnCompositor {
     ///
     /// The point must be in render coordinates (Y=0 at bottom).
     /// Returns the cell index if found.
+    ///
+    /// This uses our own coordinate calculation (not Smithay's Space.element_under)
+    /// to ensure consistent behavior with Y-flip coordinates.
     pub fn cell_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
-        // Try Smithay's Space element_under for external windows
-        if let Some((window, _loc)) = self.space.element_under(point) {
-            if let Some(found_toplevel) = window.toplevel() {
-                for (i, cell) in self.cells.iter().enumerate() {
-                    if let ColumnCell::External(entry) = cell {
-                        if entry.toplevel.wl_surface() == found_toplevel.wl_surface() {
-                            tracing::debug!(
-                                index = i,
-                                point = ?(point.x, point.y),
-                                "cell_at: found external window via Space"
-                            );
-                            return Some(i);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: use cached heights calculation for all cells
-        // point.y is in render coordinates (y=0 at bottom after flip)
-        // We need to match against render positions which are also flipped
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
         for (i, &height) in self.cached_cell_heights.iter().enumerate() {
             let cell_height = height as f64;
 
-            // Calculate render Y for this cell (same formula as main.rs)
+            // Calculate render Y for this cell (same formula as main.rs rendering)
+            // render_y = screen_height - content_y - height
             let render_y = screen_height - content_y - cell_height;
             let render_end = render_y + cell_height;
 
@@ -551,7 +534,8 @@ impl ColumnCompositor {
                     point = ?(point.x, point.y),
                     render_y,
                     render_end,
-                    "cell_at: found cell via cached heights"
+                    content_y,
+                    "cell_at: hit"
                 );
                 return Some(i);
             }
@@ -691,223 +675,260 @@ delegate_output!(ColumnCompositor);
 #[cfg(test)]
 mod tests {
 
-    /// Test data for positioning - simulates the state needed for window_at() calculations
+    /// Test data for positioning - simulates the state needed for cell_at() calculations
+    /// Uses the same Y-flip coordinate system as the actual implementation.
+    ///
+    /// Coordinate system:
+    /// - Render coords: Y=0 at BOTTOM (OpenGL convention)
+    /// - Cell 0 appears at TOP of screen (high render Y)
+    /// - Cell N appears at BOTTOM of screen (low render Y)
     struct MockPositioning {
-        terminal_total_height: i32,
+        screen_height: i32,
         scroll_offset: f64,
-        cached_window_heights: Vec<i32>,
+        cached_cell_heights: Vec<i32>,
     }
 
     impl MockPositioning {
-        /// Replicate the window_at() logic for testing
-        fn window_at(&self, y: f64) -> Option<usize> {
-            let terminal_height = self.terminal_total_height as f64;
-            let mut window_y = terminal_height - self.scroll_offset;
+        /// Replicate the cell_at() logic for testing
+        /// This is the exact same formula as in ColumnCompositor::cell_at()
+        fn cell_at(&self, y: f64) -> Option<usize> {
+            let screen_height = self.screen_height as f64;
+            let mut content_y = -self.scroll_offset;
 
-            for (i, &height) in self.cached_window_heights.iter().enumerate() {
-                let window_height = height as f64;
-                let window_screen_end = window_y + window_height;
+            for (i, &height) in self.cached_cell_heights.iter().enumerate() {
+                let cell_height = height as f64;
 
-                if y >= window_y && y < window_screen_end {
+                // Y-flip formula: render_y = screen_height - content_y - height
+                let render_y = screen_height - content_y - cell_height;
+                let render_end = render_y + cell_height;
+
+                if y >= render_y && y < render_end {
                     return Some(i);
                 }
-                window_y += window_height;
+                content_y += cell_height;
             }
             None
         }
 
-        /// Replicate the rendering position calculation from main.rs
+        /// Get render positions (render_y, height) for each cell
+        /// Uses Y-flip: render_y = screen_height - content_y - height
         fn render_positions(&self) -> Vec<(i32, i32)> {
-            let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
-            self.cached_window_heights
+            let screen_height = self.screen_height;
+            let mut content_y = -(self.scroll_offset as i32);
+
+            self.cached_cell_heights
                 .iter()
                 .map(|&height| {
-                    let y = window_y;
-                    window_y += height;
-                    (y, height)
+                    let render_y = screen_height - content_y - height;
+                    content_y += height;
+                    (render_y, height)
                 })
                 .collect()
         }
 
-        /// Get the Y range for each window (start, end)
-        fn window_ranges(&self) -> Vec<(f64, f64)> {
-            let terminal_height = self.terminal_total_height as f64;
-            let mut window_y = terminal_height - self.scroll_offset;
+        /// Get the render Y range for each cell (render_start, render_end)
+        fn cell_ranges(&self) -> Vec<(f64, f64)> {
+            let screen_height = self.screen_height as f64;
+            let mut content_y = -self.scroll_offset;
 
-            self.cached_window_heights
+            self.cached_cell_heights
                 .iter()
                 .map(|&height| {
-                    let start = window_y;
-                    let end = window_y + height as f64;
-                    window_y = end;
-                    (start, end)
+                    let cell_height = height as f64;
+                    let render_y = screen_height - content_y - cell_height;
+                    let render_end = render_y + cell_height;
+                    content_y += cell_height;
+                    (render_y, render_end)
                 })
                 .collect()
         }
     }
 
     #[test]
-    fn test_window_at_single_window() {
+    fn test_cell_at_single_cell() {
         let pos = MockPositioning {
-            terminal_total_height: 100,
+            screen_height: 600,
             scroll_offset: 0.0,
-            cached_window_heights: vec![200],
+            cached_cell_heights: vec![200],
         };
 
-        // Window should be at Y=100 to Y=300
-        assert_eq!(pos.window_at(50.0), None, "should not hit window at Y=50 (on terminal)");
-        assert_eq!(pos.window_at(100.0), Some(0), "should hit window 0 at Y=100");
-        assert_eq!(pos.window_at(200.0), Some(0), "should hit window 0 at Y=200");
-        assert_eq!(pos.window_at(299.0), Some(0), "should hit window 0 at Y=299");
-        assert_eq!(pos.window_at(300.0), None, "should not hit window at Y=300 (past end)");
+        // With Y-flip: cell 0 (height 200) at content_y=0
+        // render_y = 600 - 0 - 200 = 400
+        // render_end = 400 + 200 = 600
+        // So cell 0 is at render Y 400-600 (TOP of screen in render coords)
+
+        assert_eq!(pos.cell_at(300.0), None, "render Y=300 below cell 0");
+        assert_eq!(pos.cell_at(400.0), Some(0), "render Y=400 at cell 0 start");
+        assert_eq!(pos.cell_at(500.0), Some(0), "render Y=500 inside cell 0");
+        assert_eq!(pos.cell_at(599.0), Some(0), "render Y=599 inside cell 0");
+        assert_eq!(pos.cell_at(600.0), None, "render Y=600 is past screen top");
     }
 
     #[test]
-    fn test_window_at_two_windows_no_overlap() {
+    fn test_cell_at_two_cells_no_overlap() {
         let pos = MockPositioning {
-            terminal_total_height: 100,
+            screen_height: 600,
             scroll_offset: 0.0,
-            cached_window_heights: vec![150, 200],
+            cached_cell_heights: vec![200, 300],
         };
 
-        // Window 0: Y=100 to Y=250
-        // Window 1: Y=250 to Y=450
-        let ranges = pos.window_ranges();
-        assert_eq!(ranges[0], (100.0, 250.0), "window 0 range");
-        assert_eq!(ranges[1], (250.0, 450.0), "window 1 range");
+        // Cell 0: content_y=0, height=200
+        //   render_y = 600 - 0 - 200 = 400, render_end = 600
+        // Cell 1: content_y=200, height=300
+        //   render_y = 600 - 200 - 300 = 100, render_end = 400
 
-        // Verify no overlap
-        assert!(ranges[0].1 <= ranges[1].0, "windows should not overlap");
+        let ranges = pos.cell_ranges();
+        assert_eq!(ranges[0], (400.0, 600.0), "cell 0 at top (high render Y)");
+        assert_eq!(ranges[1], (100.0, 400.0), "cell 1 below (lower render Y)");
+
+        // Cell 0's bottom (400) equals cell 1's top (400) - no overlap
+        assert_eq!(ranges[0].0, ranges[1].1, "cells should be adjacent");
 
         // Test click detection
-        assert_eq!(pos.window_at(100.0), Some(0), "Y=100 should hit window 0");
-        assert_eq!(pos.window_at(249.0), Some(0), "Y=249 should hit window 0");
-        assert_eq!(pos.window_at(250.0), Some(1), "Y=250 should hit window 1");
-        assert_eq!(pos.window_at(449.0), Some(1), "Y=449 should hit window 1");
+        assert_eq!(pos.cell_at(500.0), Some(0), "render Y=500 hits cell 0");
+        assert_eq!(pos.cell_at(400.0), Some(0), "render Y=400 at boundary hits cell 0");
+        assert_eq!(pos.cell_at(399.0), Some(1), "render Y=399 hits cell 1");
+        assert_eq!(pos.cell_at(200.0), Some(1), "render Y=200 hits cell 1");
+        assert_eq!(pos.cell_at(100.0), Some(1), "render Y=100 at cell 1 start");
+        assert_eq!(pos.cell_at(99.0), None, "render Y=99 below all cells");
     }
 
     #[test]
     fn test_render_positions_match_click_detection() {
         let pos = MockPositioning {
-            terminal_total_height: 100,
+            screen_height: 600,
             scroll_offset: 0.0,
-            cached_window_heights: vec![150, 200, 100],
+            cached_cell_heights: vec![150, 200, 100],
         };
 
         let render_pos = pos.render_positions();
-        let click_ranges = pos.window_ranges();
+        let click_ranges = pos.cell_ranges();
 
-        // Verify render Y matches click detection start Y
+        // Verify render Y matches click detection range
         for (i, ((render_y, render_h), (click_start, click_end))) in
             render_pos.iter().zip(click_ranges.iter()).enumerate()
         {
             assert_eq!(
                 *render_y as f64, *click_start,
-                "window {} render Y ({}) should match click start ({})",
+                "cell {} render Y ({}) should match click start ({})",
                 i, render_y, click_start
             );
             assert_eq!(
                 *render_h as f64, click_end - click_start,
-                "window {} render height should match click height",
+                "cell {} render height should match click range",
                 i
             );
         }
     }
 
     #[test]
-    fn test_window_positions_with_scroll() {
+    fn test_cell_positions_with_scroll() {
         let pos = MockPositioning {
-            terminal_total_height: 100,
+            screen_height: 600,
             scroll_offset: 50.0,
-            cached_window_heights: vec![150, 200],
+            cached_cell_heights: vec![200, 300],
         };
 
         // With scroll=50:
-        // Window 0: Y=100-50=50 to Y=200
-        // Window 1: Y=200 to Y=400
-        let ranges = pos.window_ranges();
-        assert_eq!(ranges[0], (50.0, 200.0), "window 0 range with scroll");
-        assert_eq!(ranges[1], (200.0, 400.0), "window 1 range with scroll");
+        // Cell 0: content_y=-50, height=200
+        //   render_y = 600 - (-50) - 200 = 450, render_end = 650 (partially off screen)
+        // Cell 1: content_y=150, height=300
+        //   render_y = 600 - 150 - 300 = 150, render_end = 450
 
-        // Render positions should also be shifted
-        let render_pos = pos.render_positions();
-        assert_eq!(render_pos[0].0, 50, "render Y for window 0 with scroll");
-        assert_eq!(render_pos[1].0, 200, "render Y for window 1 with scroll");
+        let ranges = pos.cell_ranges();
+        assert_eq!(ranges[0], (450.0, 650.0), "cell 0 scrolled up (higher render Y)");
+        assert_eq!(ranges[1], (150.0, 450.0), "cell 1 scrolled up");
+
+        // Cell 0's bottom (450) equals cell 1's top (450)
+        assert_eq!(ranges[0].0, ranges[1].1, "cells should remain adjacent after scroll");
     }
 
     #[test]
-    fn test_window_at_returns_correct_index_not_flipped() {
-        // This test verifies the issue: "click targets seem to be flipped vertically"
+    fn test_cell_order_matches_visual_top_to_bottom() {
+        // Cell 0 should be at TOP of screen (highest render Y)
+        // Cell N should be at BOTTOM of screen (lowest render Y)
         let pos = MockPositioning {
-            terminal_total_height: 0,  // No terminals
+            screen_height: 600,
             scroll_offset: 0.0,
-            cached_window_heights: vec![200, 300],  // Window 0 is 200px, Window 1 is 300px
+            cached_cell_heights: vec![100, 200, 150],
         };
 
-        // Window 0 should be at Y=0-200 (top)
-        // Window 1 should be at Y=200-500 (bottom)
+        // Total height = 100 + 200 + 150 = 450
+        // Cell 0: content_y=0,   height=100 → render_y=500, render_end=600
+        // Cell 1: content_y=100, height=200 → render_y=300, render_end=500
+        // Cell 2: content_y=300, height=150 → render_y=150, render_end=300
 
-        // Clicking near the top should hit window 0, not window 1
-        assert_eq!(pos.window_at(10.0), Some(0), "click at Y=10 should hit window 0 (top)");
-        assert_eq!(pos.window_at(100.0), Some(0), "click at Y=100 should hit window 0");
-        assert_eq!(pos.window_at(199.0), Some(0), "click at Y=199 should hit window 0");
+        let ranges = pos.cell_ranges();
+        assert_eq!(ranges[0], (500.0, 600.0), "cell 0");
+        assert_eq!(ranges[1], (300.0, 500.0), "cell 1");
+        assert_eq!(ranges[2], (150.0, 300.0), "cell 2");
 
-        // Clicking lower should hit window 1
-        assert_eq!(pos.window_at(200.0), Some(1), "click at Y=200 should hit window 1");
-        assert_eq!(pos.window_at(300.0), Some(1), "click at Y=300 should hit window 1 (bottom)");
-        assert_eq!(pos.window_at(499.0), Some(1), "click at Y=499 should hit window 1");
+        // Cell 0 at top, cell 1 below, cell 2 at bottom
+        assert!(ranges[0].0 > ranges[1].0, "cell 0 should be higher than cell 1");
+        assert!(ranges[1].0 > ranges[2].0, "cell 1 should be higher than cell 2");
+
+        // Clicking at HIGH render Y (top of screen) should hit cell 0
+        assert_eq!(pos.cell_at(550.0), Some(0), "high render Y (top of screen) hits cell 0");
+
+        // Clicking at LOW render Y (bottom of screen) should hit cell 2
+        assert_eq!(pos.cell_at(200.0), Some(2), "low render Y (bottom of screen) hits cell 2");
+
+        // Below cell 2 should hit nothing
+        assert_eq!(pos.cell_at(149.0), None, "below all cells hits nothing");
     }
 
     #[test]
-    fn test_windows_stack_vertically_not_overlap() {
-        // This test verifies: "Windows are still overlapping"
+    fn test_cells_stack_vertically_not_overlap() {
         let heights = vec![200, 300, 150];
         let pos = MockPositioning {
-            terminal_total_height: 0,
+            screen_height: 800,
             scroll_offset: 0.0,
-            cached_window_heights: heights.clone(),
+            cached_cell_heights: heights.clone(),
         };
 
-        let ranges = pos.window_ranges();
+        let ranges = pos.cell_ranges();
 
-        // Each window's end should equal the next window's start
+        // Each cell's render_y (bottom) should equal the next cell's render_end (top)
         for i in 0..ranges.len() - 1 {
             assert_eq!(
-                ranges[i].1, ranges[i + 1].0,
-                "window {} end ({}) should equal window {} start ({})",
-                i, ranges[i].1, i + 1, ranges[i + 1].0
+                ranges[i].0, ranges[i + 1].1,
+                "cell {} bottom ({}) should equal cell {} top ({})",
+                i, ranges[i].0, i + 1, ranges[i + 1].1
             );
         }
 
-        // Total height should be sum of all heights
-        let total: f64 = heights.iter().map(|&h| h as f64).sum();
-        assert_eq!(ranges.last().unwrap().1, total, "total height should match");
+        // First cell's top should be at screen_height - 0 = 800... no wait,
+        // with content_y=0, height=200: render_end = 800 - 0 = 800
+        assert_eq!(ranges[0].1, 800.0, "first cell top should be at screen height");
+
+        // Last cell's bottom should be at screen_height - total_content
+        let total: i32 = heights.iter().sum();
+        assert_eq!(ranges.last().unwrap().0, (800 - total) as f64, "last cell bottom");
     }
 
     #[test]
-    fn test_point_in_only_one_window() {
-        // For any Y coordinate, window_at should return at most one window
+    fn test_point_in_only_one_cell() {
         let pos = MockPositioning {
-            terminal_total_height: 50,
+            screen_height: 600,
             scroll_offset: 0.0,
-            cached_window_heights: vec![100, 150, 200],
+            cached_cell_heights: vec![100, 150, 200],
         };
 
-        // Check every pixel from 0 to 550
-        for y in 0..550 {
-            let result = pos.window_at(y as f64);
-            // Ensure we get either None or exactly one index
-            if let Some(idx) = result {
-                assert!(idx < 3, "window index should be valid");
-                // Verify this Y doesn't also hit another window
-                for other_idx in 0..3 {
-                    if other_idx != idx {
-                        // Re-check - the same Y should not be in multiple windows
-                        // This is implicitly tested by window_at returning a single value
-                    }
-                }
-            }
+        // Check every pixel in the cell range
+        let total_height: i32 = pos.cached_cell_heights.iter().sum();
+        let bottom_y = pos.screen_height - total_height;
+
+        for y in bottom_y..pos.screen_height {
+            let result = pos.cell_at(y as f64);
+            assert!(result.is_some(), "render Y={} should hit a cell", y);
+            let idx = result.unwrap();
+            assert!(idx < 3, "cell index should be valid");
         }
+
+        // Below content should hit nothing
+        assert_eq!(pos.cell_at((bottom_y - 1) as f64), None);
+        // At/above screen top should hit nothing
+        assert_eq!(pos.cell_at(600.0), None);
     }
 
     #[test]

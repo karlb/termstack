@@ -132,8 +132,22 @@ fn main() -> anyhow::Result<()> {
     while compositor.running {
         // Update cell heights BEFORE processing input events
         // so click detection uses the correct positions
-        // Calculate heights for all cells
-        let cell_heights: Vec<i32> = compositor.cells.iter().map(|cell| {
+        //
+        // IMPORTANT: We use cached heights from the PREVIOUS frame for existing cells.
+        // These are the actual rendered heights (from element geometry), not bbox().
+        // Using bbox() here caused a mismatch with rendering, making click detection
+        // increasingly wrong further down the stack.
+        //
+        // We only need to calculate heights for NEW cells (where cached height is missing).
+        let cell_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
+            // Use cached height if available (it's the actual rendered height from last frame)
+            if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                if cached > 0 {
+                    return cached;
+                }
+            }
+
+            // Fallback for new cells: use texture size or default
             match cell {
                 ColumnCell::Terminal(id) => {
                     terminal_manager.get(*id)
@@ -142,8 +156,8 @@ fn main() -> anyhow::Result<()> {
                         .unwrap_or(200)
                 }
                 ColumnCell::External(entry) => {
-                    let bbox = entry.window.bbox();
-                    if bbox.size.h > 0 { bbox.size.h } else { entry.state.current_height() as i32 }
+                    // For new external windows, use state height as initial guess
+                    entry.state.current_height() as i32
                 }
             }
         }).collect();
@@ -202,8 +216,16 @@ fn main() -> anyhow::Result<()> {
                     compositor.add_terminal(id);
 
                     // Update cached_cell_heights to include the new terminal
-                    // (it won't have a texture yet, so use a default height)
-                    let new_heights: Vec<i32> = compositor.cells.iter().map(|cell| {
+                    // Use cached heights for existing cells, default for new terminal
+                    let new_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
+                        // Use cached height if available
+                        if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                            if cached > 0 {
+                                return cached;
+                            }
+                        }
+
+                        // Fallback for new cells
                         match cell {
                             ColumnCell::Terminal(tid) => {
                                 terminal_manager.get(*tid)
@@ -212,8 +234,7 @@ fn main() -> anyhow::Result<()> {
                                     .unwrap_or(200) // Default height for new terminals
                             }
                             ColumnCell::External(entry) => {
-                                let bbox = entry.window.bbox();
-                                if bbox.size.h > 0 { bbox.size.h } else { 200 }
+                                entry.state.current_height() as i32
                             }
                         }
                     }).collect();
