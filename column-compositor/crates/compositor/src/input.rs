@@ -26,7 +26,7 @@ impl ColumnCompositor {
             InputEvent::PointerMotionAbsolute { event } => {
                 self.handle_pointer_motion_absolute(event)
             }
-            InputEvent::PointerButton { event } => self.handle_pointer_button(event),
+            InputEvent::PointerButton { event } => self.handle_pointer_button(event, None),
             InputEvent::PointerAxis { event } => self.handle_pointer_axis(event),
             _ => {}
         }
@@ -54,7 +54,7 @@ impl ColumnCompositor {
             InputEvent::PointerMotionAbsolute { event } => {
                 self.handle_pointer_motion_absolute(event)
             }
-            InputEvent::PointerButton { event } => self.handle_pointer_button(event),
+            InputEvent::PointerButton { event } => self.handle_pointer_button(event, Some(terminals)),
             InputEvent::PointerAxis { event } => self.handle_pointer_axis(event),
             _ => {}
         }
@@ -380,7 +380,11 @@ impl ColumnCompositor {
         );
     }
 
-    fn handle_pointer_button<I: InputBackend>(&mut self, event: impl PointerButtonEvent<I>) {
+    fn handle_pointer_button<I: InputBackend>(
+        &mut self,
+        event: impl PointerButtonEvent<I>,
+        terminals: Option<&mut TerminalManager>,
+    ) {
         let serial = SERIAL_COUNTER.next_serial();
         let button = event.button_code();
         let state = event.state();
@@ -392,29 +396,14 @@ impl ColumnCompositor {
             let pointer_location = pointer.current_location();
 
             // Log detailed position info for debugging
-            tracing::info!(
+            tracing::debug!(
                 pointer_location = ?(pointer_location.x, pointer_location.y),
                 output_size = ?(self.output_size.w, self.output_size.h),
                 terminal_height = self.terminal_total_height,
                 scroll_offset = self.scroll_offset,
                 window_count = self.windows.len(),
-                cached_heights = ?self.cached_window_heights,
                 "handle_pointer_button: click pressed"
             );
-
-            // Log where Space thinks each window is
-            for (i, entry) in self.windows.iter().enumerate() {
-                if let Some(loc) = self.space.element_location(&entry.window) {
-                    let height = self.cached_window_heights.get(i).copied().unwrap_or(0);
-                    tracing::info!(
-                        window_idx = i,
-                        space_y = loc.y,
-                        height,
-                        y_range = ?(loc.y, loc.y + height),
-                        "handle_pointer_button: window in Space"
-                    );
-                }
-            }
 
             if let Some(index) = self.window_at(pointer_location) {
                 // Clicked on an external Wayland window
@@ -439,21 +428,22 @@ impl ColumnCompositor {
                 }
             } else if self.is_on_terminal(pointer_location) {
                 // Clicked on an internal terminal
-                tracing::info!(
-                    pointer_y = pointer_location.y,
-                    terminal_end = (self.terminal_total_height as f64 - self.scroll_offset),
-                    "handle_pointer_button: hit terminal area"
-                );
-
                 self.external_window_focused = false;
 
                 // Clear keyboard focus from external windows
                 if let Some(keyboard) = self.seat.get_keyboard() {
                     keyboard.set_focus(self, None, serial);
                 }
-                tracing::info!("focused internal terminal");
+
+                // Focus the clicked terminal
+                if let Some(terminals) = terminals {
+                    if let Some(id) = terminals.terminal_at_y(pointer_location.y, self.scroll_offset) {
+                        terminals.focus(id);
+                        tracing::info!(?id, "focused internal terminal");
+                    }
+                }
             } else {
-                tracing::info!(
+                tracing::debug!(
                     pointer_y = pointer_location.y,
                     "handle_pointer_button: click not on terminal or window"
                 );

@@ -413,6 +413,33 @@ impl TerminalManager {
         let height = self.terminals.get(&focused_id)?.height as i32;
         Some((y, height))
     }
+
+    /// Find which terminal is at a given screen Y position
+    /// Returns the terminal ID if a terminal is at that position
+    pub fn terminal_at_y(&self, screen_y: f64, scroll_offset: f64) -> Option<TerminalId> {
+        // Convert screen Y to content Y (accounting for scroll)
+        let content_y = screen_y + scroll_offset;
+
+        let mut y = 0.0;
+        for id in self.ids() {
+            if let Some(term) = self.terminals.get(&id) {
+                let height = term.height as f64;
+                if content_y >= y && content_y < y + height {
+                    return Some(id);
+                }
+                y += height;
+            }
+        }
+        None
+    }
+
+    /// Focus a specific terminal
+    pub fn focus(&mut self, id: TerminalId) {
+        if self.terminals.contains_key(&id) {
+            self.focused = Some(id);
+            tracing::info!(?id, "focused terminal");
+        }
+    }
 }
 
 impl Default for TerminalManager {
