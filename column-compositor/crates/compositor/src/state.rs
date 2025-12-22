@@ -254,11 +254,12 @@ impl ColumnCompositor {
             },
         };
 
-        // Insert after focused window, or at end if none focused
-        let insert_index = self.focused_index.map(|i| i + 1).unwrap_or(self.windows.len());
+        // Insert above (before) focused window, or at end if none focused
+        // Lower index = higher on screen (closer to top in screen coords)
+        let insert_index = self.focused_index.unwrap_or(self.windows.len());
         self.windows.insert(insert_index, entry);
 
-        // Focus the new window
+        // Focus the new window (it's now at the same index since we inserted before)
         self.focused_index = Some(insert_index);
 
         self.recalculate_layout();
