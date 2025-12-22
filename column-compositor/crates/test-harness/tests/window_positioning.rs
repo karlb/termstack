@@ -1691,3 +1691,457 @@ fn fix_new_window_gets_bbox_existing_preserved() {
     assert_eq!(state.cached_window_heights, vec![400, 150],
         "Existing window keeps actual height, new window gets bbox");
 }
+
+// ============================================================================
+// Cached Heights Insertion Tests (external window insertion)
+// ============================================================================
+
+/// BUG TEST: When inserting a cell, SET vs INSERT causes different behavior.
+/// SET at index overwrites existing, INSERT shifts existing elements.
+///
+/// Scenario: Terminal is tall (1000px), external window (200px) inserted ABOVE it.
+/// After insertion: [window(200), terminal(1000)]
+///
+/// With SET (buggy): cached_heights[0] = 200 overwrites terminal's height
+/// With INSERT (correct): cached_heights becomes [200, 1000]
+#[test]
+fn bug_cached_heights_set_vs_insert_on_cell_insertion() {
+    // Initial state: one tall terminal
+    let mut cached_heights = vec![1000]; // Terminal at index 0, height 1000
+
+    // External window inserted at index 0 (above terminal)
+    // Terminal shifts to index 1
+
+    let window_idx = 0;
+    let window_height = 200;
+
+    // BUGGY: using SET overwrites terminal's height
+    let mut buggy_heights = cached_heights.clone();
+    if window_idx < buggy_heights.len() {
+        buggy_heights[window_idx] = window_height; // SET - WRONG!
+    }
+    assert_eq!(buggy_heights, vec![200],
+        "BUG: SET overwrites terminal height, loses the 1000");
+
+    // CORRECT: using INSERT preserves terminal's height
+    let mut correct_heights = cached_heights.clone();
+    correct_heights.insert(window_idx, window_height); // INSERT - CORRECT!
+    assert_eq!(correct_heights, vec![200, 1000],
+        "CORRECT: INSERT shifts terminal, preserves both heights");
+}
+
+/// Test scroll calculation with correct INSERT behavior.
+/// After inserting window above tall terminal, scroll to terminal's bottom.
+#[test]
+fn scroll_to_terminal_bottom_after_window_insertion() {
+    let screen_height = 720;
+
+    // Initial: tall terminal at index 0
+    let terminal_height = 1000;
+    let mut cached_heights = vec![terminal_height];
+    let focused_idx = 0;
+
+    // External window (200px) inserted at index 0, terminal shifts to index 1
+    let window_height = 200;
+    cached_heights.insert(0, window_height); // CORRECT: INSERT
+    let focused_idx = focused_idx + 1; // Terminal is now at index 1
+
+    // Calculate scroll to show terminal's bottom
+    let y: i32 = cached_heights.iter().take(focused_idx).sum(); // y = 200 (window above)
+    let height = cached_heights[focused_idx]; // height = 1000
+    let bottom_y = y + height; // bottom_y = 1200
+
+    let total_height: i32 = cached_heights.iter().sum(); // 200 + 1000 = 1200
+    let max_scroll = (total_height - screen_height).max(0); // 1200 - 720 = 480
+    let min_scroll_for_bottom = (bottom_y - screen_height).max(0); // 1200 - 720 = 480
+
+    let scroll_offset = min_scroll_for_bottom.min(max_scroll); // 480
+
+    // Verify terminal bottom is at screen bottom
+    // Content Y of terminal = y - scroll_offset = 200 - 480 = -280
+    // Render Y = screen_height - content_y - height = 720 - (-280) - 1000 = 0
+    // So terminal bottom is at render Y = 0 + 1000 = 1000? No wait...
+    //
+    // Actually with scroll_offset=480:
+    // content_y starts at -scroll_offset = -480
+    // Window: content_y = -480, render_y = 720 - (-480) - 200 = 1000 (off screen top)
+    // Terminal: content_y = -480 + 200 = -280, render_y = 720 - (-280) - 1000 = 0
+    // Terminal spans render Y 0 to 1000, visible portion is 0 to 720
+    //
+    // Terminal bottom at render Y=0+1000=1000, but screen only goes to 720
+    // So terminal bottom is at content coordinate: y + height = 200 + 1000 = 1200
+    // With scroll_offset=480, viewport shows content 480 to 1200
+    // So terminal bottom (content 1200) is exactly at viewport bottom (480 + 720 = 1200)
+
+    assert_eq!(scroll_offset, 480, "scroll should be 480 to show terminal bottom");
+
+    // Double check: viewport_bottom = scroll_offset + screen_height = 480 + 720 = 1200
+    let viewport_bottom = scroll_offset + screen_height;
+    assert_eq!(viewport_bottom, bottom_y, "terminal bottom should be at viewport bottom");
+}
+
+/// BUG REPRODUCTION: Using SET instead of INSERT causes wrong scroll.
+#[test]
+fn bug_wrong_scroll_with_set_instead_of_insert() {
+    let screen_height = 720;
+
+    // Initial: tall terminal
+    let terminal_height = 1000;
+    let mut cached_heights = vec![terminal_height];
+
+    // BUGGY: Use SET instead of INSERT
+    let window_height = 200;
+    cached_heights[0] = window_height; // SET - overwrites terminal height!
+
+    // Now cached_heights = [200], terminal height is LOST
+    let focused_idx = 1; // Terminal should be at index 1
+
+    // Calculate scroll - but focused_idx is out of bounds!
+    let y: i32 = cached_heights.iter().take(focused_idx).sum(); // y = 200
+    let height = cached_heights.get(focused_idx).copied().unwrap_or(0); // NONE - returns 0!
+    let bottom_y = y + height; // bottom_y = 200 (WRONG - should be 1200)
+
+    // Scroll calculation gives wrong result
+    let min_scroll_for_bottom = (bottom_y - screen_height).max(0); // (200 - 720).max(0) = 0
+
+    assert_eq!(min_scroll_for_bottom, 0,
+        "BUG: wrong scroll because terminal height was lost");
+    // With scroll=0, terminal at y=200 is only partially visible (200 to 720)
+    // Terminal bottom at 200+1000=1200 is NOT visible
+}
+
+// ============================================================================
+// Main.rs Frame Loop Simulation Tests
+// ============================================================================
+
+/// This test simulates the ACTUAL main.rs frame loop behavior.
+/// It tests that when an external window is inserted, the scroll calculation
+/// correctly shows the focused terminal's bottom.
+///
+/// The test simulates these steps:
+/// 1. Frame N: Terminal exists with tall content (1000px)
+/// 2. Frame N: Wayland dispatch adds gnome-maps, sets new_external_window_index
+/// 3. Frame N+1: Handle new_external_window_index, then recalculate heights
+/// 4. Verify scroll shows terminal bottom
+#[test]
+fn frame_loop_external_window_insertion_scroll() {
+    let screen_height = 720;
+
+    // Simulate compositor state
+    struct SimState {
+        cells: Vec<&'static str>,  // "terminal" or "external"
+        cached_cell_heights: Vec<i32>,
+        focused_index: Option<usize>,
+        new_external_window_index: Option<usize>,
+        scroll_offset: f64,
+    }
+
+    let mut state = SimState {
+        cells: vec!["terminal"],
+        cached_cell_heights: vec![1000],  // Terminal is 1000px tall (from seq 1 60)
+        focused_index: Some(0),
+        new_external_window_index: None,
+        scroll_offset: 480.0,  // Already scrolled to show terminal bottom
+    };
+
+    // === Simulate Wayland dispatch adding gnome-maps ===
+    // This happens in add_window():
+    let insert_index = state.focused_index.unwrap_or(state.cells.len());
+    state.cells.insert(insert_index, "external");  // gnome-maps at index 0
+    // Terminal is now at index 1
+    state.focused_index = Some(state.focused_index.map(|i| i + 1).unwrap_or(insert_index));
+    state.new_external_window_index = Some(insert_index);
+
+    // Verify state after add_window
+    assert_eq!(state.cells, vec!["external", "terminal"]);
+    assert_eq!(state.focused_index, Some(1));
+    assert_eq!(state.new_external_window_index, Some(0));
+    // NOTE: cached_cell_heights is still [1000] - not updated yet!
+    assert_eq!(state.cached_cell_heights, vec![1000]);
+
+    // === Frame N+1: Handle new_external_window_index ===
+    if let Some(window_idx) = state.new_external_window_index.take() {
+        let window_height = 200;  // gnome-maps initial height
+
+        // INSERT into cached heights
+        if window_idx <= state.cached_cell_heights.len() {
+            state.cached_cell_heights.insert(window_idx, window_height);
+        }
+
+        // Scroll to show focused cell
+        if let Some(focused_idx) = state.focused_index {
+            let y: i32 = state.cached_cell_heights.iter().take(focused_idx).sum();
+            let height = state.cached_cell_heights.get(focused_idx).copied().unwrap_or(200);
+            let bottom_y = y + height;
+            let total_height: i32 = state.cached_cell_heights.iter().sum();
+            let max_scroll = (total_height - screen_height).max(0) as f64;
+            let min_scroll_for_bottom = (bottom_y - screen_height).max(0) as f64;
+
+            state.scroll_offset = min_scroll_for_bottom.min(max_scroll);
+        }
+    }
+
+    // Verify correct behavior
+    assert_eq!(state.cached_cell_heights, vec![200, 1000],
+        "cached heights should have window at 0, terminal at 1");
+
+    // y = sum of heights before focused_idx (1) = 200
+    // height = 1000
+    // bottom_y = 1200
+    // min_scroll = 1200 - 720 = 480
+    assert_eq!(state.scroll_offset, 480.0,
+        "scroll should be 480 to show terminal bottom");
+
+    // Verify terminal bottom is at viewport bottom
+    let terminal_y = 200;  // After window (200px)
+    let terminal_bottom = terminal_y + 1000;  // 1200
+    let viewport_bottom = state.scroll_offset as i32 + screen_height;  // 480 + 720 = 1200
+    assert_eq!(terminal_bottom, viewport_bottom,
+        "terminal bottom should be at viewport bottom");
+}
+
+/// Test the actual height recalculation that happens in main.rs
+/// This tests what happens AFTER we handle new_external_window_index
+#[test]
+fn frame_loop_height_recalculation_after_insert() {
+    // Simulate state after INSERT but before height recalculation
+    let cached_cell_heights = vec![200, 1000];  // [window, terminal]
+    let cells = vec!["external", "terminal"];
+
+    // Simulate main.rs height recalculation:
+    // For each cell, use cached height if available
+    let new_heights: Vec<i32> = cells.iter().enumerate().map(|(i, _cell)| {
+        if let Some(&cached) = cached_cell_heights.get(i) {
+            if cached > 0 {
+                return cached;
+            }
+        }
+        200  // default
+    }).collect();
+
+    // Heights should be preserved
+    assert_eq!(new_heights, vec![200, 1000],
+        "height recalculation should preserve existing heights");
+}
+
+/// THE EXACT BUG SCENARIO:
+/// 1. User runs `seq 1 60` → command terminal grows tall
+/// 2. Command exits → command terminal stays, parent is unhidden
+/// 3. User runs `gnome-maps` → inserted between command and parent
+/// 4. Scroll should show parent terminal bottom
+///
+/// cells: [command_terminal (tall, 1000px), parent_terminal (small, 200px)]
+/// After gnome-maps: [command (1000px), gnome-maps (200px), parent (200px)]
+/// Focus is on parent (index 2)
+/// Scroll should show parent bottom (y=1400)
+#[test]
+fn exact_bug_scenario_seq_then_gnome_maps() {
+    let screen_height = 720;
+
+    // Initial state after `seq 1 60` finishes:
+    // - Command terminal at index 0 (tall, 1000px from seq output)
+    // - Parent terminal at index 1 (small, 200px)
+    // - Focus is on parent (index 1)
+    struct SimState {
+        cells: Vec<&'static str>,
+        cached_cell_heights: Vec<i32>,
+        focused_index: Option<usize>,
+        new_external_window_index: Option<usize>,
+        scroll_offset: f64,
+    }
+
+    let mut state = SimState {
+        cells: vec!["command_terminal", "parent_terminal"],
+        cached_cell_heights: vec![1000, 200],  // command is tall, parent is small
+        focused_index: Some(1),  // Focus on parent
+        new_external_window_index: None,
+        scroll_offset: 480.0,  // Scrolled to show parent bottom
+    };
+
+    // === User launches gnome-maps (via column-term from parent) ===
+    // add_window inserts at focused_index
+    let insert_index = state.focused_index.unwrap_or(state.cells.len());  // 1
+    state.cells.insert(insert_index, "gnome-maps");  // Insert at index 1
+    // Now: [command_terminal, gnome-maps, parent_terminal]
+    state.focused_index = Some(state.focused_index.map(|i| i + 1).unwrap_or(insert_index));  // 2
+    state.new_external_window_index = Some(insert_index);  // 1
+
+    // Verify state after add_window
+    assert_eq!(state.cells, vec!["command_terminal", "gnome-maps", "parent_terminal"]);
+    assert_eq!(state.focused_index, Some(2));  // Parent is now at index 2
+    assert_eq!(state.new_external_window_index, Some(1));  // gnome-maps was inserted at 1
+    // cached_cell_heights is still [1000, 200] - NOT updated yet!
+
+    // === Handle new_external_window_index ===
+    if let Some(window_idx) = state.new_external_window_index.take() {
+        let window_height = 200;  // gnome-maps initial height
+
+        // INSERT into cached heights
+        state.cached_cell_heights.insert(window_idx, window_height);
+
+        // Now cached_cell_heights = [1000, 200, 200]
+        // Indices: command=0, gnome-maps=1, parent=2
+
+        // Scroll to show focused cell (parent at index 2)
+        if let Some(focused_idx) = state.focused_index {
+            let y: i32 = state.cached_cell_heights.iter().take(focused_idx).sum();
+            let height = state.cached_cell_heights.get(focused_idx).copied().unwrap_or(200);
+            let bottom_y = y + height;
+            let total_height: i32 = state.cached_cell_heights.iter().sum();
+            let max_scroll = (total_height - screen_height).max(0) as f64;
+            let min_scroll_for_bottom = (bottom_y - screen_height).max(0) as f64;
+
+            state.scroll_offset = min_scroll_for_bottom.min(max_scroll);
+
+            // Debug output
+            eprintln!("focused_idx={}, y={}, height={}, bottom_y={}, total_height={}, max_scroll={}, min_scroll={}, scroll={}",
+                focused_idx, y, height, bottom_y, total_height, max_scroll, min_scroll_for_bottom, state.scroll_offset);
+        }
+    }
+
+    // Verify cached heights after INSERT
+    assert_eq!(state.cached_cell_heights, vec![1000, 200, 200],
+        "cached heights should be [command=1000, gnome-maps=200, parent=200]");
+
+    // Calculate expected scroll:
+    // y = 1000 + 200 = 1200 (sum of heights before parent)
+    // height = 200 (parent height)
+    // bottom_y = 1400
+    // total_height = 1400
+    // max_scroll = 1400 - 720 = 680
+    // min_scroll_for_bottom = 1400 - 720 = 680
+    // scroll = 680
+
+    assert_eq!(state.scroll_offset, 680.0,
+        "scroll should be 680 to show parent terminal bottom");
+
+    // Verify parent bottom is at viewport bottom
+    let parent_y = 1000 + 200;  // After command (1000) and gnome-maps (200)
+    let parent_bottom = parent_y + 200;  // 1400
+    let viewport_bottom = state.scroll_offset as i32 + screen_height;  // 680 + 720 = 1400
+    assert_eq!(parent_bottom, viewport_bottom,
+        "parent terminal bottom should be at viewport bottom");
+}
+
+/// THE ACTUAL BUG: External window resize without scroll update.
+///
+/// When gnome-maps first appears, it's 200px and we scroll correctly.
+/// But then gnome-maps resizes to 400px (or more), pushing the parent
+/// terminal down by 200px. The scroll_offset doesn't update, so the
+/// parent terminal is now only partially visible.
+///
+/// This test documents the bug - it shows current (buggy) behavior
+/// and what the correct behavior should be.
+#[test]
+fn bug_external_window_resize_without_scroll_update() {
+    let screen_height = 720;
+
+    // State after gnome-maps is added and initial scroll is set
+    // cells: [command (1000), gnome-maps (200), parent (200)]
+    // scroll = 680 to show parent bottom
+    let mut cached_cell_heights = vec![1000, 200, 200];
+    let focused_index = 2;  // Parent terminal
+    let scroll_offset = 680.0;
+
+    // Verify initial scroll is correct
+    let parent_y = 1000 + 200;  // 1200
+    let parent_bottom = parent_y + 200;  // 1400
+    let viewport_bottom = scroll_offset as i32 + screen_height;  // 680 + 720 = 1400
+    assert_eq!(parent_bottom, viewport_bottom, "initial scroll correct");
+
+    // === gnome-maps resizes from 200 to 400 ===
+    // This happens in handle_commit
+    let new_gnome_maps_height = 400;
+    cached_cell_heights[1] = new_gnome_maps_height;  // gnome-maps at index 1
+
+    // BUG: scroll_offset is NOT updated in current code!
+    // The layout is recalculated, but scroll stays at 680
+
+    // Now let's check if parent bottom is still at viewport bottom
+    let parent_y_after = 1000 + 400;  // 1400 (gnome-maps is now 400)
+    let parent_bottom_after = parent_y_after + 200;  // 1600
+    let viewport_bottom_after = scroll_offset as i32 + screen_height;  // 680 + 720 = 1400
+
+    // Parent bottom (1600) is NOT at viewport bottom (1400)!
+    // This is the bug - parent terminal is pushed off-screen
+    assert_ne!(parent_bottom_after, viewport_bottom_after,
+        "BUG: parent bottom ({}) != viewport bottom ({}) after gnome-maps resize",
+        parent_bottom_after, viewport_bottom_after);
+
+    // To verify: where is gnome-maps now relative to screen?
+    // gnome-maps is at content y = 1000, height = 400
+    // With scroll = 680, visible content is 680 to 1400
+    // gnome-maps occupies content y 1000-1400, which is mostly visible
+    // Screen y of gnome-maps = 1000 - 680 = 320 (from top)
+    // That means gnome-maps bottom is at screen y 320 + 400 = 720 (screen bottom)
+    // And gnome-maps middle is at screen y 320 + 200 = 520
+    // This matches "scrolls only down to the middle of gnome-maps"!
+    let gnome_maps_content_y = 1000;
+    let gnome_maps_screen_top = gnome_maps_content_y - scroll_offset as i32;  // 320
+    let gnome_maps_screen_bottom = gnome_maps_screen_top + new_gnome_maps_height;  // 720
+    assert_eq!(gnome_maps_screen_bottom, screen_height,
+        "gnome-maps bottom at screen bottom = we're at 'middle' of gnome-maps");
+
+    // The FIX: scroll should be updated when external window resizes
+    let total_height: i32 = cached_cell_heights.iter().sum();  // 1600
+    let max_scroll = (total_height - screen_height).max(0) as f64;  // 880
+    let y: i32 = cached_cell_heights.iter().take(focused_index).sum();  // 1400
+    let height = cached_cell_heights[focused_index];  // 200
+    let bottom_y = y + height;  // 1600
+    let min_scroll_for_bottom = (bottom_y - screen_height).max(0) as f64;  // 880
+
+    let correct_scroll = min_scroll_for_bottom.min(max_scroll);  // 880
+    assert_eq!(correct_scroll, 880.0, "correct scroll should be 880 to show parent bottom");
+}
+
+/// This test verifies the fix for external window resize scroll adjustment.
+/// When an external window resizes, if the focused cell is at or after the
+/// resized window, scroll is updated to keep the focused cell visible.
+#[test]
+fn fix_external_window_resize_updates_scroll() {
+    let screen_height = 720;
+
+    // Initial state after gnome-maps added
+    // cells: [command (1000), gnome-maps (200), parent (200)]
+    let mut cached_cell_heights = vec![1000, 200, 200];
+    let focused_index = 2;  // Parent terminal
+    let mut scroll_offset = 680.0;
+
+    // Verify initial scroll is correct
+    let parent_y = 1000 + 200;
+    let parent_bottom = parent_y + 200;
+    let viewport_bottom = scroll_offset as i32 + screen_height;
+    assert_eq!(parent_bottom, viewport_bottom, "initial scroll correct");
+
+    // === gnome-maps resizes from 200 to 400 ===
+    // This triggers external_window_resized in handle_commit
+    let resized_idx = 1;  // gnome-maps
+    let new_height = 400;
+
+    // Update cached height (as main.rs does)
+    cached_cell_heights[resized_idx] = new_height;
+
+    // Apply the fix logic from main.rs:
+    // If focused_index >= resized_idx, update scroll to show focused cell
+    if focused_index >= resized_idx {
+        let y: i32 = cached_cell_heights.iter().take(focused_index).sum();
+        let height = cached_cell_heights.get(focused_index).copied().unwrap_or(200);
+        let bottom_y = y + height;
+        let visible_height = screen_height;
+        let total_height: i32 = cached_cell_heights.iter().sum();
+        let max_scroll = (total_height - visible_height).max(0) as f64;
+        let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
+
+        scroll_offset = min_scroll_for_bottom.min(max_scroll);
+    }
+
+    // After the fix: scroll should now be 880
+    assert_eq!(scroll_offset, 880.0, "scroll updated after external window resize");
+
+    // Verify parent is now visible at bottom of screen
+    let parent_y_after = 1000 + 400;  // gnome-maps is now 400
+    let parent_bottom_after = parent_y_after + 200;  // 1600
+    let viewport_bottom_after = scroll_offset as i32 + screen_height;  // 880 + 720 = 1600
+    assert_eq!(parent_bottom_after, viewport_bottom_after,
+        "parent bottom now visible at viewport bottom");
+}

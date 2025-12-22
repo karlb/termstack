@@ -170,6 +170,113 @@ fn main() -> anyhow::Result<()> {
 
     // Main event loop
     while compositor.running {
+        // Handle new external window FIRST - must sync cached_cell_heights before height calculation
+        // When a cell is inserted, the indices shift. If we don't insert into cached_cell_heights
+        // here, the height calculation below will use wrong indices (e.g., terminal's height
+        // would be used for the new window).
+        if let Some(window_idx) = compositor.new_external_window_index.take() {
+            tracing::info!(
+                window_idx,
+                cached_heights_before = ?compositor.cached_cell_heights,
+                cells_count = compositor.cells.len(),
+                focused_index = ?compositor.focused_index,
+                "handling new external window"
+            );
+
+            // INSERT into cached heights (not just set) since cells were shifted
+            let window_height = compositor.cells.get(window_idx)
+                .and_then(|c| match c {
+                    ColumnCell::External(entry) => Some(entry.state.current_height() as i32),
+                    _ => None,
+                })
+                .unwrap_or(200);
+
+            if window_idx <= compositor.cached_cell_heights.len() {
+                compositor.cached_cell_heights.insert(window_idx, window_height);
+            } else {
+                // Shouldn't happen, but handle gracefully
+                while compositor.cached_cell_heights.len() < window_idx {
+                    compositor.cached_cell_heights.push(200);
+                }
+                compositor.cached_cell_heights.push(window_height);
+            }
+
+            tracing::info!(
+                cached_heights_after = ?compositor.cached_cell_heights,
+                "after inserting window height"
+            );
+
+            // Scroll to show the focused cell (the terminal that launched the window)
+            if let Some(focused_idx) = compositor.focused_index {
+                let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
+                let height = compositor.cached_cell_heights.get(focused_idx).copied().unwrap_or(200);
+                let bottom_y = y + height;
+                let visible_height = compositor.output_size.h;
+                let total_height: i32 = compositor.cached_cell_heights.iter().sum();
+                let max_scroll = (total_height - visible_height).max(0) as f64;
+                let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
+
+                compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
+                tracing::info!(
+                    window_idx,
+                    focused_idx,
+                    y,
+                    height,
+                    bottom_y,
+                    total_height,
+                    visible_height,
+                    max_scroll,
+                    min_scroll_for_bottom,
+                    new_scroll = compositor.scroll_offset,
+                    "scrolled to show focused cell after external window added"
+                );
+            }
+        }
+
+        // Handle external window resize - update cached heights and scroll if needed
+        if let Some((resized_idx, new_height)) = compositor.external_window_resized.take() {
+            tracing::info!(
+                resized_idx,
+                new_height,
+                cached_heights_before = ?compositor.cached_cell_heights,
+                "handling external window resize"
+            );
+
+            // Update cached height for the resized window
+            if resized_idx < compositor.cached_cell_heights.len() {
+                compositor.cached_cell_heights[resized_idx] = new_height;
+            }
+
+            // If the focused cell is at or after the resized window, recalculate scroll
+            // to keep the focused cell's bottom visible
+            if let Some(focused_idx) = compositor.focused_index {
+                if focused_idx >= resized_idx {
+                    let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
+                    let height = compositor.cached_cell_heights.get(focused_idx).copied().unwrap_or(200);
+                    let bottom_y = y + height;
+                    let visible_height = compositor.output_size.h;
+                    let total_height: i32 = compositor.cached_cell_heights.iter().sum();
+                    let max_scroll = (total_height - visible_height).max(0) as f64;
+                    let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
+
+                    compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
+                    tracing::info!(
+                        resized_idx,
+                        focused_idx,
+                        y,
+                        height,
+                        bottom_y,
+                        total_height,
+                        visible_height,
+                        max_scroll,
+                        min_scroll_for_bottom,
+                        new_scroll = compositor.scroll_offset,
+                        "scrolled to show focused cell after external window resize"
+                    );
+                }
+            }
+        }
+
         // Update cell heights BEFORE processing input events
         // so click detection uses the correct positions
         //
@@ -332,6 +439,16 @@ fn main() -> anyhow::Result<()> {
             env.insert("PAGER".to_string(), "cat".to_string());
             // Disable alternate screen buffer for less (if used)
             env.insert("LESS".to_string(), "-FRX".to_string());
+            // Override WAYLAND_DISPLAY so GUI apps connect to our compositor
+            // (column-term might have captured the host's display)
+            if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
+                tracing::info!(
+                    original = ?env.get("WAYLAND_DISPLAY"),
+                    override_to = %wayland_display,
+                    "overriding WAYLAND_DISPLAY in spawn env"
+                );
+                env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
+            }
 
             // Hide the focused terminal while command runs
             let parent = terminal_manager.focused;
@@ -441,6 +558,48 @@ fn main() -> anyhow::Result<()> {
                 terminal::sizing::SizingAction::RequestGrowth { target_rows } => {
                     tracing::info!(id = id.0, target_rows, "processing growth request");
                     terminal_manager.grow_terminal(id, target_rows);
+
+                    // If focused terminal grew, scroll to keep its bottom visible
+                    // Use cached_cell_heights for consistency with render loop
+                    if terminal_manager.focused == Some(id) {
+                        // Find cell index for this terminal
+                        let mut cell_idx = None;
+                        for (i, cell) in compositor.cells.iter().enumerate() {
+                            if let ColumnCell::Terminal(tid) = cell {
+                                if *tid == id {
+                                    cell_idx = Some(i);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(idx) = cell_idx {
+                            // Update cached height with new size
+                            if let Some(term) = terminal_manager.get(id) {
+                                if idx < compositor.cached_cell_heights.len() {
+                                    compositor.cached_cell_heights[idx] = term.height as i32;
+                                }
+                            }
+
+                            let y: i32 = compositor.cached_cell_heights.iter().take(idx).sum();
+                            let height = compositor.cached_cell_heights.get(idx).copied().unwrap_or(0);
+                            let bottom_y = y + height;
+                            let visible_height = compositor.output_size.h;
+                            let total_height: i32 = compositor.cached_cell_heights.iter().sum();
+                            let max_scroll = (total_height - visible_height).max(0) as f64;
+                            let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
+
+                            if compositor.scroll_offset < min_scroll_for_bottom {
+                                compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
+                                tracing::debug!(
+                                    id = id.0,
+                                    bottom_y,
+                                    new_scroll = compositor.scroll_offset,
+                                    "scrolled to keep focused terminal bottom visible"
+                                );
+                            }
+                        }
+                    }
                 }
                 terminal::sizing::SizingAction::ApplyResize { .. } => {
                     // Handled internally by grow_terminal
@@ -462,14 +621,48 @@ fn main() -> anyhow::Result<()> {
         // Sync compositor focus if a command terminal exited
         if let Some(new_focus_id) = focus_changed_to {
             // Find the cell index for this terminal
+            let mut found_index = None;
             for (i, cell) in compositor.cells.iter().enumerate() {
                 if let ColumnCell::Terminal(tid) = cell {
                     if *tid == new_focus_id {
+                        found_index = Some(i);
                         compositor.focused_index = Some(i);
                         tracing::info!(id = new_focus_id.0, index = i, "synced compositor focus to parent terminal");
                         break;
                     }
                 }
+            }
+
+            // Scroll to make the unhidden parent terminal fully visible
+            // Use cached_cell_heights for consistency with render loop
+            if let Some(idx) = found_index {
+                // But first, update the cached height for the unhidden terminal
+                // since it was 0 when hidden
+                if let Some(term) = terminal_manager.get(new_focus_id) {
+                    if idx < compositor.cached_cell_heights.len() {
+                        compositor.cached_cell_heights[idx] = term.height as i32;
+                    }
+                }
+
+                let y: i32 = compositor.cached_cell_heights.iter().take(idx).sum();
+                let height = compositor.cached_cell_heights.get(idx).copied().unwrap_or(0);
+                let bottom_y = y + height;
+                let visible_height = compositor.output_size.h;
+                let total_height: i32 = compositor.cached_cell_heights.iter().sum();
+
+                let max_scroll = (total_height - visible_height).max(0) as f64;
+                let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
+
+                // Scroll so the bottom of the terminal is at the bottom of the screen
+                compositor.scroll_offset = min_scroll_for_bottom.min(max_scroll);
+                tracing::info!(
+                    id = new_focus_id.0,
+                    y,
+                    height,
+                    total_height,
+                    new_scroll = compositor.scroll_offset,
+                    "scrolled to show unhidden parent terminal"
+                );
             }
         }
 
@@ -623,8 +816,87 @@ fn main() -> anyhow::Result<()> {
                 content_y += height;
             }
 
+            // Debug: dump complete frame state when there are external windows
+            let has_external = compositor.cells.iter().any(|c| matches!(c, ColumnCell::External(_)));
+            if has_external {
+                let cell_info: Vec<String> = compositor.cells.iter().enumerate().map(|(i, cell)| {
+                    match cell {
+                        ColumnCell::Terminal(id) => {
+                            let hidden = terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false);
+                            format!("[{}]Term({})h={}{}", i, id.0,
+                                compositor.cached_cell_heights.get(i).unwrap_or(&0),
+                                if hidden { " HIDDEN" } else { "" })
+                        }
+                        ColumnCell::External(e) => {
+                            format!("[{}]Ext h={}", i, e.state.current_height())
+                        }
+                    }
+                }).collect();
+
+                let render_info: Vec<String> = render_data.iter().enumerate().map(|(i, data)| {
+                    match data {
+                        CellRenderData::Terminal { id, y, height } => format!("[{}]T{}@y={},h={}", i, id.0, y, height),
+                        CellRenderData::External { y, height, .. } => format!("[{}]E@y={},h={}", i, y, height),
+                        CellRenderData::Empty { height } => format!("[{}]empty h={}", i, height),
+                    }
+                }).collect();
+
+                tracing::info!(
+                    scroll = compositor.scroll_offset,
+                    focused = ?compositor.focused_index,
+                    screen_h = physical_size.h,
+                    cells = %cell_info.join(" "),
+                    render = %render_info.join(" "),
+                    "FRAME STATE"
+                );
+            }
+
             // Update cached heights with actual heights for next frame's click detection
+            // BUT FIRST: check if any height changed significantly - if so, we need to re-scroll
+            let heights_changed = compositor.cached_cell_heights.iter()
+                .zip(actual_heights.iter())
+                .enumerate()
+                .any(|(i, (&cached, &actual))| {
+                    // Only care about cells BEFORE or AT focused index
+                    // (changes after focused cell don't affect its visibility)
+                    if let Some(focused) = compositor.focused_index {
+                        if i <= focused && actual != cached && (actual - cached).abs() > 10 {
+                            return true;
+                        }
+                    }
+                    false
+                });
+
             compositor.update_cached_cell_heights(actual_heights);
+
+            // If heights changed, recalculate scroll to keep focused cell visible
+            if heights_changed {
+                if let Some(focused_idx) = compositor.focused_index {
+                    let y: i32 = compositor.cached_cell_heights.iter().take(focused_idx).sum();
+                    let height = compositor.cached_cell_heights.get(focused_idx).copied().unwrap_or(51);
+                    let bottom_y = y + height;
+                    let visible_height = physical_size.h;
+                    let total_height: i32 = compositor.cached_cell_heights.iter().sum();
+                    let max_scroll = (total_height - visible_height).max(0) as f64;
+                    let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
+                    let new_scroll = min_scroll_for_bottom.min(max_scroll);
+
+                    if (new_scroll - compositor.scroll_offset).abs() > 5.0 {
+                        tracing::info!(
+                            focused_idx,
+                            y,
+                            height,
+                            bottom_y,
+                            total_height,
+                            visible_height,
+                            old_scroll = compositor.scroll_offset,
+                            new_scroll,
+                            "scroll adjusted due to actual height change"
+                        );
+                        compositor.scroll_offset = new_scroll;
+                    }
+                }
+            }
 
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;

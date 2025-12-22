@@ -92,6 +92,12 @@ pub struct ColumnCompositor {
 
     /// Pending spawn requests from IPC (column-term commands)
     pub pending_spawn_requests: Vec<SpawnRequest>,
+
+    /// Index of newly added external window (for scroll-to-show)
+    pub new_external_window_index: Option<usize>,
+
+    /// Index and new height of resized external window (for scroll adjustment)
+    pub external_window_resized: Option<(usize, i32)>,
 }
 
 /// A window entry in our column
@@ -197,6 +203,8 @@ impl ColumnCompositor {
             scroll_requested: 0.0,
             cached_cell_heights: Vec::new(),
             pending_spawn_requests: Vec::new(),
+            new_external_window_index: None,
+            external_window_resized: None,
         };
 
         (compositor, display)
@@ -270,11 +278,15 @@ impl ColumnCompositor {
         // If nothing was focused, focus the new cell
         self.focused_index = Some(self.focused_index.map(|idx| idx + 1).unwrap_or(insert_index));
 
+        // Signal main loop to scroll to show this new window
+        self.new_external_window_index = Some(insert_index);
+
         self.recalculate_layout();
 
         tracing::info!(
             cell_count = self.cells.len(),
             focused = ?self.focused_index,
+            insert_index,
             "external window added"
         );
     }
@@ -419,6 +431,7 @@ impl ColumnCompositor {
                 {
                     entry.state = WindowState::Active { height: new_height };
                     tracing::debug!(index, height = new_height, "resize completed");
+                    self.external_window_resized = Some((index, new_height as i32));
                     self.recalculate_layout();
                 }
                 WindowState::AwaitingCommit { target_height, .. }
@@ -426,11 +439,13 @@ impl ColumnCompositor {
                 {
                     entry.state = WindowState::Active { height: new_height };
                     tracing::debug!(index, height = new_height, "resize completed");
+                    self.external_window_resized = Some((index, new_height as i32));
                     self.recalculate_layout();
                 }
                 WindowState::Active { height } if new_height != *height => {
                     entry.state = WindowState::Active { height: new_height };
-                    tracing::debug!(index, height = new_height, "size changed");
+                    tracing::debug!(index, height = new_height, "external window size changed");
+                    self.external_window_resized = Some((index, new_height as i32));
                     self.recalculate_layout();
                 }
                 _ => {}

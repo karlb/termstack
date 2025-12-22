@@ -188,13 +188,32 @@ fn spawn_gui_app(command: &str) -> Result<()> {
     let program = parts[0];
     let args = &parts[1..];
 
+    // Determine which Wayland display to use
+    // If COLUMN_COMPOSITOR_SOCKET is set, extract the display name from it
+    // (the compositor sets both the socket and WAYLAND_DISPLAY to match)
+    let wayland_display = if env::var("COLUMN_COMPOSITOR_SOCKET").is_ok() {
+        // Socket is like /run/user/1000/column-compositor.sock
+        // The compositor's WAYLAND_DISPLAY is in the same directory with wayland-N pattern
+        // We need to query what the compositor actually uses
+        // For now, use the env var which should be correct when running inside compositor
+        env::var("WAYLAND_DISPLAY").ok()
+    } else {
+        None
+    };
+
     // Spawn detached process
-    Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+
+    // Override WAYLAND_DISPLAY if we have one
+    if let Some(display) = wayland_display {
+        cmd.env("WAYLAND_DISPLAY", display);
+    }
+
+    cmd.spawn()
         .with_context(|| format!("failed to spawn {}", program))?;
 
     Ok(())
