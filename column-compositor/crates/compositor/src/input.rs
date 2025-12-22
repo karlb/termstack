@@ -377,6 +377,9 @@ impl ColumnCompositor {
                 time: event.time_msec(),
             },
         );
+
+        // Frame event signals end of this event batch to the client
+        pointer.frame(self);
     }
 
     fn handle_pointer_button<I: InputBackend>(
@@ -460,6 +463,9 @@ impl ColumnCompositor {
                 time: event.time_msec(),
             },
         );
+
+        // Frame event signals end of this event batch to the client
+        pointer.frame(self);
     }
 
     fn handle_pointer_axis<I: InputBackend>(&mut self, event: impl PointerAxisEvent<I>) {
@@ -498,6 +504,9 @@ impl ColumnCompositor {
         // In a more sophisticated implementation, we might forward to focused window instead
 
         pointer.axis(self, frame);
+
+        // Frame event signals end of this event batch to the client
+        pointer.frame(self);
     }
 
     /// Find the surface under a point
