@@ -8,17 +8,13 @@ use test_harness::{assertions, fixtures};
 fn no_empty_rows_after_command() {
     let (mut tc, term) = fixtures::single_terminal();
 
-    tc.wait_for(|c| c.snapshot().window_count == 1, Duration::from_secs(2))
-        .unwrap();
+    // Mock terminal is created synchronously, no need to wait
+    assert_eq!(tc.snapshot().window_count, 1);
 
+    // Send some input (mock just appends to content)
     tc.send_input(&term, "ls -la\n");
 
-    tc.wait_for(
-        |c| c.get_terminal_content(&term).contains("$"),
-        Duration::from_secs(5),
-    )
-    .ok(); // May not have $ in mock
-
+    // Verify the content has no empty rows
     let content = tc.get_terminal_content(&term);
     assertions::assert_no_empty_rows(&content);
 }
