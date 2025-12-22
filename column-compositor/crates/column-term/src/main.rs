@@ -4,13 +4,16 @@
 //! the current terminal's environment. The new terminal appears above
 //! the current one in the column layout.
 //!
-//! Commands are split into two categories:
+//! Commands are split into three categories:
+//! - Shell builtins: run in current shell (cd, export, etc.)
+//! - TUI apps: run in current terminal (vim, mc, fzf, top)
+//! - GUI apps: spawn directly as Wayland clients (firefox, foot)
 //! - Terminal commands: run in a new column-term (default)
-//! - GUI apps: spawn directly as Wayland clients
 //!
-//! Configure GUI apps in ~/.config/column-compositor/config.toml:
+//! Configure in ~/.config/column-compositor/config.toml:
 //! ```toml
-//! gui_apps = ["firefox", "chromium", "foot", "alacritty"]
+//! gui_apps = ["firefox", "chromium", "foot"]
+//! tui_apps = ["vim", "nvim", "mc", "htop", "fzf", "less", "man"]
 //! ```
 //!
 //! # Usage
@@ -44,7 +47,7 @@
 //!
 //! Exit codes:
 //! - 0: Command handled (spawned in terminal or as GUI app)
-//! - 2: Shell command - should run in current shell
+//! - 2: Shell/TUI command - should run in current shell/terminal
 
 use std::env;
 use std::io::Write;
@@ -65,6 +68,10 @@ struct Config {
     /// List of shell builtins/commands that should run in the current shell
     #[serde(default = "Config::default_shell_commands")]
     shell_commands: Vec<String>,
+
+    /// List of TUI apps that should run in the current terminal (vim, mc, fzf, etc.)
+    #[serde(default)]
+    tui_apps: Vec<String>,
 }
 
 impl Default for Config {
@@ -72,6 +79,7 @@ impl Default for Config {
         Self {
             gui_apps: Vec::new(),
             shell_commands: Self::default_shell_commands(),
+            tui_apps: Vec::new(),
         }
     }
 }
@@ -144,6 +152,12 @@ impl Config {
         let program = Self::program_name(command);
         self.shell_commands.iter().any(|cmd| cmd == program)
     }
+
+    /// Check if a command is a TUI app that should run in current terminal
+    fn is_tui_app(&self, command: &str) -> bool {
+        let program = Self::program_name(command);
+        self.tui_apps.iter().any(|app| app == program)
+    }
 }
 
 /// Exit code indicating command should run in current shell
@@ -165,6 +179,9 @@ fn main() -> Result<()> {
 
     if config.is_shell_command(&command) {
         // Shell builtin - signal to run in current shell
+        std::process::exit(EXIT_SHELL_COMMAND);
+    } else if config.is_tui_app(&command) {
+        // TUI app - signal to run in current terminal
         std::process::exit(EXIT_SHELL_COMMAND);
     } else if config.is_gui_app(&command) {
         spawn_gui_app(&command)
