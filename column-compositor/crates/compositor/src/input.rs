@@ -18,20 +18,6 @@ const SCROLL_STEP: f64 = 50.0;
 const SCROLL_WHEEL_MULTIPLIER: f64 = 15.0;
 
 impl ColumnCompositor {
-    /// Process an input event (legacy, no terminal support)
-    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
-        match event {
-            InputEvent::Keyboard { event } => self.handle_keyboard_event(event, None),
-            InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
-            InputEvent::PointerMotionAbsolute { event } => {
-                self.handle_pointer_motion_absolute(event)
-            }
-            InputEvent::PointerButton { event } => self.handle_pointer_button(event, None),
-            InputEvent::PointerAxis { event } => self.handle_pointer_axis(event),
-            _ => {}
-        }
-    }
-
     /// Process an input event with terminal support
     pub fn process_input_event_with_terminals<I: InputBackend>(
         &mut self,

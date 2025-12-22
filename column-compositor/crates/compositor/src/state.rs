@@ -141,15 +141,6 @@ impl WindowState {
             Self::AwaitingCommit { current_height, .. } => *current_height,
         }
     }
-
-    /// Get the target height (for animations/transitions)
-    pub fn target_height(&self) -> u32 {
-        match self {
-            Self::Active { height } => *height,
-            Self::PendingResize { requested_height, .. } => *requested_height,
-            Self::AwaitingCommit { target_height, .. } => *target_height,
-        }
-    }
 }
 
 /// A cell in the column layout - either a terminal or external window
