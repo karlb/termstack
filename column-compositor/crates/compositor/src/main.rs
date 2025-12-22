@@ -421,7 +421,7 @@ fn main() -> anyhow::Result<()> {
             // Hide the focused terminal while command runs
             let parent = terminal_manager.focused;
 
-            match terminal_manager.spawn_command(&command, &request.cwd, &env, parent) {
+            match terminal_manager.spawn_command(&command, &request.cwd, &env, parent, request.is_tui) {
                 Ok(id) => {
                     compositor.add_terminal(id);
 

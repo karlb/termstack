@@ -24,6 +24,9 @@ pub enum IpcMessage {
         cwd: String,
         /// Environment variables to inherit
         env: HashMap<String, String>,
+        /// Whether this is a TUI app that needs full-height terminal
+        #[serde(default)]
+        is_tui: bool,
     },
 }
 
@@ -36,6 +39,8 @@ pub struct SpawnRequest {
     pub cwd: PathBuf,
     /// Environment variables
     pub env: HashMap<String, String>,
+    /// Whether this is a TUI app that needs full-height terminal
+    pub is_tui: bool,
 }
 
 /// Read a spawn request from a Unix stream
@@ -57,12 +62,13 @@ pub fn read_spawn_request(stream: UnixStream) -> Option<SpawnRequest> {
     let message: IpcMessage = serde_json::from_str(&line).ok()?;
 
     match message {
-        IpcMessage::Spawn { command, cwd, env } => {
-            tracing::info!(command = %command, cwd = %cwd, "spawn request received");
+        IpcMessage::Spawn { command, cwd, env, is_tui } => {
+            tracing::info!(command = %command, cwd = %cwd, is_tui, "spawn request received");
             Some(SpawnRequest {
                 command,
                 cwd: PathBuf::from(cwd),
                 env,
+                is_tui,
             })
         }
     }

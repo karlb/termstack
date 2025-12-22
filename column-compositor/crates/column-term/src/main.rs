@@ -171,7 +171,7 @@ fn main() -> Result<()> {
 
     // Empty command = interactive shell, always use terminal
     if command.is_empty() {
-        return spawn_in_terminal(&command);
+        return spawn_in_terminal(&command, false);
     }
 
     // Load config and check command type
@@ -181,12 +181,12 @@ fn main() -> Result<()> {
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
     } else if config.is_tui_app(&command) {
-        // TUI app - signal to run in current terminal
-        std::process::exit(EXIT_SHELL_COMMAND);
+        // TUI app - spawn full-height terminal
+        spawn_in_terminal(&command, true)
     } else if config.is_gui_app(&command) {
         spawn_gui_app(&command)
     } else {
-        spawn_in_terminal(&command)
+        spawn_in_terminal(&command, false)
     }
 }
 
@@ -237,7 +237,10 @@ fn spawn_gui_app(command: &str) -> Result<()> {
 }
 
 /// Spawn command in a new column-term terminal
-fn spawn_in_terminal(command: &str) -> Result<()> {
+///
+/// If is_tui is true, the terminal will be created at full viewport height
+/// for TUI applications like vim, mc, fzf, etc.
+fn spawn_in_terminal(command: &str, is_tui: bool) -> Result<()> {
     // Get socket path from environment
     let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")
         .context("COLUMN_COMPOSITOR_SOCKET not set - are you running inside column-compositor?")?;
@@ -257,6 +260,7 @@ fn spawn_in_terminal(command: &str) -> Result<()> {
         "command": command,
         "cwd": cwd,
         "env": env_vars,
+        "is_tui": is_tui,
     });
 
     // Connect to compositor and send message

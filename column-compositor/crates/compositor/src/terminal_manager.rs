@@ -344,12 +344,15 @@ impl TerminalManager {
     ///
     /// If `parent` is provided, that terminal will be hidden while this one runs.
     /// When this terminal's command exits, the parent will be unhidden.
+    ///
+    /// If `is_tui` is true, the terminal starts at full viewport height for TUI apps.
     pub fn spawn_command(
         &mut self,
         command: &str,
         working_dir: &Path,
         env: &HashMap<String, String>,
         parent: Option<TerminalId>,
+        is_tui: bool,
     ) -> Result<TerminalId, terminal::state::TerminalError> {
         let id = TerminalId(self.next_id);
         self.next_id += 1;
@@ -364,10 +367,13 @@ impl TerminalManager {
             tracing::warn!(new_child = id.0, "no parent to hide - terminal_manager.focused was None");
         }
 
-        // For command terminals: use large PTY size (no scrolling) but small visual size
-        // This ensures the echo line is preserved while the terminal stays minimal
-        let pty_rows = 1000; // Large PTY so program doesn't scroll
-        let visual_rows = self.initial_rows; // Small visual size, will grow with content
+        // For TUI apps: use full viewport height for both PTY and visual
+        // For regular commands: use large PTY (no scrolling) but small visual size
+        let (pty_rows, visual_rows) = if is_tui {
+            (self.max_rows, self.max_rows)
+        } else {
+            (1000, self.initial_rows)
+        };
 
         let mut terminal = ManagedTerminal::new_with_command(
             id,
