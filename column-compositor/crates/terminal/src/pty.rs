@@ -448,4 +448,52 @@ mod tests {
             assert_eq!(cols, 100, "stty should report 100 cols, got {}", cols);
         }
     }
+
+    #[test]
+    fn spawn_inherits_environment() {
+        // Verify that Pty::spawn() inherits environment variables from the parent.
+        // This is critical for GDK_BACKEND=wayland to be passed to GTK apps.
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        // Set a test environment variable
+        std::env::set_var("PTY_TEST_VAR", "test_value_12345");
+
+        // Spawn a shell that echoes the variable
+        let shell = "/bin/sh";
+        let mut pty = Pty::spawn(shell, 80, 24).unwrap();
+
+        // Send command to echo the variable
+        pty.write(b"echo PTY_TEST_VAR=$PTY_TEST_VAR\n").unwrap();
+
+        // Read output
+        let mut output = String::new();
+        let mut buf = [0u8; 1024];
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        for _ in 0..10 {
+            match pty.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    output.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if output.contains("test_value_12345") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // Clean up
+        std::env::remove_var("PTY_TEST_VAR");
+
+        eprintln!("Shell output: {:?}", output);
+        assert!(
+            output.contains("PTY_TEST_VAR=test_value_12345"),
+            "Shell should inherit PTY_TEST_VAR from parent environment, got: {}",
+            output
+        );
+    }
 }
