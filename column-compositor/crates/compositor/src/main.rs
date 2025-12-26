@@ -22,6 +22,14 @@ use compositor::config::Config;
 use compositor::state::{ClientState, ColumnCell, ColumnCompositor};
 use compositor::terminal_manager::{TerminalId, TerminalManager};
 
+/// Minimum terminal height in rows.
+/// Prevents terminals from becoming too small to be usable.
+const MIN_TERMINAL_ROWS: u16 = 3;
+
+/// Extra rows to add beyond cursor position for content-based sizing.
+/// Accounts for: +1 for 0-indexed cursor line, +1 for shell prompt.
+const CURSOR_TO_CONTENT_OFFSET: u16 = 2;
+
 fn main() -> anyhow::Result<()> {
     // Initialize logging
     setup_logging();
@@ -553,11 +561,11 @@ fn main() -> anyhow::Result<()> {
                         // cursor_line is 0-indexed, add 2 for: +1 zero-index, +1 prompt line
                         if let Some(term) = terminal_manager.get(focused_id) {
                             let cursor_line = term.terminal.cursor_line();
-                            let content_rows = (cursor_line + 2).max(3);
+                            let content_rows = (cursor_line + CURSOR_TO_CONTENT_OFFSET).max(MIN_TERMINAL_ROWS);
                             tracing::info!(id = focused_id.0, cursor_line, content_rows, "resize to content");
                             content_rows
                         } else {
-                            3  // fallback minimum
+                            MIN_TERMINAL_ROWS  // fallback minimum
                         }
                     }
                 };
