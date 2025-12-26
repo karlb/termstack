@@ -197,119 +197,11 @@ fn main() -> anyhow::Result<()> {
 
     // Main event loop
     while compositor.running {
-        // Handle new external window FIRST - must sync cached_cell_heights before height calculation
-        // When a cell is inserted, the indices shift. If we don't insert into cached_cell_heights
-        // here, the height calculation below will use wrong indices (e.g., terminal's height
-        // would be used for the new window).
-        if let Some(window_idx) = compositor.new_external_window_index.take() {
-            tracing::info!(
-                window_idx,
-                cached_heights_before = ?compositor.cached_cell_heights,
-                cells_count = compositor.cells.len(),
-                focused_index = ?compositor.focused_index,
-                "handling new external window"
-            );
+        // Handle external window insert/resize events
+        handle_external_window_events(&mut compositor);
 
-            // INSERT into cached heights (not just set) since cells were shifted
-            let window_height = compositor.cells.get(window_idx)
-                .and_then(|c| match c {
-                    ColumnCell::External(entry) => Some(entry.state.current_height() as i32),
-                    _ => None,
-                })
-                .unwrap_or(200);
-
-            if window_idx <= compositor.cached_cell_heights.len() {
-                compositor.cached_cell_heights.insert(window_idx, window_height);
-            } else {
-                // Shouldn't happen, but handle gracefully
-                while compositor.cached_cell_heights.len() < window_idx {
-                    compositor.cached_cell_heights.push(200);
-                }
-                compositor.cached_cell_heights.push(window_height);
-            }
-
-            tracing::info!(
-                cached_heights_after = ?compositor.cached_cell_heights,
-                "after inserting window height"
-            );
-
-            // Scroll to show the focused cell (the terminal that launched the window)
-            if let Some(focused_idx) = compositor.focused_index {
-                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
-                    tracing::info!(
-                        window_idx,
-                        focused_idx,
-                        new_scroll,
-                        "scrolled to show focused cell after external window added"
-                    );
-                }
-            }
-        }
-
-        // Handle external window resize - update cached heights and scroll if needed
-        if let Some((resized_idx, new_height)) = compositor.external_window_resized.take() {
-            tracing::info!(
-                resized_idx,
-                new_height,
-                cached_heights_before = ?compositor.cached_cell_heights,
-                "handling external window resize"
-            );
-
-            // Update cached height for the resized window
-            if resized_idx < compositor.cached_cell_heights.len() {
-                compositor.cached_cell_heights[resized_idx] = new_height;
-            }
-
-            // If the focused cell is at or after the resized window, recalculate scroll
-            // to keep the focused cell's bottom visible
-            if let Some(focused_idx) = compositor.focused_index {
-                if focused_idx >= resized_idx {
-                    if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
-                        tracing::info!(
-                            resized_idx,
-                            focused_idx,
-                            new_scroll,
-                            "scrolled to show focused cell after external window resize"
-                        );
-                    }
-                }
-            }
-        }
-
-        // Update cell heights BEFORE processing input events
-        // so click detection uses the correct positions
-        //
-        // IMPORTANT: We use cached heights from the PREVIOUS frame for existing cells.
-        // These are the actual rendered heights (from element geometry), not bbox().
-        // Using bbox() here caused a mismatch with rendering, making click detection
-        // increasingly wrong further down the stack.
-        //
-        // We only need to calculate heights for NEW cells (where cached height is missing).
-        let cell_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
-            // Use cached height if available (it's the actual rendered height from last frame)
-            if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-                if cached > 0 {
-                    return cached;
-                }
-            }
-
-            // Fallback for new cells: use terminal.height (not texture which may not exist yet)
-            match cell {
-                ColumnCell::Terminal(id) => {
-                    // For new terminals, use terminal.height directly
-                    // This is critical for TUI terminals which need full height immediately
-                    terminal_manager.get(*id)
-                        .map(|t| if t.hidden { 0 } else { t.height as i32 })
-                        .unwrap_or(200)
-                }
-                ColumnCell::External(entry) => {
-                    // For new external windows, use state height as initial guess
-                    entry.state.current_height() as i32
-                }
-            }
-        }).collect();
-
-        // Cache heights for consistent positioning between input and render
+        // Update cell heights for input event processing
+        let cell_heights = calculate_cell_heights(&compositor, &terminal_manager);
         compositor.update_cached_cell_heights(cell_heights);
 
         // Update Space positions to match current terminal height and scroll
@@ -354,292 +246,14 @@ fn main() -> anyhow::Result<()> {
         display.dispatch_clients(&mut compositor)
             .expect("failed to dispatch clients");
 
-        // Handle terminal spawn requests
-        if compositor.spawn_terminal_requested {
-            compositor.spawn_terminal_requested = false;
-
-            match terminal_manager.spawn() {
-                Ok(id) => {
-                    compositor.add_terminal(id);
-
-                    // Update cached_cell_heights to include the new terminal
-                    // Use cached heights for existing cells, default for new terminal
-                    let new_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
-                        // Use cached height if available
-                        if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-                            if cached > 0 {
-                                return cached;
-                            }
-                        }
-
-                        // Fallback for new cells: use terminal.height directly
-                        match cell {
-                            ColumnCell::Terminal(tid) => {
-                                terminal_manager.get(*tid)
-                                    .map(|t| if t.hidden { 0 } else { t.height as i32 })
-                                    .unwrap_or(200)
-                            }
-                            ColumnCell::External(entry) => {
-                                entry.state.current_height() as i32
-                            }
-                        }
-                    }).collect();
-                    compositor.update_cached_cell_heights(new_heights);
-
-                    // Scroll to show the newly focused cell (the new terminal)
-                    if let Some(focused_idx) = compositor.focused_index {
-                        if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
-                            tracing::info!(
-                                id = id.0,
-                                cell_count = compositor.cells.len(),
-                                focused_idx,
-                                new_scroll,
-                                "spawned terminal, scrolling to show"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("failed to spawn terminal: {}", e);
-                }
-            }
-        }
+        // Handle terminal spawn requests (keyboard shortcut)
+        handle_terminal_spawn(&mut compositor, &mut terminal_manager);
 
         // Handle command spawn requests from IPC (column-term)
-        while let Some(request) = compositor.pending_spawn_requests.pop() {
-            // Decide what command to run
-            let command = if request.command.is_empty() {
-                // Empty command = spawn interactive shell
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-            } else if request.is_tui {
-                // TUI apps take over the screen - no echo prefix needed
-                request.command.clone()
-            } else {
-                // Echo the command first, then run it
-                // Simple echo before the command
-                let escaped = request.command.replace("'", "'\\''");
-                format!("echo '> {}'; {}", escaped, request.command)
-            };
-
-            // Modify environment to disable pagers and fancy terminal features
-            // This prevents commands like `git log` from clearing the echo line
-            let mut env = request.env.clone();
-            env.insert("GIT_PAGER".to_string(), "cat".to_string());
-            env.insert("PAGER".to_string(), "cat".to_string());
-            // Disable alternate screen buffer for less (if used)
-            env.insert("LESS".to_string(), "-FRX".to_string());
-            // Override WAYLAND_DISPLAY so GUI apps connect to our compositor
-            // (column-term might have captured the host's display)
-            if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
-                tracing::info!(
-                    original = ?env.get("WAYLAND_DISPLAY"),
-                    override_to = %wayland_display,
-                    "overriding WAYLAND_DISPLAY in spawn env"
-                );
-                env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
-            }
-
-            // Hide the focused terminal while command runs
-            let parent = terminal_manager.focused;
-
-            // Reject spawns from terminals in alternate screen mode (TUI apps).
-            // When a shell runs a TUI app (vim, mc, fzf), it enters alternate screen mode.
-            // If the TUI app has an internal subshell (like mc), commands typed there would
-            // normally spawn new terminals. We reject these to keep the TUI app's subshell
-            // communication working correctly.
-            // Detection: ALT_SCREEN mode is the definitive signal that a TUI app is running.
-            if let Some(parent_id) = parent {
-                if let Some(parent_term) = terminal_manager.get(parent_id) {
-                    if parent_term.terminal.is_alternate_screen() {
-                        tracing::info!(command = %command, "rejecting spawn from alternate screen terminal");
-                        continue;
-                    }
-                }
-            }
-
-            tracing::info!(
-                command = %command,
-                is_tui = request.is_tui,
-                ?parent,
-                max_rows = terminal_manager.max_rows,
-                cell_height = terminal_manager.cell_height,
-                "about to spawn command terminal"
-            );
-
-            match terminal_manager.spawn_command(&command, &request.cwd, &env, parent, request.is_tui) {
-                Ok(id) => {
-                    // Log the created terminal's state
-                    if let Some(term) = terminal_manager.get(id) {
-                        let (cols, pty_rows) = term.terminal.dimensions();
-                        tracing::info!(
-                            id = id.0,
-                            cols,
-                            pty_rows,
-                            visual_height = term.height,
-                            hidden = term.hidden,
-                            "terminal created"
-                        );
-                    }
-
-                    compositor.add_terminal(id);
-
-                    // Focus the new command terminal (it was inserted above the old focus)
-                    // Find its cell index and set focus
-                    for (i, cell) in compositor.cells.iter().enumerate() {
-                        if let ColumnCell::Terminal(tid) = cell {
-                            if *tid == id {
-                                compositor.focused_index = Some(i);
-                                tracing::info!(id = id.0, index = i, "focused new command terminal");
-                                break;
-                            }
-                        }
-                    }
-
-                    // Update cached_cell_heights to include the new terminal
-                    // Hidden terminals get 0 height
-                    let new_heights: Vec<i32> = compositor.cells.iter().enumerate().map(|(i, cell)| {
-                        match cell {
-                            ColumnCell::Terminal(tid) => {
-                                // Check if hidden first
-                                if terminal_manager.get(*tid).map(|t| t.hidden).unwrap_or(false) {
-                                    return 0;
-                                }
-                                // Use cached if available
-                                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-                                    if cached > 0 {
-                                        return cached;
-                                    }
-                                }
-                                // For new terminals, use terminal.height (not texture which doesn't exist yet)
-                                // This is critical for TUI terminals which need full height from the start
-                                terminal_manager.get(*tid)
-                                    .map(|t| t.height as i32)
-                                    .unwrap_or(200)
-                            }
-                            ColumnCell::External(entry) => {
-                                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-                                    if cached > 0 {
-                                        return cached;
-                                    }
-                                }
-                                entry.state.current_height() as i32
-                            }
-                        }
-                    }).collect();
-                    compositor.update_cached_cell_heights(new_heights);
-
-                    // Scroll to show the newly focused terminal (like regular spawn)
-                    if let Some(focused_idx) = compositor.focused_index {
-                        if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
-                            tracing::info!(
-                                id = id.0,
-                                cell_count = compositor.cells.len(),
-                                focused_idx,
-                                new_scroll,
-                                "spawned command terminal, scrolling to show"
-                            );
-                        }
-                    }
-
-                    tracing::info!(id = id.0, command = %command, ?parent, "spawned command terminal from IPC");
-                }
-                Err(e) => {
-                    tracing::error!("failed to spawn command terminal: {}", e);
-                }
-            }
-        }
+        handle_ipc_spawn_requests(&mut compositor, &mut terminal_manager);
 
         // Handle resize requests from IPC (column-term --resize)
-        if let Some((resize_mode, ack_stream)) = compositor.pending_resize_request.take() {
-            if let Some(focused_id) = terminal_manager.focused {
-                let cell_height = terminal_manager.cell_height;
-                let new_rows = match resize_mode {
-                    compositor::ipc::ResizeMode::Full => {
-                        // Resize to full viewport height for TUI apps
-                        tracing::info!(id = focused_id.0, max_rows = terminal_manager.max_rows, "resize to full");
-                        terminal_manager.max_rows
-                    }
-                    compositor::ipc::ResizeMode::Content => {
-                        // Process any pending PTY output BEFORE calculating content rows
-                        // This ensures TUI app's printed output is reflected in cursor position
-                        if let Some(term) = terminal_manager.get_mut(focused_id) {
-                            term.process();
-                        }
-
-                        // Calculate content rows from cursor position
-                        // cursor_line is 0-indexed, add 2 for: +1 zero-index, +1 prompt line
-                        if let Some(term) = terminal_manager.get(focused_id) {
-                            let cursor_line = term.terminal.cursor_line();
-                            let content_rows = (cursor_line + CURSOR_TO_CONTENT_OFFSET).max(MIN_TERMINAL_ROWS);
-                            tracing::info!(id = focused_id.0, cursor_line, content_rows, "resize to content");
-                            content_rows
-                        } else {
-                            MIN_TERMINAL_ROWS  // fallback minimum
-                        }
-                    }
-                };
-
-                // Log BEFORE state
-                let before_height = terminal_manager.get(focused_id).map(|t| t.height);
-                let before_dirty = terminal_manager.get(focused_id).map(|t| t.is_dirty());
-                let before_pty = terminal_manager.get(focused_id).map(|t| t.terminal.dimensions().1);
-                let before_grid = terminal_manager.get(focused_id).map(|t| t.terminal.grid_rows());
-
-                if let Some(term) = terminal_manager.get_mut(focused_id) {
-                    tracing::info!(
-                        id = focused_id.0,
-                        ?resize_mode,
-                        new_rows,
-                        ?before_height,
-                        ?before_dirty,
-                        ?before_pty,
-                        ?before_grid,
-                        "resizing focused terminal via IPC"
-                    );
-                    term.resize(new_rows, cell_height);
-
-                    // Log AFTER state
-                    let after_height = term.height;
-                    let after_dirty = term.is_dirty();
-                    let after_pty = term.terminal.dimensions().1;
-                    let after_grid = term.terminal.grid_rows();
-                    let has_texture = term.get_texture().is_some();
-                    tracing::info!(
-                        after_height,
-                        after_dirty,
-                        after_pty,
-                        after_grid,
-                        has_texture,
-                        "AFTER resize"
-                    );
-
-                    // Update cached height for the resized terminal
-                    for (i, cell) in compositor.cells.iter().enumerate() {
-                        if let ColumnCell::Terminal(tid) = cell {
-                            if *tid == focused_id && i < compositor.cached_cell_heights.len() {
-                                compositor.cached_cell_heights[i] = term.height as i32;
-                                tracing::info!(idx = i, cached_height = compositor.cached_cell_heights[i], "updated cached height");
-                                break;
-                            }
-                        }
-                    }
-
-                    // Scroll to keep the terminal visible
-                    if let Some(idx) = compositor.focused_index {
-                        compositor.scroll_to_show_cell_bottom(idx);
-                    }
-                }
-
-                // Send ACK AFTER resize is complete - this prevents race condition
-                // column-term will wait for this before returning
-                compositor::ipc::send_ack(ack_stream);
-                tracing::info!("resize ACK sent, PTY and grid should now report new size");
-            } else {
-                tracing::warn!("resize request but no focused terminal");
-                // Still send ACK so column-term doesn't hang
-                compositor::ipc::send_ack(ack_stream);
-            }
-        }
+        handle_ipc_resize_request(&mut compositor, &mut terminal_manager);
 
         // Handle focus change requests
         if compositor.focus_change_requested != 0 {
@@ -675,151 +289,11 @@ fn main() -> anyhow::Result<()> {
         }
 
         // Process terminal PTY output and handle sizing actions
-        let sizing_actions = terminal_manager.process_all();
-        if !sizing_actions.is_empty() {
-            tracing::info!(count = sizing_actions.len(), "received sizing actions");
-        }
-        for (id, action) in sizing_actions {
-            match action {
-                terminal::sizing::SizingAction::RequestGrowth { target_rows } => {
-                    tracing::info!(id = id.0, target_rows, "processing growth request");
-                    terminal_manager.grow_terminal(id, target_rows);
-
-                    // If focused terminal grew, scroll to keep its bottom visible
-                    // Use cached_cell_heights for consistency with render loop
-                    if terminal_manager.focused == Some(id) {
-                        // Find cell index for this terminal
-                        let mut cell_idx = None;
-                        for (i, cell) in compositor.cells.iter().enumerate() {
-                            if let ColumnCell::Terminal(tid) = cell {
-                                if *tid == id {
-                                    cell_idx = Some(i);
-                                    break;
-                                }
-                            }
-                        }
-
-                        if let Some(idx) = cell_idx {
-                            // Update cached height with new size
-                            if let Some(term) = terminal_manager.get(id) {
-                                if idx < compositor.cached_cell_heights.len() {
-                                    compositor.cached_cell_heights[idx] = term.height as i32;
-                                }
-                            }
-
-                            // Scroll to keep focused terminal bottom visible during growth
-                            if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(idx) {
-                                tracing::debug!(
-                                    id = id.0,
-                                    new_scroll,
-                                    "scrolled to keep focused terminal bottom visible"
-                                );
-                            }
-                        }
-                    }
-                }
-                terminal::sizing::SizingAction::ApplyResize { .. } => {
-                    // Handled internally by grow_terminal
-                }
-                terminal::sizing::SizingAction::RestoreScrollback { .. } => {
-                    // TODO: handle scrollback restoration if needed
-                }
-                terminal::sizing::SizingAction::None => {}
-            }
-        }
-
-        // Auto-resize terminals that entered alternate screen mode
-        // This handles TUI apps not in tui_apps config list
-        let max_height = terminal_manager.max_rows as u32 * terminal_manager.cell_height;
-        let visible_ids = terminal_manager.visible_ids();
-        let mut ids_to_resize = Vec::new();
-        for id in visible_ids {
-            if let Some(term) = terminal_manager.get_mut(id) {
-                if term.check_alt_screen_resize_needed(max_height) {
-                    ids_to_resize.push(id);
-                }
-            }
-        }
-
-        let max_rows = terminal_manager.max_rows;
-        let cell_height = terminal_manager.cell_height;
-        for id in ids_to_resize {
-            if let Some(term) = terminal_manager.get_mut(id) {
-                let old_height = term.height;
-                term.resize(max_rows, cell_height);
-                let new_height = term.height;
-                tracing::info!(
-                    id = id.0,
-                    old_height,
-                    new_height,
-                    max_rows,
-                    "auto-resized terminal to full for alternate screen"
-                );
-
-                // Update cached height if in compositor cells
-                for (i, cell) in compositor.cells.iter().enumerate() {
-                    if let ColumnCell::Terminal(tid) = cell {
-                        if *tid == id {
-                            if i < compositor.cached_cell_heights.len() {
-                                compositor.cached_cell_heights[i] = new_height as i32;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        process_terminal_output(&mut compositor, &mut terminal_manager);
 
         // Cleanup dead terminals and handle focus changes
-        let (dead, focus_changed_to) = terminal_manager.cleanup();
-        for dead_id in &dead {
-            compositor.remove_terminal(*dead_id);
-            tracing::info!(id = dead_id.0, "removed dead terminal from cells");
-        }
-
-        // Sync compositor focus if a command terminal exited
-        if let Some(new_focus_id) = focus_changed_to {
-            // Find the cell index for this terminal
-            let mut found_index = None;
-            for (i, cell) in compositor.cells.iter().enumerate() {
-                if let ColumnCell::Terminal(tid) = cell {
-                    if *tid == new_focus_id {
-                        found_index = Some(i);
-                        compositor.focused_index = Some(i);
-                        tracing::info!(id = new_focus_id.0, index = i, "synced compositor focus to parent terminal");
-                        break;
-                    }
-                }
-            }
-
-            // Scroll to make the unhidden parent terminal fully visible
-            // Use cached_cell_heights for consistency with render loop
-            if let Some(idx) = found_index {
-                // But first, update the cached height for the unhidden terminal
-                // since it was 0 when hidden
-                if let Some(term) = terminal_manager.get(new_focus_id) {
-                    if idx < compositor.cached_cell_heights.len() {
-                        compositor.cached_cell_heights[idx] = term.height as i32;
-                    }
-                }
-
-                // Scroll so the bottom of the terminal is at the bottom of the screen
-                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(idx) {
-                    tracing::info!(
-                        id = new_focus_id.0,
-                        new_scroll,
-                        "scrolled to show unhidden parent terminal"
-                    );
-                }
-            }
-        }
-
-        if !dead.is_empty() {
-            // If all cells are gone, quit (only terminals can trigger this)
-            if compositor.cells.is_empty() {
-                tracing::info!("all cells removed, shutting down");
-                break;
-            }
+        if cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
+            break;
         }
 
         // Get window size before binding
@@ -1154,4 +628,485 @@ fn setup_logging() {
         .with(fmt::layer().with_target(true).with_line_number(true))
         .with(filter)
         .init();
+}
+
+/// Handle external window insert and resize events.
+///
+/// Updates cached_cell_heights and scroll position when external windows
+/// are added or resized.
+fn handle_external_window_events(compositor: &mut ColumnCompositor) {
+    // Handle new external window - must sync cached_cell_heights before height calculation
+    if let Some(window_idx) = compositor.new_external_window_index.take() {
+        tracing::info!(
+            window_idx,
+            cached_heights_before = ?compositor.cached_cell_heights,
+            cells_count = compositor.cells.len(),
+            focused_index = ?compositor.focused_index,
+            "handling new external window"
+        );
+
+        // INSERT into cached heights (not just set) since cells were shifted
+        let window_height = compositor.cells.get(window_idx)
+            .and_then(|c| match c {
+                ColumnCell::External(entry) => Some(entry.state.current_height() as i32),
+                _ => None,
+            })
+            .unwrap_or(200);
+
+        if window_idx <= compositor.cached_cell_heights.len() {
+            compositor.cached_cell_heights.insert(window_idx, window_height);
+        } else {
+            while compositor.cached_cell_heights.len() < window_idx {
+                compositor.cached_cell_heights.push(200);
+            }
+            compositor.cached_cell_heights.push(window_height);
+        }
+
+        tracing::info!(
+            cached_heights_after = ?compositor.cached_cell_heights,
+            "after inserting window height"
+        );
+
+        // Scroll to show the focused cell
+        if let Some(focused_idx) = compositor.focused_index {
+            if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                tracing::info!(
+                    window_idx,
+                    focused_idx,
+                    new_scroll,
+                    "scrolled to show focused cell after external window added"
+                );
+            }
+        }
+    }
+
+    // Handle external window resize
+    if let Some((resized_idx, new_height)) = compositor.external_window_resized.take() {
+        tracing::info!(
+            resized_idx,
+            new_height,
+            cached_heights_before = ?compositor.cached_cell_heights,
+            "handling external window resize"
+        );
+
+        if resized_idx < compositor.cached_cell_heights.len() {
+            compositor.cached_cell_heights[resized_idx] = new_height;
+        }
+
+        if let Some(focused_idx) = compositor.focused_index {
+            if focused_idx >= resized_idx {
+                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                    tracing::info!(
+                        resized_idx,
+                        focused_idx,
+                        new_scroll,
+                        "scrolled to show focused cell after external window resize"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Calculate cell heights for input event processing.
+///
+/// Uses cached heights from previous frame for existing cells, falls back
+/// to terminal.height for new cells.
+fn calculate_cell_heights(
+    compositor: &ColumnCompositor,
+    terminal_manager: &TerminalManager,
+) -> Vec<i32> {
+    compositor.cells.iter().enumerate().map(|(i, cell)| {
+        // Use cached height if available
+        if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+            if cached > 0 {
+                return cached;
+            }
+        }
+
+        // Fallback for new cells
+        match cell {
+            ColumnCell::Terminal(id) => {
+                terminal_manager.get(*id)
+                    .map(|t| if t.hidden { 0 } else { t.height as i32 })
+                    .unwrap_or(200)
+            }
+            ColumnCell::External(entry) => {
+                entry.state.current_height() as i32
+            }
+        }
+    }).collect()
+}
+
+/// Handle keyboard shortcut to spawn a new terminal.
+fn handle_terminal_spawn(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    if !compositor.spawn_terminal_requested {
+        return;
+    }
+    compositor.spawn_terminal_requested = false;
+
+    match terminal_manager.spawn() {
+        Ok(id) => {
+            compositor.add_terminal(id);
+
+            // Update cached_cell_heights
+            let new_heights = calculate_cell_heights(compositor, terminal_manager);
+            compositor.update_cached_cell_heights(new_heights);
+
+            // Scroll to show the new terminal
+            if let Some(focused_idx) = compositor.focused_index {
+                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                    tracing::info!(
+                        id = id.0,
+                        cell_count = compositor.cells.len(),
+                        focused_idx,
+                        new_scroll,
+                        "spawned terminal, scrolling to show"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("failed to spawn terminal: {}", e);
+        }
+    }
+}
+
+/// Handle IPC spawn requests from column-term.
+///
+/// Processes pending spawn requests, sets up environment, and spawns
+/// command terminals with proper parent hiding.
+fn handle_ipc_spawn_requests(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    while let Some(request) = compositor.pending_spawn_requests.pop() {
+        if let Some(id) = process_spawn_request(compositor, terminal_manager, request) {
+            // Focus the new command terminal
+            for (i, cell) in compositor.cells.iter().enumerate() {
+                if let ColumnCell::Terminal(tid) = cell {
+                    if *tid == id {
+                        compositor.focused_index = Some(i);
+                        tracing::info!(id = id.0, index = i, "focused new command terminal");
+                        break;
+                    }
+                }
+            }
+
+            // Update cached_cell_heights (hidden terminals get 0)
+            let new_heights = calculate_cell_heights_with_hidden(compositor, terminal_manager);
+            compositor.update_cached_cell_heights(new_heights);
+
+            // Scroll to show the new terminal
+            if let Some(focused_idx) = compositor.focused_index {
+                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                    tracing::info!(
+                        id = id.0,
+                        focused_idx,
+                        new_scroll,
+                        "spawned command terminal, scrolling to show"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Process a single spawn request, returning the new terminal ID if successful.
+fn process_spawn_request(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+    request: compositor::ipc::SpawnRequest,
+) -> Option<TerminalId> {
+    // Decide what command to run
+    let command = if request.command.is_empty() {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    } else if request.is_tui {
+        request.command.clone()
+    } else {
+        let escaped = request.command.replace("'", "'\\''");
+        format!("echo '> {}'; {}", escaped, request.command)
+    };
+
+    // Modify environment
+    let mut env = request.env.clone();
+    env.insert("GIT_PAGER".to_string(), "cat".to_string());
+    env.insert("PAGER".to_string(), "cat".to_string());
+    env.insert("LESS".to_string(), "-FRX".to_string());
+    if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
+        env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
+    }
+
+    let parent = terminal_manager.focused;
+
+    // Reject spawns from alternate screen terminals (TUI apps)
+    if let Some(parent_id) = parent {
+        if let Some(parent_term) = terminal_manager.get(parent_id) {
+            if parent_term.terminal.is_alternate_screen() {
+                tracing::info!(command = %command, "rejecting spawn from alternate screen terminal");
+                return None;
+            }
+        }
+    }
+
+    tracing::info!(
+        command = %command,
+        is_tui = request.is_tui,
+        ?parent,
+        "spawning command terminal"
+    );
+
+    match terminal_manager.spawn_command(&command, &request.cwd, &env, parent, request.is_tui) {
+        Ok(id) => {
+            if let Some(term) = terminal_manager.get(id) {
+                let (cols, pty_rows) = term.terminal.dimensions();
+                tracing::info!(id = id.0, cols, pty_rows, height = term.height, "terminal created");
+            }
+            compositor.add_terminal(id);
+            Some(id)
+        }
+        Err(e) => {
+            tracing::error!("failed to spawn command terminal: {}", e);
+            None
+        }
+    }
+}
+
+/// Process terminal PTY output and handle sizing actions.
+///
+/// Processes all terminal output, handles growth requests, and auto-resizes
+/// terminals that enter alternate screen mode.
+fn process_terminal_output(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    // Process PTY output and get sizing actions
+    let sizing_actions = terminal_manager.process_all();
+
+    // Handle sizing actions
+    for (id, action) in sizing_actions {
+        if let terminal::sizing::SizingAction::RequestGrowth { target_rows } = action {
+            tracing::info!(id = id.0, target_rows, "processing growth request");
+            terminal_manager.grow_terminal(id, target_rows);
+
+            // If focused terminal grew, update cache and scroll
+            if terminal_manager.focused == Some(id) {
+                if let Some(idx) = find_terminal_cell_index(compositor, id) {
+                    if let Some(term) = terminal_manager.get(id) {
+                        if idx < compositor.cached_cell_heights.len() {
+                            compositor.cached_cell_heights[idx] = term.height as i32;
+                        }
+                    }
+                    compositor.scroll_to_show_cell_bottom(idx);
+                }
+            }
+        }
+    }
+
+    // Auto-resize terminals entering alternate screen mode
+    auto_resize_alt_screen_terminals(compositor, terminal_manager);
+}
+
+/// Auto-resize terminals that entered alternate screen mode.
+fn auto_resize_alt_screen_terminals(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    let max_height = terminal_manager.max_rows as u32 * terminal_manager.cell_height;
+    let visible_ids = terminal_manager.visible_ids();
+
+    let mut ids_to_resize = Vec::new();
+    for id in visible_ids {
+        if let Some(term) = terminal_manager.get_mut(id) {
+            if term.check_alt_screen_resize_needed(max_height) {
+                ids_to_resize.push(id);
+            }
+        }
+    }
+
+    let max_rows = terminal_manager.max_rows;
+    let cell_height = terminal_manager.cell_height;
+
+    for id in ids_to_resize {
+        if let Some(term) = terminal_manager.get_mut(id) {
+            let old_height = term.height;
+            term.resize(max_rows, cell_height);
+            let new_height = term.height;
+
+            tracing::info!(
+                id = id.0,
+                old_height,
+                new_height,
+                "auto-resized terminal for alternate screen"
+            );
+
+            // Update cached height
+            if let Some(idx) = find_terminal_cell_index(compositor, id) {
+                if idx < compositor.cached_cell_heights.len() {
+                    compositor.cached_cell_heights[idx] = new_height as i32;
+                }
+            }
+        }
+    }
+}
+
+/// Find the cell index for a terminal ID.
+fn find_terminal_cell_index(compositor: &ColumnCompositor, id: TerminalId) -> Option<usize> {
+    compositor.cells.iter().enumerate().find_map(|(i, cell)| {
+        if let ColumnCell::Terminal(tid) = cell {
+            if *tid == id {
+                return Some(i);
+            }
+        }
+        None
+    })
+}
+
+/// Handle IPC resize request from column-term --resize.
+///
+/// Resizes the focused terminal to full or content-based height and
+/// sends ACK to unblock the column-term process.
+fn handle_ipc_resize_request(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    let Some((resize_mode, ack_stream)) = compositor.pending_resize_request.take() else {
+        return;
+    };
+
+    let Some(focused_id) = terminal_manager.focused else {
+        tracing::warn!("resize request but no focused terminal");
+        compositor::ipc::send_ack(ack_stream);
+        return;
+    };
+
+    let cell_height = terminal_manager.cell_height;
+    let new_rows = match resize_mode {
+        compositor::ipc::ResizeMode::Full => {
+            tracing::info!(id = focused_id.0, max_rows = terminal_manager.max_rows, "resize to full");
+            terminal_manager.max_rows
+        }
+        compositor::ipc::ResizeMode::Content => {
+            // Process pending PTY output first
+            if let Some(term) = terminal_manager.get_mut(focused_id) {
+                term.process();
+            }
+
+            // Calculate content rows from cursor position
+            if let Some(term) = terminal_manager.get(focused_id) {
+                let cursor_line = term.terminal.cursor_line();
+                let content_rows = (cursor_line + CURSOR_TO_CONTENT_OFFSET).max(MIN_TERMINAL_ROWS);
+                tracing::info!(id = focused_id.0, cursor_line, content_rows, "resize to content");
+                content_rows
+            } else {
+                MIN_TERMINAL_ROWS
+            }
+        }
+    };
+
+    if let Some(term) = terminal_manager.get_mut(focused_id) {
+        tracing::info!(id = focused_id.0, ?resize_mode, new_rows, "resizing terminal via IPC");
+        term.resize(new_rows, cell_height);
+
+        // Update cached height
+        for (i, cell) in compositor.cells.iter().enumerate() {
+            if let ColumnCell::Terminal(tid) = cell {
+                if *tid == focused_id && i < compositor.cached_cell_heights.len() {
+                    compositor.cached_cell_heights[i] = term.height as i32;
+                    break;
+                }
+            }
+        }
+
+        // Scroll to keep terminal visible
+        if let Some(idx) = compositor.focused_index {
+            compositor.scroll_to_show_cell_bottom(idx);
+        }
+    }
+
+    compositor::ipc::send_ack(ack_stream);
+    tracing::info!("resize ACK sent");
+}
+
+/// Calculate cell heights, with hidden terminals getting 0 height.
+fn calculate_cell_heights_with_hidden(
+    compositor: &ColumnCompositor,
+    terminal_manager: &TerminalManager,
+) -> Vec<i32> {
+    compositor.cells.iter().enumerate().map(|(i, cell)| {
+        match cell {
+            ColumnCell::Terminal(tid) => {
+                if terminal_manager.get(*tid).map(|t| t.hidden).unwrap_or(false) {
+                    return 0;
+                }
+                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                    if cached > 0 {
+                        return cached;
+                    }
+                }
+                terminal_manager.get(*tid)
+                    .map(|t| t.height as i32)
+                    .unwrap_or(200)
+            }
+            ColumnCell::External(entry) => {
+                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                    if cached > 0 {
+                        return cached;
+                    }
+                }
+                entry.state.current_height() as i32
+            }
+        }
+    }).collect()
+}
+
+/// Cleanup dead terminals, sync focus, and handle shutdown.
+///
+/// Returns `true` if the compositor should shut down (all cells removed).
+fn cleanup_and_sync_focus(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) -> bool {
+    let (dead, focus_changed_to) = terminal_manager.cleanup();
+
+    // Remove dead terminals from compositor
+    for dead_id in &dead {
+        compositor.remove_terminal(*dead_id);
+        tracing::info!(id = dead_id.0, "removed dead terminal from cells");
+    }
+
+    // Sync compositor focus if a command terminal exited
+    if let Some(new_focus_id) = focus_changed_to {
+        if let Some(idx) = find_terminal_cell_index(compositor, new_focus_id) {
+            compositor.focused_index = Some(idx);
+            tracing::info!(id = new_focus_id.0, index = idx, "synced compositor focus to parent terminal");
+
+            // Update cached height for unhidden terminal (was 0 when hidden)
+            if let Some(term) = terminal_manager.get(new_focus_id) {
+                if idx < compositor.cached_cell_heights.len() {
+                    compositor.cached_cell_heights[idx] = term.height as i32;
+                }
+            }
+
+            // Scroll to show the unhidden parent terminal
+            if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(idx) {
+                tracing::info!(
+                    id = new_focus_id.0,
+                    new_scroll,
+                    "scrolled to show unhidden parent terminal"
+                );
+            }
+        }
+    }
+
+    // Check if all cells are gone
+    if !dead.is_empty() && compositor.cells.is_empty() {
+        tracing::info!("all cells removed, shutting down");
+        return true;
+    }
+
+    false
 }
