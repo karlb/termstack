@@ -34,7 +34,15 @@ pub enum IpcMessage {
         cwd: String,
         /// Environment variables to inherit
         env: HashMap<String, String>,
-        /// Whether this is a TUI app that needs full-height terminal
+        /// Whether this is a TUI app (pre-resize optimization).
+        ///
+        /// When true:
+        /// - Terminal starts at full viewport height
+        /// - Command is run without echo prefix
+        ///
+        /// Note: Even if false, terminals auto-resize to full height when
+        /// alternate screen mode is detected (see main.rs auto-resize logic).
+        /// This flag provides proactive pre-sizing for known TUI apps.
         #[serde(default)]
         is_tui: bool,
     },
@@ -64,7 +72,8 @@ pub struct SpawnRequest {
     pub cwd: PathBuf,
     /// Environment variables
     pub env: HashMap<String, String>,
-    /// Whether this is a TUI app that needs full-height terminal
+    /// Whether this is a TUI app (pre-resize optimization).
+    /// See IpcMessage::Spawn::is_tui for details.
     pub is_tui: bool,
 }
 
