@@ -425,17 +425,16 @@ fn main() -> anyhow::Result<()> {
             // Hide the focused terminal while command runs
             let parent = terminal_manager.focused;
 
-            // Reject spawns from full-height terminals (TUI mode).
-            // When a shell runs a TUI app (vim, mc, fzf), the shell terminal is resized
-            // to full height. If the TUI app has an internal subshell (like mc), commands
-            // typed there would normally spawn new terminals. We reject these to keep
-            // the TUI app's subshell communication working correctly.
-            // Detection: PTY rows == max_rows means terminal is in TUI (full) mode.
+            // Reject spawns from terminals in alternate screen mode (TUI apps).
+            // When a shell runs a TUI app (vim, mc, fzf), it enters alternate screen mode.
+            // If the TUI app has an internal subshell (like mc), commands typed there would
+            // normally spawn new terminals. We reject these to keep the TUI app's subshell
+            // communication working correctly.
+            // Detection: ALT_SCREEN mode is the definitive signal that a TUI app is running.
             if let Some(parent_id) = parent {
                 if let Some(parent_term) = terminal_manager.get(parent_id) {
-                    let (_, parent_pty_rows) = parent_term.terminal.dimensions();
-                    if parent_pty_rows == terminal_manager.max_rows {
-                        tracing::info!(command = %command, "rejecting spawn from full-height terminal");
+                    if parent_term.terminal.is_alternate_screen() {
+                        tracing::info!(command = %command, "rejecting spawn from alternate screen terminal");
                         continue;
                     }
                 }

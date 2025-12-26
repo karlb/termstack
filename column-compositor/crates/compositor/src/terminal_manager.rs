@@ -2552,4 +2552,135 @@ mod tests {
             content_rows, expected_content
         );
     }
+
+    /// Test that is_alternate_screen() correctly detects alternate screen mode.
+    /// This is used for spawn rejection when TUI apps are running.
+    #[test]
+    fn is_alternate_screen_detection() {
+        let mut manager = TerminalManager::new_with_size(800, 600);
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+
+        // Initially not in alternate screen
+        {
+            let terminal = manager.get(id).unwrap();
+            assert!(
+                !terminal.terminal.is_alternate_screen(),
+                "Terminal should not be in alternate screen initially"
+            );
+        }
+
+        // Enter alternate screen mode with CSI ? 1049 h
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.inject_bytes(b"\x1b[?1049h");
+        }
+
+        // Now should be in alternate screen
+        {
+            let terminal = manager.get(id).unwrap();
+            assert!(
+                terminal.terminal.is_alternate_screen(),
+                "Terminal should be in alternate screen after CSI ? 1049 h"
+            );
+        }
+
+        // Exit alternate screen mode with CSI ? 1049 l
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.inject_bytes(b"\x1b[?1049l");
+        }
+
+        // Should no longer be in alternate screen
+        {
+            let terminal = manager.get(id).unwrap();
+            assert!(
+                !terminal.terminal.is_alternate_screen(),
+                "Terminal should not be in alternate screen after CSI ? 1049 l"
+            );
+        }
+    }
+
+    /// Test that max_rows does not imply alternate screen mode.
+    /// This is a regression test for the spawn rejection heuristic change.
+    /// Old behavior: reject spawn if parent_pty_rows == max_rows (false positive possible)
+    /// New behavior: reject spawn if parent is in alternate screen (exact)
+    #[test]
+    fn max_rows_does_not_imply_alternate_screen() {
+        let max_height = 160; // 10 rows * 16 cell height
+        let mut manager = TerminalManager::new_with_size(800, max_height);
+
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+
+        // Resize the terminal to max height (simulating content growth)
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.height = max_height;
+        }
+
+        // Terminal has max height but is NOT in alternate screen
+        {
+            let terminal = manager.get(id).unwrap();
+            assert_eq!(terminal.height, max_height, "Terminal should be at max height");
+            assert!(
+                !terminal.terminal.is_alternate_screen(),
+                "Terminal at max height should NOT automatically be in alternate screen"
+            );
+        }
+    }
+
+    /// Test that spawn rejection should be based on alternate screen, not PTY size.
+    /// This simulates the condition where spawns should be allowed.
+    #[test]
+    fn spawn_should_be_allowed_when_not_in_alternate_screen() {
+        let mut manager = TerminalManager::new_with_size(800, 600);
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let parent_id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+
+        // Parent is not in alternate screen - spawns should be allowed
+        {
+            let parent = manager.get(parent_id).unwrap();
+            assert!(
+                !parent.terminal.is_alternate_screen(),
+                "Parent not in alternate screen"
+            );
+        }
+
+        // Child spawn should succeed
+        let child_id = manager.spawn_command("echo child", cwd, &env, Some(parent_id), false).unwrap();
+        assert!(manager.get(child_id).is_some(), "Child should be spawned");
+    }
+
+    /// Test that alternate screen detection works for simulated TUI apps.
+    /// When a TUI app is running (alternate screen), spawns should be rejected.
+    #[test]
+    fn spawn_should_be_rejected_when_in_alternate_screen() {
+        let mut manager = TerminalManager::new_with_size(800, 600);
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let parent_id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+
+        // Enter alternate screen (simulating TUI app start)
+        {
+            let terminal = manager.get_mut(parent_id).unwrap();
+            terminal.inject_bytes(b"\x1b[?1049h");
+        }
+
+        // Verify parent is in alternate screen
+        {
+            let parent = manager.get(parent_id).unwrap();
+            assert!(
+                parent.terminal.is_alternate_screen(),
+                "Parent should be in alternate screen"
+            );
+        }
+
+        // NOTE: The actual spawn rejection happens in main.rs event loop.
+        // This test verifies the detection works correctly.
+        // Integration test would need to verify the full rejection path.
+    }
 }
