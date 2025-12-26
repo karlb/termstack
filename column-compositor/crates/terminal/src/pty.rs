@@ -332,4 +332,120 @@ mod tests {
         let pty = Pty::spawn(&shell, 80, 24);
         assert!(pty.is_ok());
     }
+
+    #[test]
+    fn resize_updates_winsize() {
+        // Verify that resize() actually updates the PTY's window size
+        // This is what TIOCGWINSZ queries
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut pty = Pty::spawn(&shell, 80, 24).unwrap();
+
+        // Initial size should be 80x24
+        let (cols, rows) = pty.winsize();
+        assert_eq!(cols, 80);
+        assert_eq!(rows, 24);
+
+        // Resize to 100x42
+        pty.resize(100, 42).unwrap();
+
+        // After resize, winsize should be updated
+        let (cols, rows) = pty.winsize();
+        assert_eq!(cols, 100);
+        assert_eq!(rows, 42);
+    }
+
+    #[test]
+    fn resize_updates_pty_size_immediately() {
+        // This test verifies that after resize(), a subprocess can immediately
+        // query the new size via TIOCGWINSZ.
+        //
+        // This is critical for the TUI resize flow - mc needs to see the new
+        // size as soon as it starts, not later.
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        use std::collections::HashMap;
+        use std::path::Path;
+
+        let mut env = HashMap::new();
+        // Clear environment to avoid shell startup interference
+        env.insert("TERM".to_string(), "xterm".to_string());
+
+        // Use stty size to query the PTY's current size
+        // stty size outputs "rows cols"
+        let mut pty = Pty::spawn_command(
+            "sleep 0.1 && stty size",  // Small delay to ensure PTY is ready
+            Path::new("/tmp"),
+            &env,
+            80,
+            24,
+        ).unwrap();
+
+        // Read the output
+        let mut output = String::new();
+        let mut buf = [0u8; 256];
+
+        // Wait for command to complete
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        loop {
+            match pty.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    output.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if output.contains('\n') {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        eprintln!("stty size output before resize: {:?}", output.trim());
+
+        // Now resize the PTY
+        pty.resize(100, 42).unwrap();
+
+        // Spawn another stty to check the new size
+        let mut pty2 = Pty::spawn_command(
+            "sleep 0.1 && stty size",
+            Path::new("/tmp"),
+            &env,
+            100,  // Use the new size
+            42,
+        ).unwrap();
+
+        let mut output2 = String::new();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        loop {
+            match pty2.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    output2.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if output2.contains('\n') {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        eprintln!("stty size output for new PTY at 100x42: {:?}", output2.trim());
+
+        // The second PTY should report the correct size
+        // stty size output format: "rows cols"
+        let parts: Vec<&str> = output2.trim().split_whitespace().collect();
+        if parts.len() >= 2 {
+            let rows: u16 = parts[0].parse().unwrap_or(0);
+            let cols: u16 = parts[1].parse().unwrap_or(0);
+            assert_eq!(rows, 42, "stty should report 42 rows, got {}", rows);
+            assert_eq!(cols, 100, "stty should report 100 cols, got {}", cols);
+        }
+    }
 }

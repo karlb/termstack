@@ -9,7 +9,7 @@ use std::sync::Arc;
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Config as TermConfig;
-use alacritty_terminal::term::Term;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::vte::ansi;
 
@@ -201,8 +201,13 @@ impl Terminal {
         })
     }
 
-    /// Process PTY output
+    /// Process PTY output and terminal events
     pub fn process_pty(&mut self) -> Vec<SizingAction> {
+        self.process_pty_with_count().0
+    }
+
+    /// Process PTY output and terminal events, returning (actions, bytes_read)
+    pub fn process_pty_with_count(&mut self) -> (Vec<SizingAction>, usize) {
         let mut actions = Vec::new();
         let mut buf = [0u8; 4096];
         let mut total_read = 0;
@@ -214,6 +219,9 @@ impl Terminal {
                     total_read += n;
                     let mut term = self.term.lock();
 
+                    // Check if in alternate screen BEFORE processing (for logging)
+                    let was_alt = term.mode().contains(TermMode::ALT_SCREEN);
+
                     // Count newlines for sizing state machine
                     let newlines = buf[..n].iter().filter(|&&b| b == b'\n').count();
 
@@ -222,18 +230,24 @@ impl Terminal {
                         self.parser.advance(&mut *term, *byte);
                     }
 
+                    // Check if in alternate screen AFTER processing
+                    let is_alt = term.mode().contains(TermMode::ALT_SCREEN);
+
                     drop(term);
 
-                    // Update sizing state for each newline
-                    if newlines > 0 {
+                    // Only count newlines when NOT in alternate screen mode
+                    // TUI apps use alternate screen and their output shouldn't affect content rows
+                    if !is_alt && !was_alt && newlines > 0 {
                         tracing::debug!(newlines, content_rows = self.sizing.content_rows(), "detected newlines");
-                    }
-                    for _ in 0..newlines {
-                        let action = self.sizing.on_new_line();
-                        if action != SizingAction::None {
-                            tracing::debug!(?action, "sizing action from newline");
-                            actions.push(action);
+                        for _ in 0..newlines {
+                            let action = self.sizing.on_new_line();
+                            if action != SizingAction::None {
+                                tracing::debug!(?action, "sizing action from newline");
+                                actions.push(action);
+                            }
                         }
+                    } else if newlines > 0 && (is_alt || was_alt) {
+                        tracing::debug!(newlines, was_alt, is_alt, "skipping newlines in alternate screen");
                     }
                 }
                 Err(_) => break,
@@ -241,16 +255,52 @@ impl Terminal {
         }
 
         if total_read > 0 {
-            tracing::debug!(bytes = total_read, "read from PTY");
+            tracing::info!(bytes = total_read, "read from PTY");
         }
 
-        actions
+        // Process terminal events (e.g., PtyWrite for terminal query responses)
+        for event in self.events.try_iter() {
+            if let TerminalEvent::Alacritty(Event::PtyWrite(text)) = event {
+                tracing::debug!(len = text.len(), "writing terminal response to PTY");
+                if let Err(e) = self.pty.write(text.as_bytes()) {
+                    tracing::warn!("failed to write terminal response: {:?}", e);
+                }
+            }
+        }
+
+        (actions, total_read)
     }
 
     /// Write input to terminal
     pub fn write(&mut self, data: &[u8]) -> Result<(), TerminalError> {
         self.pty.write(data)?;
         Ok(())
+    }
+
+    /// Directly process bytes through terminal emulator (for testing)
+    ///
+    /// Unlike process_pty, this doesn't read from PTY but directly feeds
+    /// the given bytes to the VTE parser. Useful for simulating terminal
+    /// output in tests.
+    pub fn inject_bytes(&mut self, data: &[u8]) {
+        let mut term = self.term.lock();
+        let was_alt = term.mode().contains(TermMode::ALT_SCREEN);
+
+        let newlines = data.iter().filter(|&&b| b == b'\n').count();
+
+        for byte in data {
+            self.parser.advance(&mut *term, *byte);
+        }
+
+        let is_alt = term.mode().contains(TermMode::ALT_SCREEN);
+        drop(term);
+
+        // Only count newlines when NOT in alternate screen mode
+        if !is_alt && !was_alt && newlines > 0 {
+            for _ in 0..newlines {
+                self.sizing.on_new_line();
+            }
+        }
     }
 
     /// Handle compositor configure (resize)
@@ -302,6 +352,26 @@ impl Terminal {
     /// Get current dimensions
     pub fn dimensions(&self) -> (u16, u16) {
         (self.cols, self.rows)
+    }
+
+    /// Get actual grid rows from alacritty terminal
+    /// This is the number of rows the terminal grid can display
+    pub fn grid_rows(&self) -> u16 {
+        let term = self.term.lock();
+        term.screen_lines() as u16
+    }
+
+    /// Check if terminal is in alternate screen mode (used by TUI apps like vim, fzf, mc)
+    pub fn is_alternate_screen(&self) -> bool {
+        let term = self.term.lock();
+        term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// Get cursor line (0-indexed row where cursor is)
+    /// This reflects actual content position in the primary screen
+    pub fn cursor_line(&self) -> u16 {
+        let term = self.term.lock();
+        term.grid().cursor.point.line.0 as u16
     }
 
     /// Get content row count

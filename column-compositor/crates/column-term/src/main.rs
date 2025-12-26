@@ -39,6 +39,11 @@
 //!     if [[ $ret -eq 2 ]]; then
 //!         # Shell builtin - run in current shell
 //!         eval "$cmd"
+//!     elif [[ $ret -eq 3 ]]; then
+//!         # TUI app - resize to full height, run, resize back
+//!         column-term --resize full
+//!         eval "$cmd"
+//!         column-term --resize content
 //!     fi
 //!     zle reset-prompt
 //! }
@@ -47,7 +52,8 @@
 //!
 //! Exit codes:
 //! - 0: Command handled (spawned in terminal or as GUI app)
-//! - 2: Shell/TUI command - should run in current shell/terminal
+//! - 2: Shell builtin - run in current shell via eval
+//! - 3: TUI app - resize terminal to full height, run via eval, resize back
 
 use std::env;
 use std::io::Write;
@@ -58,9 +64,12 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+#[cfg(test)]
+mod config_test;
+
 /// Configuration for column-term
 #[derive(Debug, Deserialize)]
-struct Config {
+pub(crate) struct Config {
     /// List of commands that are GUI apps (spawn directly, not in terminal)
     #[serde(default)]
     gui_apps: Vec<String>,
@@ -154,17 +163,49 @@ impl Config {
     }
 
     /// Check if a command is a TUI app that should run in current terminal
+    ///
+    /// This checks ALL commands in a pipeline/chain, not just the first.
+    /// For example, "echo a | fzf" should detect fzf as a TUI app.
     fn is_tui_app(&self, command: &str) -> bool {
-        let program = Self::program_name(command);
-        self.tui_apps.iter().any(|app| app == program)
+        // Split on pipe and command separators to get all commands
+        for segment in command.split(['|', ';', '&']) {
+            let segment = segment.trim();
+            // Skip empty segments and && continuation
+            if segment.is_empty() || segment == "&" {
+                continue;
+            }
+            let program = Self::program_name(segment);
+            if self.tui_apps.iter().any(|app| app == program) {
+                return true;
+            }
+        }
+        false
     }
 }
 
 /// Exit code indicating command should run in current shell
 const EXIT_SHELL_COMMAND: i32 = 2;
 
+/// Exit code indicating TUI app - shell should resize terminal, run, then resize back
+const EXIT_TUI_APP: i32 = 3;
+
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
+
+    // Handle --resize flag first (before any command parsing)
+    if args.len() >= 2 && args[1] == "--resize" {
+        let mode = args.get(2).map(|s| s.as_str()).unwrap_or("full");
+        return send_resize_request(mode);
+    }
+
+    // If we're running inside a TUI terminal (like mc's subshell), don't intercept.
+    // This prevents mc's internal fish subshell commands from being spawned as
+    // separate terminals, which would break mc's communication with its subshell.
+    if env::var("COLUMN_COMPOSITOR_TUI").is_ok() {
+        // Exit with code 2 (shell command) so the shell integration runs `eval "$cmd"`,
+        // allowing mc's subshell command to actually execute in the current shell.
+        std::process::exit(EXIT_SHELL_COMMAND);
+    }
 
     // Parse arguments
     let command = parse_command(&args)?;
@@ -181,13 +222,58 @@ fn main() -> Result<()> {
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
     } else if config.is_tui_app(&command) {
-        // TUI app - spawn full-height terminal
-        spawn_in_terminal(&command, true)
+        // TUI app - shell should resize to full height, run command, resize back
+        std::process::exit(EXIT_TUI_APP);
     } else if config.is_gui_app(&command) {
         spawn_gui_app(&command)
     } else {
         spawn_in_terminal(&command, false)
     }
+}
+
+/// Send a resize request to the compositor and wait for acknowledgement
+///
+/// This is synchronous to prevent race conditions with TUI apps that query
+/// terminal size immediately after starting.
+fn send_resize_request(mode: &str) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+
+    let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")
+        .context("COLUMN_COMPOSITOR_SOCKET not set - are you running inside column-compositor?")?;
+
+    let mode_str = match mode {
+        "full" => "full",
+        "content" => "content",
+        _ => bail!("invalid resize mode: {} (expected 'full' or 'content')", mode),
+    };
+
+    let msg = serde_json::json!({
+        "type": "resize",
+        "mode": mode_str,
+    });
+
+    let stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("failed to connect to {}", socket_path))?;
+
+    // Set timeout for reading ACK (don't want to hang forever)
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .context("failed to set read timeout")?;
+
+    let mut stream_write = stream.try_clone().context("failed to clone stream")?;
+
+    writeln!(stream_write, "{}", msg).context("failed to send resize message")?;
+    stream_write.flush().context("failed to flush resize message")?;
+
+    // Wait for ACK from compositor - this ensures resize is complete before we return
+    let mut reader = BufReader::new(stream);
+    let mut ack = String::new();
+    reader.read_line(&mut ack).context("failed to read resize ACK")?;
+
+    if ack.trim() != "ok" {
+        bail!("unexpected resize ACK: {}", ack.trim());
+    }
+
+    Ok(())
 }
 
 /// Spawn command as a GUI app (directly, not in terminal)

@@ -9,3 +9,6 @@ pub mod ipc;
 pub mod layout;
 pub mod state;
 pub mod terminal_manager;
+
+#[cfg(test)]
+mod ipc_test;

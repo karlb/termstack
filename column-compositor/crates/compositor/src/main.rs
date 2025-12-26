@@ -124,11 +124,21 @@ fn main() -> anyhow::Result<()> {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         tracing::info!("IPC connection received");
-                        if let Some(request) = compositor::ipc::read_spawn_request(stream) {
-                            tracing::info!(command = %request.command, "IPC spawn request queued");
-                            state.pending_spawn_requests.push(request);
+                        if let Some((request, stream)) = compositor::ipc::read_ipc_request(stream) {
+                            match request {
+                                compositor::ipc::IpcRequest::Spawn(spawn_req) => {
+                                    tracing::info!(command = %spawn_req.command, "IPC spawn request queued");
+                                    state.pending_spawn_requests.push(spawn_req);
+                                    // Spawn doesn't need ACK - it's fire-and-forget
+                                }
+                                compositor::ipc::IpcRequest::Resize(mode) => {
+                                    tracing::info!(?mode, "IPC resize request queued");
+                                    // Store stream for ACK after resize completes
+                                    state.pending_resize_request = Some((mode, stream));
+                                }
+                            }
                         } else {
-                            tracing::warn!("failed to parse IPC spawn request");
+                            tracing::warn!("failed to parse IPC request");
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -266,22 +276,14 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Fallback for new cells: use texture size or default
+            // Fallback for new cells: use terminal.height (not texture which may not exist yet)
             match cell {
                 ColumnCell::Terminal(id) => {
-                    // Skip hidden terminals (return 0 height)
+                    // For new terminals, use terminal.height directly
+                    // This is critical for TUI terminals which need full height immediately
                     terminal_manager.get(*id)
-                        .filter(|t| !t.hidden)
-                        .and_then(|t| t.get_texture())
-                        .map(|tex| tex.size().h)
-                        .unwrap_or_else(|| {
-                            // Check if it's hidden
-                            if terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false) {
-                                0
-                            } else {
-                                200 // Default for visible terminals without texture
-                            }
-                        })
+                        .map(|t| if t.hidden { 0 } else { t.height as i32 })
+                        .unwrap_or(200)
                 }
                 ColumnCell::External(entry) => {
                     // For new external windows, use state height as initial guess
@@ -353,13 +355,12 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
 
-                        // Fallback for new cells
+                        // Fallback for new cells: use terminal.height directly
                         match cell {
                             ColumnCell::Terminal(tid) => {
                                 terminal_manager.get(*tid)
-                                    .and_then(|t| t.get_texture())
-                                    .map(|tex| tex.size().h)
-                                    .unwrap_or(200) // Default height for new terminals
+                                    .map(|t| if t.hidden { 0 } else { t.height as i32 })
+                                    .unwrap_or(200)
                             }
                             ColumnCell::External(entry) => {
                                 entry.state.current_height() as i32
@@ -393,6 +394,9 @@ fn main() -> anyhow::Result<()> {
             let command = if request.command.is_empty() {
                 // Empty command = spawn interactive shell
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+            } else if request.is_tui {
+                // TUI apps take over the screen - no echo prefix needed
+                request.command.clone()
             } else {
                 // Echo the command first, then run it
                 // Simple echo before the command
@@ -421,8 +425,46 @@ fn main() -> anyhow::Result<()> {
             // Hide the focused terminal while command runs
             let parent = terminal_manager.focused;
 
+            // Reject spawns from full-height terminals (TUI mode).
+            // When a shell runs a TUI app (vim, mc, fzf), the shell terminal is resized
+            // to full height. If the TUI app has an internal subshell (like mc), commands
+            // typed there would normally spawn new terminals. We reject these to keep
+            // the TUI app's subshell communication working correctly.
+            // Detection: PTY rows == max_rows means terminal is in TUI (full) mode.
+            if let Some(parent_id) = parent {
+                if let Some(parent_term) = terminal_manager.get(parent_id) {
+                    let (_, parent_pty_rows) = parent_term.terminal.dimensions();
+                    if parent_pty_rows == terminal_manager.max_rows {
+                        tracing::info!(command = %command, "rejecting spawn from full-height terminal");
+                        continue;
+                    }
+                }
+            }
+
+            tracing::info!(
+                command = %command,
+                is_tui = request.is_tui,
+                ?parent,
+                max_rows = terminal_manager.max_rows,
+                cell_height = terminal_manager.cell_height,
+                "about to spawn command terminal"
+            );
+
             match terminal_manager.spawn_command(&command, &request.cwd, &env, parent, request.is_tui) {
                 Ok(id) => {
+                    // Log the created terminal's state
+                    if let Some(term) = terminal_manager.get(id) {
+                        let (cols, pty_rows) = term.terminal.dimensions();
+                        tracing::info!(
+                            id = id.0,
+                            cols,
+                            pty_rows,
+                            visual_height = term.height,
+                            hidden = term.hidden,
+                            "terminal created"
+                        );
+                    }
+
                     compositor.add_terminal(id);
 
                     // Focus the new command terminal (it was inserted above the old focus)
@@ -452,9 +494,10 @@ fn main() -> anyhow::Result<()> {
                                         return cached;
                                     }
                                 }
+                                // For new terminals, use terminal.height (not texture which doesn't exist yet)
+                                // This is critical for TUI terminals which need full height from the start
                                 terminal_manager.get(*tid)
-                                    .and_then(|t| t.get_texture())
-                                    .map(|tex| tex.size().h)
+                                    .map(|t| t.height as i32)
                                     .unwrap_or(200)
                             }
                             ColumnCell::External(entry) => {
@@ -469,11 +512,116 @@ fn main() -> anyhow::Result<()> {
                     }).collect();
                     compositor.update_cached_cell_heights(new_heights);
 
+                    // Scroll to show the newly focused terminal (like regular spawn)
+                    if let Some(focused_idx) = compositor.focused_index {
+                        if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                            tracing::info!(
+                                id = id.0,
+                                cell_count = compositor.cells.len(),
+                                focused_idx,
+                                new_scroll,
+                                "spawned command terminal, scrolling to show"
+                            );
+                        }
+                    }
+
                     tracing::info!(id = id.0, command = %command, ?parent, "spawned command terminal from IPC");
                 }
                 Err(e) => {
                     tracing::error!("failed to spawn command terminal: {}", e);
                 }
+            }
+        }
+
+        // Handle resize requests from IPC (column-term --resize)
+        if let Some((resize_mode, ack_stream)) = compositor.pending_resize_request.take() {
+            if let Some(focused_id) = terminal_manager.focused {
+                let cell_height = terminal_manager.cell_height;
+                let new_rows = match resize_mode {
+                    compositor::ipc::ResizeMode::Full => {
+                        // Resize to full viewport height for TUI apps
+                        tracing::info!(id = focused_id.0, max_rows = terminal_manager.max_rows, "resize to full");
+                        terminal_manager.max_rows
+                    }
+                    compositor::ipc::ResizeMode::Content => {
+                        // Process any pending PTY output BEFORE calculating content rows
+                        // This ensures TUI app's printed output is reflected in cursor position
+                        if let Some(term) = terminal_manager.get_mut(focused_id) {
+                            term.process();
+                        }
+
+                        // Calculate content rows from cursor position
+                        // cursor_line is 0-indexed, add 2 for: +1 zero-index, +1 prompt line
+                        if let Some(term) = terminal_manager.get(focused_id) {
+                            let cursor_line = term.terminal.cursor_line();
+                            let content_rows = (cursor_line + 2).max(3);
+                            tracing::info!(id = focused_id.0, cursor_line, content_rows, "resize to content");
+                            content_rows
+                        } else {
+                            3  // fallback minimum
+                        }
+                    }
+                };
+
+                // Log BEFORE state
+                let before_height = terminal_manager.get(focused_id).map(|t| t.height);
+                let before_dirty = terminal_manager.get(focused_id).map(|t| t.is_dirty());
+                let before_pty = terminal_manager.get(focused_id).map(|t| t.terminal.dimensions().1);
+                let before_grid = terminal_manager.get(focused_id).map(|t| t.terminal.grid_rows());
+
+                if let Some(term) = terminal_manager.get_mut(focused_id) {
+                    tracing::info!(
+                        id = focused_id.0,
+                        ?resize_mode,
+                        new_rows,
+                        ?before_height,
+                        ?before_dirty,
+                        ?before_pty,
+                        ?before_grid,
+                        "resizing focused terminal via IPC"
+                    );
+                    term.resize(new_rows, cell_height);
+
+                    // Log AFTER state
+                    let after_height = term.height;
+                    let after_dirty = term.is_dirty();
+                    let after_pty = term.terminal.dimensions().1;
+                    let after_grid = term.terminal.grid_rows();
+                    let has_texture = term.get_texture().is_some();
+                    tracing::info!(
+                        after_height,
+                        after_dirty,
+                        after_pty,
+                        after_grid,
+                        has_texture,
+                        "AFTER resize"
+                    );
+
+                    // Update cached height for the resized terminal
+                    for (i, cell) in compositor.cells.iter().enumerate() {
+                        if let ColumnCell::Terminal(tid) = cell {
+                            if *tid == focused_id && i < compositor.cached_cell_heights.len() {
+                                compositor.cached_cell_heights[i] = term.height as i32;
+                                tracing::info!(idx = i, cached_height = compositor.cached_cell_heights[i], "updated cached height");
+                                break;
+                            }
+                        }
+                    }
+
+                    // Scroll to keep the terminal visible
+                    if let Some(idx) = compositor.focused_index {
+                        compositor.scroll_to_show_cell_bottom(idx);
+                    }
+                }
+
+                // Send ACK AFTER resize is complete - this prevents race condition
+                // column-term will wait for this before returning
+                compositor::ipc::send_ack(ack_stream);
+                tracing::info!("resize ACK sent, PTY and grid should now report new size");
+            } else {
+                tracing::warn!("resize request but no focused terminal");
+                // Still send ACK so column-term doesn't hang
+                compositor::ipc::send_ack(ack_stream);
             }
         }
 
@@ -632,8 +780,11 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("bind error: {e:?}"))?;
 
             // Pre-render all terminal textures
-            for id in terminal_manager.ids() {
+            let all_ids = terminal_manager.ids();
+            tracing::debug!(count = all_ids.len(), ids = ?all_ids.iter().map(|id| id.0).collect::<Vec<_>>(), "pre-rendering terminals");
+            for id in all_ids {
                 if let Some(terminal) = terminal_manager.get_mut(id) {
+                    tracing::debug!(id = id.0, dirty = terminal.is_dirty(), has_texture = terminal.get_texture().is_some(), "pre-render check");
                     terminal.render(renderer);
                 }
             }
@@ -670,18 +821,21 @@ fn main() -> anyhow::Result<()> {
 
                 match cell {
                     ColumnCell::Terminal(id) => {
-                        // Hidden terminals have 0 height
+                        // Use texture size if available, otherwise terminal.height
+                        // (texture may not exist on first frame for new terminals)
                         let height = terminal_manager.get(*id)
-                            .filter(|t| !t.hidden)
-                            .and_then(|t| t.get_texture())
-                            .map(|tex| tex.size().h)
-                            .unwrap_or_else(|| {
-                                if terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false) {
+                            .map(|t| {
+                                if t.hidden {
                                     0
+                                } else if let Some(tex) = t.get_texture() {
+                                    tex.size().h
                                 } else {
-                                    cached_height
+                                    // No texture yet - use terminal.height directly
+                                    // This is critical for TUI terminals on first frame
+                                    t.height as i32
                                 }
-                            });
+                            })
+                            .unwrap_or(cached_height);
                         actual_heights.push(height);
                         external_elements.push(Vec::new());
                     }

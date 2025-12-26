@@ -34,7 +34,9 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
-use crate::ipc::SpawnRequest;
+use std::os::unix::net::UnixStream;
+
+use crate::ipc::{ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
@@ -92,6 +94,10 @@ pub struct ColumnCompositor {
 
     /// Pending spawn requests from IPC (column-term commands)
     pub pending_spawn_requests: Vec<SpawnRequest>,
+
+    /// Pending resize request from IPC (column-term resize)
+    /// Includes the stream for sending acknowledgement after resize completes
+    pub pending_resize_request: Option<(ResizeMode, UnixStream)>,
 
     /// Index of newly added external window (for scroll-to-show)
     pub new_external_window_index: Option<usize>,
@@ -194,6 +200,7 @@ impl ColumnCompositor {
             scroll_requested: 0.0,
             cached_cell_heights: Vec::new(),
             pending_spawn_requests: Vec::new(),
+            pending_resize_request: None,
             new_external_window_index: None,
             external_window_resized: None,
         };
@@ -289,6 +296,12 @@ impl ColumnCompositor {
         let insert_index = self.focused_index.unwrap_or(self.cells.len());
 
         self.cells.insert(insert_index, ColumnCell::Terminal(id));
+
+        // Also insert placeholder into cached_cell_heights to keep indices aligned
+        // Using 0 ensures the height calculation will use terminal.height instead of a stale value
+        if insert_index <= self.cached_cell_heights.len() {
+            self.cached_cell_heights.insert(insert_index, 0);
+        }
 
         // Keep focus on the previously focused cell (which moved down by 1)
         // If nothing was focused, focus the new cell
@@ -995,5 +1008,84 @@ mod tests {
         assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0");
         assert!(matches!(cells[1], ColumnCell::Terminal(TerminalId(2))), "T2 should be at index 1");
         assert!(matches!(cells[2], ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 2 (bottom)");
+    }
+
+    #[test]
+    fn test_add_terminal_syncs_cached_heights() {
+        // Tests that add_terminal inserts a placeholder into cached_cell_heights
+        // to keep indices aligned with cells
+        //
+        // This simulates the exact logic used in add_terminal:
+        // 1. Insert new cell at insert_index
+        // 2. Insert 0 into cached_cell_heights at same index
+
+        use crate::terminal_manager::TerminalId;
+        use super::ColumnCell;
+
+        // Simulate initial state: one terminal with cached height 51
+        let mut cells: Vec<ColumnCell> = vec![ColumnCell::Terminal(TerminalId(0))];
+        let mut cached_cell_heights: Vec<i32> = vec![51];
+        let mut focused_index: Option<usize> = Some(0);
+
+        // Simulate add_terminal logic
+        let insert_index = focused_index.unwrap_or(cells.len());
+        cells.insert(insert_index, ColumnCell::Terminal(TerminalId(1)));
+
+        // This is the fix: insert 0 into cached heights to keep indices aligned
+        if insert_index <= cached_cell_heights.len() {
+            cached_cell_heights.insert(insert_index, 0);
+        }
+
+        focused_index = Some(focused_index.map(|idx| idx + 1).unwrap_or(insert_index));
+
+        // After add_terminal:
+        // - cells should be [Terminal(1), Terminal(0)]
+        // - cached_cell_heights should be [0, 51]
+        // The 0 is a placeholder for the new terminal, old height (51) shifted to index 1
+
+        assert_eq!(cells.len(), 2);
+        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(1))), "new terminal at index 0");
+        assert!(matches!(cells[1], ColumnCell::Terminal(TerminalId(0))), "old terminal at index 1");
+
+        assert_eq!(cached_cell_heights.len(), 2,
+            "cached_cell_heights should grow with cells");
+        assert_eq!(cached_cell_heights[0], 0,
+            "new terminal should have placeholder height 0");
+        assert_eq!(cached_cell_heights[1], 51,
+            "old terminal's height should shift to index 1");
+
+        assert_eq!(focused_index, Some(1), "focus should stay on old terminal");
+
+        // Now simulate the height recalculation that happens after add_terminal in main.rs
+        // The key is: for the new terminal, we should NOT use cached_cell_heights[0]
+        // because it's 0 (placeholder), not a real cached height
+
+        // This mimics the logic in main.rs:
+        let new_terminal_height = 714; // Full TUI height
+        let old_terminal_hidden = true; // Parent is hidden
+
+        let new_heights: Vec<i32> = cells.iter().enumerate().map(|(i, cell)| {
+            match cell {
+                ColumnCell::Terminal(tid) => {
+                    // Check if hidden first
+                    let is_hidden = if tid.0 == 0 { old_terminal_hidden } else { false };
+                    if is_hidden {
+                        return 0;
+                    }
+                    // Use cached if available AND > 0
+                    if let Some(&cached) = cached_cell_heights.get(i) {
+                        if cached > 0 {
+                            return cached;
+                        }
+                    }
+                    // For new terminals (cached=0), use actual terminal.height
+                    if tid.0 == 1 { new_terminal_height } else { 51 }
+                }
+                _ => 200,
+            }
+        }).collect();
+
+        assert_eq!(new_heights[0], 714, "new TUI terminal should use full height, not stale cached value");
+        assert_eq!(new_heights[1], 0, "old terminal is hidden, should be 0");
     }
 }

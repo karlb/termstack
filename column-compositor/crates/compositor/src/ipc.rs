@@ -1,8 +1,8 @@
 //! IPC socket for shell integration
 //!
-//! Handles spawn requests from the `column-term` CLI tool.
+//! Handles requests from the `column-term` CLI tool.
 //! The compositor listens on a Unix socket and accepts JSON messages
-//! to spawn terminals with specific commands and environments.
+//! to spawn terminals or resize the focused terminal.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -10,6 +10,16 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+/// Resize mode for terminals
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResizeMode {
+    /// Full viewport height (for TUI apps)
+    Full,
+    /// Content-based height (normal mode)
+    Content,
+}
 
 /// Message from column-term to compositor
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +38,21 @@ pub enum IpcMessage {
         #[serde(default)]
         is_tui: bool,
     },
+    /// Resize the focused terminal
+    #[serde(rename = "resize")]
+    Resize {
+        /// Resize mode
+        mode: ResizeMode,
+    },
+}
+
+/// Request ready for processing by the compositor
+#[derive(Debug)]
+pub enum IpcRequest {
+    /// Spawn a new terminal
+    Spawn(SpawnRequest),
+    /// Resize the focused terminal
+    Resize(ResizeMode),
 }
 
 /// Spawn request ready for processing by the compositor
@@ -43,35 +68,50 @@ pub struct SpawnRequest {
     pub is_tui: bool,
 }
 
-/// Read a spawn request from a Unix stream
+/// Read a request from a Unix stream
 ///
-/// Returns None if the message couldn't be parsed or wasn't a spawn request.
-pub fn read_spawn_request(stream: UnixStream) -> Option<SpawnRequest> {
+/// Returns the parsed request and the stream for sending acknowledgement.
+/// For Resize requests, caller MUST send ACK to avoid race conditions.
+pub fn read_ipc_request(stream: UnixStream) -> Option<(IpcRequest, UnixStream)> {
     // Set a short timeout to avoid blocking the compositor
     stream.set_read_timeout(Some(std::time::Duration::from_millis(100))).ok()?;
 
-    let reader = BufReader::new(stream);
+    let mut reader = BufReader::new(stream);
 
     // Read first line (JSON message)
-    let mut lines = reader.lines();
-    let line = lines.next()?.ok()?;
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
 
-    tracing::debug!(message = %line, "received IPC message");
+    tracing::debug!(message = %line.trim(), "received IPC message");
 
     // Parse JSON
     let message: IpcMessage = serde_json::from_str(&line).ok()?;
 
+    // Get the stream back from the reader for ACK
+    let stream = reader.into_inner();
+
     match message {
         IpcMessage::Spawn { command, cwd, env, is_tui } => {
             tracing::info!(command = %command, cwd = %cwd, is_tui, "spawn request received");
-            Some(SpawnRequest {
+            Some((IpcRequest::Spawn(SpawnRequest {
                 command,
                 cwd: PathBuf::from(cwd),
                 env,
                 is_tui,
-            })
+            }), stream))
+        }
+        IpcMessage::Resize { mode } => {
+            tracing::info!(?mode, "resize request received");
+            Some((IpcRequest::Resize(mode), stream))
         }
     }
+}
+
+/// Send acknowledgement on a stream (for synchronous operations like resize)
+pub fn send_ack(mut stream: UnixStream) {
+    use std::io::Write;
+    let _ = writeln!(stream, "ok");
+    let _ = stream.flush();
 }
 
 /// Generate the IPC socket path for the current user
