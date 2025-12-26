@@ -276,20 +276,33 @@ fn send_resize_request(mode: &str) -> Result<()> {
     Ok(())
 }
 
+/// Expand tilde in path to home directory
+fn expand_tilde(s: &str) -> String {
+    if s.starts_with("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return format!("{}{}", home, &s[1..]);
+        }
+    }
+    s.to_string()
+}
+
 /// Spawn command as a GUI app (directly, not in terminal)
 fn spawn_gui_app(command: &str) -> Result<()> {
     // Clear the command line from the invoking terminal
     print!("\x1b[A\x1b[2K");
     std::io::stdout().flush().ok();
 
-    // Parse command into program and args
-    let parts: Vec<&str> = command.split_whitespace().collect();
+    // Parse command into program and args, expanding ~ in paths
+    let parts: Vec<String> = command
+        .split_whitespace()
+        .map(expand_tilde)
+        .collect();
     if parts.is_empty() {
         bail!("empty command");
     }
 
-    let program = parts[0];
-    let args = &parts[1..];
+    let program = &parts[0];
+    let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
     // Determine which Wayland display to use
     // If COLUMN_COMPOSITOR_SOCKET is set, extract the display name from it
@@ -306,7 +319,7 @@ fn spawn_gui_app(command: &str) -> Result<()> {
 
     // Spawn detached process
     let mut cmd = Command::new(program);
-    cmd.args(args)
+    cmd.args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -314,6 +327,10 @@ fn spawn_gui_app(command: &str) -> Result<()> {
     // Override WAYLAND_DISPLAY if we have one
     if let Some(display) = wayland_display {
         cmd.env("WAYLAND_DISPLAY", display);
+        // GTK apps need GDK_BACKEND=wayland to use Wayland instead of defaulting to X11
+        cmd.env("GDK_BACKEND", "wayland");
+        // Qt apps need QT_QPA_PLATFORM=wayland similarly
+        cmd.env("QT_QPA_PLATFORM", "wayland");
     }
 
     cmd.spawn()

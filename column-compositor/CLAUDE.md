@@ -23,7 +23,8 @@ RUST_LOG=column_compositor=debug cargo run    # With debug logging
 
 ## Development approach
 
-- Before fixing bugs, reproduce them inside the test suite
+- Before fixing bugs, reproduce them inside the test suite.
+- Prefer improving the test suite to writing one-off tests.
 
 ## Architecture
 
