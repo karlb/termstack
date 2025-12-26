@@ -132,21 +132,30 @@ fn main() -> anyhow::Result<()> {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         tracing::info!("IPC connection received");
-                        if let Some((request, stream)) = compositor::ipc::read_ipc_request(stream) {
-                            match request {
-                                compositor::ipc::IpcRequest::Spawn(spawn_req) => {
-                                    tracing::info!(command = %spawn_req.command, "IPC spawn request queued");
-                                    state.pending_spawn_requests.push(spawn_req);
-                                    // Spawn doesn't need ACK - it's fire-and-forget
-                                }
-                                compositor::ipc::IpcRequest::Resize(mode) => {
-                                    tracing::info!(?mode, "IPC resize request queued");
-                                    // Store stream for ACK after resize completes
-                                    state.pending_resize_request = Some((mode, stream));
+                        match compositor::ipc::read_ipc_request(stream) {
+                            Ok((request, stream)) => {
+                                match request {
+                                    compositor::ipc::IpcRequest::Spawn(spawn_req) => {
+                                        tracing::info!(command = %spawn_req.command, "IPC spawn request queued");
+                                        state.pending_spawn_requests.push(spawn_req);
+                                        // Spawn doesn't need ACK - it's fire-and-forget
+                                    }
+                                    compositor::ipc::IpcRequest::Resize(mode) => {
+                                        tracing::info!(?mode, "IPC resize request queued");
+                                        // Store stream for ACK after resize completes
+                                        state.pending_resize_request = Some((mode, stream));
+                                    }
                                 }
                             }
-                        } else {
-                            tracing::warn!("failed to parse IPC request");
+                            Err(compositor::ipc::IpcError::Timeout) => {
+                                tracing::debug!("IPC read timeout");
+                            }
+                            Err(compositor::ipc::IpcError::EmptyMessage) => {
+                                tracing::debug!("IPC received empty message");
+                            }
+                            Err(e) => {
+                                tracing::warn!("IPC request error: {}", e);
+                            }
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,

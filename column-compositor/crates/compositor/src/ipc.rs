@@ -5,11 +5,32 @@
 //! to spawn terminals or resize the focused terminal.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// IPC errors
+#[derive(Debug, Error)]
+pub enum IpcError {
+    /// Timeout reading from socket
+    #[error("timeout reading from socket")]
+    Timeout,
+
+    /// IO error during read/write
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+
+    /// JSON parse error
+    #[error("failed to parse JSON: {0}")]
+    ParseError(#[from] serde_json::Error),
+
+    /// Empty message received
+    #[error("empty message received")]
+    EmptyMessage,
+}
 
 /// Resize mode for terminals
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,20 +102,45 @@ pub struct SpawnRequest {
 ///
 /// Returns the parsed request and the stream for sending acknowledgement.
 /// For Resize requests, caller MUST send ACK to avoid race conditions.
-pub fn read_ipc_request(stream: UnixStream) -> Option<(IpcRequest, UnixStream)> {
+///
+/// # Errors
+///
+/// Returns `IpcError::Timeout` if the read times out.
+/// Returns `IpcError::Io` for other IO errors.
+/// Returns `IpcError::ParseError` if JSON parsing fails.
+/// Returns `IpcError::EmptyMessage` if an empty line is received.
+pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), IpcError> {
     // Set a short timeout to avoid blocking the compositor
-    stream.set_read_timeout(Some(std::time::Duration::from_millis(100))).ok()?;
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(100)))
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut {
+                IpcError::Timeout
+            } else {
+                IpcError::Io(e)
+            }
+        })?;
 
     let mut reader = BufReader::new(stream);
 
     // Read first line (JSON message)
     let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
+    match reader.read_line(&mut line) {
+        Ok(0) => return Err(IpcError::EmptyMessage),
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            return Err(IpcError::Timeout);
+        }
+        Err(e) => return Err(IpcError::Io(e)),
+    }
+
+    if line.trim().is_empty() {
+        return Err(IpcError::EmptyMessage);
+    }
 
     tracing::debug!(message = %line.trim(), "received IPC message");
 
     // Parse JSON
-    let message: IpcMessage = serde_json::from_str(&line).ok()?;
+    let message: IpcMessage = serde_json::from_str(&line)?;
 
     // Get the stream back from the reader for ACK
     let stream = reader.into_inner();
@@ -102,7 +148,7 @@ pub fn read_ipc_request(stream: UnixStream) -> Option<(IpcRequest, UnixStream)> 
     match message {
         IpcMessage::Spawn { command, cwd, env, is_tui } => {
             tracing::info!(command = %command, cwd = %cwd, is_tui, "spawn request received");
-            Some((IpcRequest::Spawn(SpawnRequest {
+            Ok((IpcRequest::Spawn(SpawnRequest {
                 command,
                 cwd: PathBuf::from(cwd),
                 env,
@@ -111,7 +157,7 @@ pub fn read_ipc_request(stream: UnixStream) -> Option<(IpcRequest, UnixStream)> 
         }
         IpcMessage::Resize { mode } => {
             tracing::info!(?mode, "resize request received");
-            Some((IpcRequest::Resize(mode), stream))
+            Ok((IpcRequest::Resize(mode), stream))
         }
     }
 }
