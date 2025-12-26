@@ -711,6 +711,48 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // Auto-resize terminals that entered alternate screen mode
+        // This handles TUI apps not in tui_apps config list
+        let max_height = terminal_manager.max_rows as u32 * terminal_manager.cell_height;
+        let visible_ids = terminal_manager.visible_ids();
+        let mut ids_to_resize = Vec::new();
+        for id in visible_ids {
+            if let Some(term) = terminal_manager.get_mut(id) {
+                if term.check_alt_screen_resize_needed(max_height) {
+                    ids_to_resize.push(id);
+                }
+            }
+        }
+
+        let max_rows = terminal_manager.max_rows;
+        let cell_height = terminal_manager.cell_height;
+        for id in ids_to_resize {
+            if let Some(term) = terminal_manager.get_mut(id) {
+                let old_height = term.height;
+                term.resize(max_rows, cell_height);
+                let new_height = term.height;
+                tracing::info!(
+                    id = id.0,
+                    old_height,
+                    new_height,
+                    max_rows,
+                    "auto-resized terminal to full for alternate screen"
+                );
+
+                // Update cached height if in compositor cells
+                for (i, cell) in compositor.cells.iter().enumerate() {
+                    if let ColumnCell::Terminal(tid) = cell {
+                        if *tid == id {
+                            if i < compositor.cached_cell_heights.len() {
+                                compositor.cached_cell_heights[i] = new_height as i32;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // Cleanup dead terminals and handle focus changes
         let (dead, focus_changed_to) = terminal_manager.cleanup();
         for dead_id in &dead {

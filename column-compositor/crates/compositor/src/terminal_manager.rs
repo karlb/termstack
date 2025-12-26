@@ -53,6 +53,9 @@ pub struct ManagedTerminal {
     /// Parent terminal that spawned this one (if any)
     /// When this terminal exits, the parent is unhidden
     pub parent: Option<TerminalId>,
+
+    /// Previous alternate screen state (for detecting transitions)
+    prev_alt_screen: bool,
 }
 
 impl ManagedTerminal {
@@ -71,6 +74,7 @@ impl ManagedTerminal {
             exited: false,
             hidden: false,
             parent: None,
+            prev_alt_screen: false,
         })
     }
 
@@ -104,6 +108,7 @@ impl ManagedTerminal {
             exited: false,
             hidden: false,
             parent,
+            prev_alt_screen: false,
         })
     }
 
@@ -133,6 +138,31 @@ impl ManagedTerminal {
     pub fn inject_bytes(&mut self, data: &[u8]) {
         self.terminal.inject_bytes(data);
         self.dirty = true;
+    }
+
+    /// Check if terminal transitioned to alternate screen and needs auto-resize.
+    ///
+    /// Returns true if the terminal just entered alternate screen mode and is not
+    /// already at full height. This allows reactive resizing for TUI apps that
+    /// weren't pre-configured in tui_apps list.
+    ///
+    /// Updates internal state to track the transition.
+    pub fn check_alt_screen_resize_needed(&mut self, max_height: u32) -> bool {
+        let is_alt = self.terminal.is_alternate_screen();
+        let transitioned_to_alt = is_alt && !self.prev_alt_screen;
+        self.prev_alt_screen = is_alt;
+
+        if transitioned_to_alt && self.height < max_height {
+            tracing::info!(
+                id = self.id.0,
+                current_height = self.height,
+                max_height,
+                "terminal entered alternate screen, needs resize"
+            );
+            true
+        } else {
+            false
+        }
     }
 
     /// Handle resize
@@ -2682,5 +2712,121 @@ mod tests {
         // NOTE: The actual spawn rejection happens in main.rs event loop.
         // This test verifies the detection works correctly.
         // Integration test would need to verify the full rejection path.
+    }
+
+    /// Test that check_alt_screen_resize_needed detects transition to alternate screen.
+    #[test]
+    fn check_alt_screen_resize_needed_detects_transition() {
+        let mut manager = TerminalManager::new_with_size(800, 600);
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+
+        let max_height = manager.max_rows as u32 * manager.cell_height;
+
+        // Initially not in alternate screen, so no resize needed
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            assert!(
+                !terminal.check_alt_screen_resize_needed(max_height),
+                "Should not need resize when not in alternate screen"
+            );
+        }
+
+        // Enter alternate screen
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.inject_bytes(b"\x1b[?1049h");
+        }
+
+        // Now transition detected, resize needed
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            assert!(
+                terminal.check_alt_screen_resize_needed(max_height),
+                "Should need resize after transitioning to alternate screen"
+            );
+        }
+
+        // Call again - should NOT need resize since transition already recorded
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            assert!(
+                !terminal.check_alt_screen_resize_needed(max_height),
+                "Should not need resize on subsequent checks (no new transition)"
+            );
+        }
+    }
+
+    /// Test that no resize is needed if terminal is already at max height.
+    #[test]
+    fn no_resize_if_already_at_max_height() {
+        let mut manager = TerminalManager::new_with_size(800, 600);
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+
+        // Spawn as TUI terminal (already at max height)
+        let id = manager.spawn_command("echo test", cwd, &env, None, true).unwrap();
+
+        let max_height = manager.max_rows as u32 * manager.cell_height;
+
+        // Verify terminal is at max height
+        {
+            let terminal = manager.get(id).unwrap();
+            assert_eq!(terminal.height, max_height, "TUI terminal should be at max height");
+        }
+
+        // Enter alternate screen
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.inject_bytes(b"\x1b[?1049h");
+        }
+
+        // Check resize needed - should be false since already at max
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            assert!(
+                !terminal.check_alt_screen_resize_needed(max_height),
+                "Should not need resize when already at max height"
+            );
+        }
+    }
+
+    /// Test that exiting alternate screen does not trigger resize.
+    #[test]
+    fn exit_alternate_screen_does_not_trigger_resize() {
+        let mut manager = TerminalManager::new_with_size(800, 600);
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+
+        let max_height = manager.max_rows as u32 * manager.cell_height;
+
+        // Enter alternate screen
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.inject_bytes(b"\x1b[?1049h");
+        }
+
+        // Consume the transition
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            let _ = terminal.check_alt_screen_resize_needed(max_height);
+        }
+
+        // Exit alternate screen
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.inject_bytes(b"\x1b[?1049l");
+        }
+
+        // Should not trigger resize (only entry triggers resize)
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            assert!(
+                !terminal.check_alt_screen_resize_needed(max_height),
+                "Exiting alternate screen should not trigger resize"
+            );
+        }
     }
 }
