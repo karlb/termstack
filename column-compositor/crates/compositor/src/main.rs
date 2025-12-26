@@ -103,6 +103,10 @@ fn main() -> anyhow::Result<()> {
     // Set WAYLAND_DISPLAY for child processes (apps will open inside compositor)
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
+    // Force GTK and Qt apps to use Wayland backend (otherwise they may use X11/Xwayland)
+    std::env::set_var("GDK_BACKEND", "wayland");
+    std::env::set_var("QT_QPA_PLATFORM", "wayland");
+
     // Insert socket source into event loop for new client connections
     event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
         tracing::info!("new Wayland client connected");
@@ -838,6 +842,13 @@ fn process_spawn_request(
     env.insert("LESS".to_string(), "-FRX".to_string());
     if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
         env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
+    }
+    // Force GTK/Qt apps to use Wayland backend
+    if let Ok(gdk_backend) = std::env::var("GDK_BACKEND") {
+        env.insert("GDK_BACKEND".to_string(), gdk_backend);
+    }
+    if let Ok(qt_platform) = std::env::var("QT_QPA_PLATFORM") {
+        env.insert("QT_QPA_PLATFORM".to_string(), qt_platform);
     }
 
     let parent = terminal_manager.focused;
