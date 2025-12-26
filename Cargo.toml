@@ -59,6 +59,12 @@ serde_json = "1"
 # Testing
 proptest = "1"
 
+# Fast release builds for development
 [profile.release]
+lto = "thin"
+
+# Optimized final builds (cargo build --profile dist)
+[profile.dist]
+inherits = "release"
 lto = true
 codegen-units = 1
