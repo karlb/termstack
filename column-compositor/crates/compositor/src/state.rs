@@ -636,6 +636,8 @@ impl XdgShellHandler for ColumnCompositor {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        tracing::info!("XDG toplevel created");
+
         // Configure the surface with initial size
         let size = Size::from((self.output_size.w, 200));
         surface.with_pending_state(|state| {
