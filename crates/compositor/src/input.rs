@@ -488,8 +488,8 @@ impl ColumnCompositor {
 
         if vertical != 0.0 {
             // Queue scroll for main loop (uses terminal_manager's total height)
-            // Negate because we flipped Y coordinates for OpenGL compatibility
-            self.scroll_requested -= vertical * SCROLL_WHEEL_MULTIPLIER;
+            // Positive vertical = wheel down = scroll content down (increase offset)
+            self.scroll_requested += vertical * SCROLL_WHEEL_MULTIPLIER;
             tracing::info!(
                 vertical,
                 scroll_requested = self.scroll_requested,
