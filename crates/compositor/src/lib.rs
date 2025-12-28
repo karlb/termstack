@@ -9,6 +9,7 @@ pub mod ipc;
 pub mod layout;
 pub mod state;
 pub mod terminal_manager;
+pub mod title_bar;
 
 #[cfg(test)]
 mod ipc_test;

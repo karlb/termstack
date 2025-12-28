@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Color32F, Frame, Renderer, Texture};
+use smithay::backend::renderer::{Color32F, Frame, ImportMem, Renderer, Texture};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Element, RenderElement};
 use smithay::desktop::utils::send_frames_surface_tree;
@@ -21,6 +21,7 @@ use smithay::wayland::socket::ListeningSocketSource;
 use compositor::config::Config;
 use compositor::state::{ClientState, ColumnCell, ColumnCompositor};
 use compositor::terminal_manager::{TerminalId, TerminalManager};
+use compositor::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
 /// Minimum terminal height in rows.
 /// Prevents terminals from becoming too small to be usable.
@@ -188,6 +189,12 @@ fn main() -> anyhow::Result<()> {
         output_size.h as u32,
     );
 
+    // Create title bar renderer for external windows
+    let mut title_bar_renderer = TitleBarRenderer::new();
+    if title_bar_renderer.is_none() {
+        tracing::warn!("Title bar renderer unavailable - no font found");
+    }
+
     // Spawn initial terminal
     match terminal_manager.spawn() {
         Ok(id) => {
@@ -331,12 +338,33 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Pre-render title bar textures for external windows
+            let mut title_bar_textures: Vec<Option<_>> = Vec::new();
+            for cell in compositor.cells.iter() {
+                if let ColumnCell::External(entry) = cell {
+                    if let Some(ref mut tb_renderer) = title_bar_renderer {
+                        let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, physical_size.w as u32);
+                        let tex = renderer.import_memory(
+                            &pixels,
+                            smithay::backend::allocator::Fourcc::Argb8888,
+                            (tb_width as i32, tb_height as i32).into(),
+                            false,
+                        ).ok();
+                        title_bar_textures.push(tex);
+                    } else {
+                        title_bar_textures.push(None);
+                    }
+                } else {
+                    title_bar_textures.push(None);
+                }
+            }
+
             // Pre-compute render data for all cells
             let scale = Scale::from(1.0);
 
             // Build render data for each cell
             #[allow(dead_code)]
-            enum CellRenderData {
+            enum CellRenderData<'a> {
                 Terminal {
                     id: TerminalId,
                     y: i32,
@@ -346,6 +374,7 @@ fn main() -> anyhow::Result<()> {
                     y: i32,
                     height: i32,
                     elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+                    title_bar_texture: Option<&'a smithay::backend::renderer::gles::GlesTexture>,
                 },
                 // Placeholder for terminals without textures
                 Empty { height: i32 },
@@ -387,7 +416,7 @@ fn main() -> anyhow::Result<()> {
                         let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                             window.render_elements(renderer, location, scale, 1.0);
 
-                        let actual_height = if elements.is_empty() {
+                        let window_height = if elements.is_empty() {
                             cached_height
                         } else {
                             elements.iter()
@@ -398,6 +427,9 @@ fn main() -> anyhow::Result<()> {
                                 .max()
                                 .unwrap_or(cached_height)
                         };
+
+                        // Add title bar height to total cell height
+                        let actual_height = window_height + TITLE_BAR_HEIGHT as i32;
 
                         actual_heights.push(actual_height);
                         external_elements.push(elements);
@@ -441,12 +473,14 @@ fn main() -> anyhow::Result<()> {
                             height,
                         });
                     }
-                    ColumnCell::External(_) => {
+                    ColumnCell::External(_entry) => {
                         let elements = std::mem::take(&mut external_elements[cell_idx]);
+                        let title_bar_texture = title_bar_textures.get(cell_idx).and_then(|t| t.as_ref());
                         render_data.push(CellRenderData::External {
                             y: render_y,
                             height,
                             elements,
+                            title_bar_texture,
                         });
                     }
                 }
@@ -565,18 +599,35 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    CellRenderData::External { y, height: _, elements } => {
-                        // Draw focus indicator for external windows
-                        if is_focused && y >= 0 && y < physical_size.h {
+                    CellRenderData::External { y, height, elements, title_bar_texture } => {
+                        // Title bar is at the top of the cell (higher Y in OpenGL coords)
+                        let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
+
+                        // Draw focus indicator at the top of the title bar
+                        if is_focused && title_bar_y >= 0 && title_bar_y < physical_size.h {
                             let border_height = 2;
                             let focus_damage = Rectangle::new(
-                                (0, y).into(),
+                                (0, title_bar_y + TITLE_BAR_HEIGHT as i32 - border_height).into(),
                                 (physical_size.w, border_height).into(),
                             );
                             frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
                         }
 
-                        // Render external window elements
+                        // Render title bar (pre-rendered texture, flipped for OpenGL coords)
+                        if let Some(tex) = title_bar_texture {
+                            frame.render_texture_at(
+                                tex,
+                                Point::from((0, title_bar_y)),
+                                1,     // texture_scale
+                                1.0,   // output_scale
+                                Transform::Flipped180,
+                                &[damage],
+                                &[],   // opaque_regions
+                                1.0,
+                            ).ok();
+                        }
+
+                        // Render external window elements (below title bar)
                         for element in elements {
                             let geo = element.geometry(scale);
                             let src = element.src();
@@ -750,7 +801,8 @@ fn calculate_cell_heights(
                     .unwrap_or(200)
             }
             ColumnCell::External(entry) => {
-                entry.state.current_height() as i32
+                // Include title bar height for external windows
+                entry.state.current_height() as i32 + TITLE_BAR_HEIGHT as i32
             }
         }
     }).collect()
@@ -903,7 +955,8 @@ fn process_spawn_request(
             // (TUI apps don't open external windows, so this is only relevant for GUI apps)
             if !request.is_tui {
                 compositor.pending_window_output_terminal = Some(id);
-                tracing::info!(id = id.0, "set as pending output terminal for GUI windows");
+                compositor.pending_window_command = Some(request.command.clone());
+                tracing::info!(id = id.0, command = %request.command, "set as pending output terminal for GUI windows");
             }
 
             Some(id)

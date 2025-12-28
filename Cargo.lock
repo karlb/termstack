@@ -335,6 +335,7 @@ dependencies = [
  "anyhow",
  "calloop 0.14.3",
  "calloop-wayland-source",
+ "fontdue",
  "proptest",
  "rustix 0.38.44",
  "serde",

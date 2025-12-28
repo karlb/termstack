@@ -109,6 +109,10 @@ pub struct ColumnCompositor {
     /// Set when spawning a GUI app command, consumed by add_window()
     pub pending_window_output_terminal: Option<TerminalId>,
 
+    /// Pending command string for the next external window's title bar
+    /// Set when spawning a GUI app command, consumed by add_window()
+    pub pending_window_command: Option<String>,
+
     /// Output terminals from closed windows that need cleanup
     /// Processed in main loop - if terminal has no content, remove it; otherwise keep visible
     pub pending_output_terminal_cleanup: Vec<TerminalId>,
@@ -128,6 +132,9 @@ pub struct WindowEntry {
     /// Output terminal for this window (captures stdout/stderr from GUI app)
     /// Hidden until output arrives, then promoted to standalone cell below window
     pub output_terminal: Option<TerminalId>,
+
+    /// Command that spawned this window (for title bar display)
+    pub command: String,
 }
 
 /// Explicit window state machine - prevents implicit state bugs from v1
@@ -216,6 +223,7 @@ impl ColumnCompositor {
             new_external_window_index: None,
             external_window_resized: None,
             pending_window_output_terminal: None,
+            pending_window_command: None,
             pending_output_terminal_cleanup: Vec::new(),
         };
 
@@ -274,6 +282,9 @@ impl ColumnCompositor {
         // Consume pending output terminal (if any)
         let output_terminal = self.pending_window_output_terminal.take();
 
+        // Consume pending command for title bar (if any)
+        let command = self.pending_window_command.take().unwrap_or_default();
+
         // Default initial height (will be resized based on content)
         let initial_height = 200u32;
 
@@ -284,6 +295,7 @@ impl ColumnCompositor {
                 height: initial_height,
             },
             output_terminal,
+            command: command.clone(),
         };
 
         // If we have an output terminal, remove it from the cells list
@@ -316,6 +328,7 @@ impl ColumnCompositor {
             focused = ?self.focused_index,
             insert_index,
             has_output_terminal = output_terminal.is_some(),
+            command = %command,
             "external window added"
         );
     }
