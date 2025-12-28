@@ -8,11 +8,13 @@ use smithay::delegate_data_device;
 use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
+use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::wayland::output::OutputHandler;
 use smithay::desktop::{Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -32,6 +34,7 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
     XdgShellState, XdgToplevelSurfaceData,
 };
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use std::os::unix::net::UnixStream;
@@ -51,6 +54,7 @@ pub struct ColumnCompositor {
     /// Wayland protocol state
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
@@ -135,6 +139,9 @@ pub struct WindowEntry {
 
     /// Command that spawned this window (for title bar display)
     pub command: String,
+
+    /// Whether window uses client-side decorations (skip our title bar if true)
+    pub uses_csd: bool,
 }
 
 /// Explicit window state machine - prevents implicit state bugs from v1
@@ -188,6 +195,7 @@ impl ColumnCompositor {
 
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
@@ -203,6 +211,7 @@ impl ColumnCompositor {
             loop_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             seat_state,
             data_device_state,
@@ -296,6 +305,7 @@ impl ColumnCompositor {
             },
             output_terminal,
             command: command.clone(),
+            uses_csd: false, // Will be set by XdgDecorationHandler if client requests CSD
         };
 
         // If we have an output terminal, remove it from the cells list
@@ -755,6 +765,63 @@ impl ClientDndGrabHandler for ColumnCompositor {}
 impl ServerDndGrabHandler for ColumnCompositor {}
 impl OutputHandler for ColumnCompositor {}
 
+impl XdgDecorationHandler for ColumnCompositor {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        // Advertise server-side decoration as preferred
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        // Client requested a specific decoration mode
+        // Update the window's uses_csd flag based on client preference
+        let surface = toplevel.wl_surface();
+        for cell in &mut self.cells {
+            if let ColumnCell::External(entry) = cell {
+                if entry.toplevel.wl_surface() == surface {
+                    entry.uses_csd = mode == DecorationMode::ClientSide;
+                    tracing::info!(
+                        uses_csd = entry.uses_csd,
+                        command = %entry.command,
+                        "decoration mode set"
+                    );
+                    break;
+                }
+            }
+        }
+
+        // Acknowledge the client's preference
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(mode);
+        });
+        toplevel.send_configure();
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        // Client unset mode preference - revert to server-side
+        let surface = toplevel.wl_surface();
+        for cell in &mut self.cells {
+            if let ColumnCell::External(entry) = cell {
+                if entry.toplevel.wl_surface() == surface {
+                    entry.uses_csd = false;
+                    tracing::info!(
+                        command = %entry.command,
+                        "decoration mode unset, reverting to SSD"
+                    );
+                    break;
+                }
+            }
+        }
+
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(DecorationMode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+}
+
 /// Client state for tracking Wayland client resources
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
@@ -769,6 +836,7 @@ impl ClientData for ClientState {
 delegate_compositor!(ColumnCompositor);
 delegate_shm!(ColumnCompositor);
 delegate_xdg_shell!(ColumnCompositor);
+delegate_xdg_decoration!(ColumnCompositor);
 delegate_seat!(ColumnCompositor);
 delegate_data_device!(ColumnCompositor);
 delegate_output!(ColumnCompositor);

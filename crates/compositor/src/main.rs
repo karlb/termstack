@@ -338,11 +338,14 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Pre-render title bar textures for external windows
+            // Pre-render title bar textures for external windows (only for SSD windows)
             let mut title_bar_textures: Vec<Option<_>> = Vec::new();
             for cell in compositor.cells.iter() {
                 if let ColumnCell::External(entry) = cell {
-                    if let Some(ref mut tb_renderer) = title_bar_renderer {
+                    // Skip title bar for CSD windows
+                    if entry.uses_csd {
+                        title_bar_textures.push(None);
+                    } else if let Some(ref mut tb_renderer) = title_bar_renderer {
                         let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, physical_size.w as u32);
                         let tex = renderer.import_memory(
                             &pixels,
@@ -428,8 +431,12 @@ fn main() -> anyhow::Result<()> {
                                 .unwrap_or(cached_height)
                         };
 
-                        // Add title bar height to total cell height
-                        let actual_height = window_height + TITLE_BAR_HEIGHT as i32;
+                        // Add title bar height for SSD windows only
+                        let actual_height = if entry.uses_csd {
+                            window_height
+                        } else {
+                            window_height + TITLE_BAR_HEIGHT as i32
+                        };
 
                         actual_heights.push(actual_height);
                         external_elements.push(elements);
@@ -801,8 +808,13 @@ fn calculate_cell_heights(
                     .unwrap_or(200)
             }
             ColumnCell::External(entry) => {
-                // Include title bar height for external windows
-                entry.state.current_height() as i32 + TITLE_BAR_HEIGHT as i32
+                // Include title bar height for SSD windows only
+                let base_height = entry.state.current_height() as i32;
+                if entry.uses_csd {
+                    base_height
+                } else {
+                    base_height + TITLE_BAR_HEIGHT as i32
+                }
             }
         }
     }).collect()
@@ -1150,7 +1162,13 @@ fn calculate_cell_heights_with_hidden(
                         return cached;
                     }
                 }
-                entry.state.current_height() as i32
+                // Include title bar height for SSD windows only
+                let base_height = entry.state.current_height() as i32;
+                if entry.uses_csd {
+                    base_height
+                } else {
+                    base_height + TITLE_BAR_HEIGHT as i32
+                }
             }
         }
     }).collect()
