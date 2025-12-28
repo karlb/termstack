@@ -4,15 +4,16 @@
 //! the current terminal's environment. The new terminal appears above
 //! the current one in the column layout.
 //!
-//! Commands are split into three categories:
+//! Commands are split into categories:
 //! - Shell builtins: run in current shell (cd, export, etc.)
-//! - TUI apps: run in current terminal (vim, mc, fzf, top)
-//! - GUI apps: spawn directly as Wayland clients (firefox, foot)
-//! - Terminal commands: run in a new column-term (default)
+//! - TUI apps: run in current terminal at full height (vim, mc, fzf, top)
+//! - All other commands: run in a new column-term terminal
+//!
+//! GUI apps automatically get an output terminal that appears below the
+//! window when stderr/stdout is produced.
 //!
 //! Configure in ~/.config/column-compositor/config.toml:
 //! ```toml
-//! gui_apps = ["firefox", "chromium", "foot"]
 //! tui_apps = ["vim", "nvim", "mc", "htop", "fzf", "less", "man"]
 //! ```
 //!
@@ -51,7 +52,7 @@
 //! ```
 //!
 //! Exit codes:
-//! - 0: Command handled (spawned in terminal or as GUI app)
+//! - 0: Command handled (spawned in terminal)
 //! - 2: Shell builtin - run in current shell via eval
 //! - 3: TUI app - resize terminal to full height, run via eval, resize back
 
@@ -59,7 +60,6 @@ use std::env;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -70,10 +70,6 @@ mod config_test;
 /// Configuration for column-term
 #[derive(Debug, Deserialize)]
 pub(crate) struct Config {
-    /// List of commands that are GUI apps (spawn directly, not in terminal)
-    #[serde(default)]
-    gui_apps: Vec<String>,
-
     /// List of shell builtins/commands that should run in the current shell
     #[serde(default = "Config::default_shell_commands")]
     shell_commands: Vec<String>,
@@ -86,7 +82,6 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            gui_apps: Vec::new(),
             shell_commands: Self::default_shell_commands(),
             tui_apps: Vec::new(),
         }
@@ -150,12 +145,6 @@ impl Config {
             .unwrap_or("")
     }
 
-    /// Check if a command is a GUI app
-    fn is_gui_app(&self, command: &str) -> bool {
-        let program = Self::program_name(command);
-        self.gui_apps.iter().any(|app| app == program)
-    }
-
     /// Check if a command is a shell builtin that should run in current shell
     fn is_shell_command(&self, command: &str) -> bool {
         let program = Self::program_name(command);
@@ -192,6 +181,13 @@ const EXIT_TUI_APP: i32 = 3;
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
+    // Debug: show we're running (only if DEBUG_COLUMN_TERM is set)
+    let debug = env::var("DEBUG_COLUMN_TERM").is_ok();
+    if debug {
+        eprintln!("[column-term] args: {:?}", args);
+        eprintln!("[column-term] COLUMN_COMPOSITOR_SOCKET={:?}", env::var("COLUMN_COMPOSITOR_SOCKET"));
+    }
+
     // Handle --resize flag first (before any command parsing)
     if args.len() >= 2 && args[1] == "--resize" {
         let mode = args.get(2).map(|s| s.as_str()).unwrap_or("full");
@@ -202,6 +198,7 @@ fn main() -> Result<()> {
     // This prevents mc's internal fish subshell commands from being spawned as
     // separate terminals, which would break mc's communication with its subshell.
     if env::var("COLUMN_COMPOSITOR_TUI").is_ok() {
+        if debug { eprintln!("[column-term] COLUMN_COMPOSITOR_TUI set, exit 2"); }
         // Exit with code 2 (shell command) so the shell integration runs `eval "$cmd"`,
         // allowing mc's subshell command to actually execute in the current shell.
         std::process::exit(EXIT_SHELL_COMMAND);
@@ -209,9 +206,11 @@ fn main() -> Result<()> {
 
     // Parse arguments
     let command = parse_command(&args)?;
+    if debug { eprintln!("[column-term] command: {:?}", command); }
 
     // Empty command = interactive shell, always use terminal
     if command.is_empty() {
+        if debug { eprintln!("[column-term] empty command, spawning shell"); }
         return spawn_in_terminal(&command, false);
     }
 
@@ -219,14 +218,17 @@ fn main() -> Result<()> {
     let config = Config::load();
 
     if config.is_shell_command(&command) {
+        if debug { eprintln!("[column-term] shell command, exit 2"); }
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
     } else if config.is_tui_app(&command) {
+        if debug { eprintln!("[column-term] TUI app, exit 3"); }
         // TUI app - shell should resize to full height, run command, resize back
         std::process::exit(EXIT_TUI_APP);
-    } else if config.is_gui_app(&command) {
-        spawn_gui_app(&command)
     } else {
+        if debug { eprintln!("[column-term] spawning in terminal"); }
+        // Regular command or GUI app - run in terminal
+        // (GUI apps will have their output terminal hidden until errors appear)
         spawn_in_terminal(&command, false)
     }
 }
@@ -276,77 +278,17 @@ fn send_resize_request(mode: &str) -> Result<()> {
     Ok(())
 }
 
-/// Expand tilde in path to home directory
-fn expand_tilde(s: &str) -> String {
-    if s.starts_with("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return format!("{}{}", home, &s[1..]);
-        }
-    }
-    s.to_string()
-}
-
-/// Spawn command as a GUI app (directly, not in terminal)
-fn spawn_gui_app(command: &str) -> Result<()> {
-    // Clear the command line from the invoking terminal
-    print!("\x1b[A\x1b[2K");
-    std::io::stdout().flush().ok();
-
-    // Parse command into program and args, expanding ~ in paths
-    let parts: Vec<String> = command
-        .split_whitespace()
-        .map(expand_tilde)
-        .collect();
-    if parts.is_empty() {
-        bail!("empty command");
-    }
-
-    let program = &parts[0];
-    let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
-
-    // Determine which Wayland display to use
-    // If COLUMN_COMPOSITOR_SOCKET is set, extract the display name from it
-    // (the compositor sets both the socket and WAYLAND_DISPLAY to match)
-    let wayland_display = if env::var("COLUMN_COMPOSITOR_SOCKET").is_ok() {
-        // Socket is like /run/user/1000/column-compositor.sock
-        // The compositor's WAYLAND_DISPLAY is in the same directory with wayland-N pattern
-        // We need to query what the compositor actually uses
-        // For now, use the env var which should be correct when running inside compositor
-        env::var("WAYLAND_DISPLAY").ok()
-    } else {
-        None
-    };
-
-    // Spawn detached process
-    let mut cmd = Command::new(program);
-    cmd.args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-
-    // Override WAYLAND_DISPLAY if we have one
-    if let Some(display) = wayland_display {
-        cmd.env("WAYLAND_DISPLAY", display);
-        // GTK apps need GDK_BACKEND=wayland to use Wayland instead of defaulting to X11
-        cmd.env("GDK_BACKEND", "wayland");
-        // Qt apps need QT_QPA_PLATFORM=wayland similarly
-        cmd.env("QT_QPA_PLATFORM", "wayland");
-    }
-
-    cmd.spawn()
-        .with_context(|| format!("failed to spawn {}", program))?;
-
-    Ok(())
-}
-
 /// Spawn command in a new column-term terminal
 ///
 /// If is_tui is true, the terminal will be created at full viewport height
 /// for TUI applications like vim, mc, fzf, etc.
 fn spawn_in_terminal(command: &str, is_tui: bool) -> Result<()> {
+    let debug = env::var("DEBUG_COLUMN_TERM").is_ok();
+
     // Get socket path from environment
     let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")
         .context("COLUMN_COMPOSITOR_SOCKET not set - are you running inside column-compositor?")?;
+    if debug { eprintln!("[column-term] socket path: {}", socket_path); }
 
     // Collect current environment
     let env_vars: std::collections::HashMap<String, String> = env::vars().collect();
@@ -356,6 +298,7 @@ fn spawn_in_terminal(command: &str, is_tui: bool) -> Result<()> {
         .context("failed to get current directory")?
         .to_string_lossy()
         .to_string();
+    if debug { eprintln!("[column-term] cwd: {}", cwd); }
 
     // Build JSON message
     let msg = serde_json::json!({
@@ -366,12 +309,15 @@ fn spawn_in_terminal(command: &str, is_tui: bool) -> Result<()> {
         "is_tui": is_tui,
     });
 
+    if debug { eprintln!("[column-term] connecting to socket..."); }
     // Connect to compositor and send message
     let mut stream = UnixStream::connect(&socket_path)
         .with_context(|| format!("failed to connect to {}", socket_path))?;
+    if debug { eprintln!("[column-term] connected, sending message..."); }
 
     writeln!(stream, "{}", msg).context("failed to send message")?;
     stream.flush().context("failed to flush message")?;
+    if debug { eprintln!("[column-term] message sent successfully"); }
 
     // Clear the command line from the invoking terminal
     if !command.is_empty() {

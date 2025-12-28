@@ -77,7 +77,6 @@ mod tests {
     #[test]
     fn config_with_all_app_types() {
         let toml = r#"
-            gui_apps = ["firefox", "foot"]
             tui_apps = ["mc", "vim", "fzf"]
             shell_commands = ["cd", "export"]
         "#;
@@ -89,17 +88,12 @@ mod tests {
         assert!(config.is_tui_app("vim"), "vim should be TUI");
         assert!(config.is_tui_app("fzf"), "fzf should be TUI");
 
-        // GUI apps
-        assert!(config.is_gui_app("firefox"), "firefox should be GUI");
-        assert!(config.is_gui_app("foot"), "foot should be GUI");
-
         // Shell commands
         assert!(config.is_shell_command("cd"), "cd should be shell");
         assert!(config.is_shell_command("export"), "export should be shell");
 
         // Cross-checks
         assert!(!config.is_tui_app("firefox"), "firefox should NOT be TUI");
-        assert!(!config.is_gui_app("mc"), "mc should NOT be GUI");
         assert!(!config.is_shell_command("mc"), "mc should NOT be shell");
     }
 

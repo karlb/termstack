@@ -104,6 +104,14 @@ pub struct ColumnCompositor {
 
     /// Index and new height of resized external window (for scroll adjustment)
     pub external_window_resized: Option<(usize, i32)>,
+
+    /// Pending output terminal to link with the next external window
+    /// Set when spawning a GUI app command, consumed by add_window()
+    pub pending_window_output_terminal: Option<TerminalId>,
+
+    /// Output terminals from closed windows that need cleanup
+    /// Processed in main loop - if terminal has no content, remove it; otherwise keep visible
+    pub pending_output_terminal_cleanup: Vec<TerminalId>,
 }
 
 /// A window entry in our column
@@ -116,6 +124,10 @@ pub struct WindowEntry {
 
     /// Explicit state machine
     pub state: WindowState,
+
+    /// Output terminal for this window (captures stdout/stderr from GUI app)
+    /// Hidden until output arrives, then promoted to standalone cell below window
+    pub output_terminal: Option<TerminalId>,
 }
 
 /// Explicit window state machine - prevents implicit state bugs from v1
@@ -203,6 +215,8 @@ impl ColumnCompositor {
             pending_resize_request: None,
             new_external_window_index: None,
             external_window_resized: None,
+            pending_window_output_terminal: None,
+            pending_output_terminal_cleanup: Vec::new(),
         };
 
         (compositor, display)
@@ -257,6 +271,9 @@ impl ColumnCompositor {
     pub fn add_window(&mut self, toplevel: ToplevelSurface) {
         let window = Window::new_wayland_window(toplevel.clone());
 
+        // Consume pending output terminal (if any)
+        let output_terminal = self.pending_window_output_terminal.take();
+
         // Default initial height (will be resized based on content)
         let initial_height = 200u32;
 
@@ -266,7 +283,20 @@ impl ColumnCompositor {
             state: WindowState::Active {
                 height: initial_height,
             },
+            output_terminal,
         };
+
+        // If we have an output terminal, remove it from the cells list
+        // (it will be promoted back when it has output)
+        if let Some(term_id) = output_terminal {
+            self.cells.retain(|cell| {
+                !matches!(cell, ColumnCell::Terminal(id) if *id == term_id)
+            });
+            tracing::info!(
+                terminal_id = term_id.0,
+                "output terminal removed from cells (hidden until output)"
+            );
+        }
 
         // Insert AT focused index (appears above/before it on screen since lower index = higher Y)
         let insert_index = self.focused_index.unwrap_or(self.cells.len());
@@ -285,6 +315,7 @@ impl ColumnCompositor {
             cell_count = self.cells.len(),
             focused = ?self.focused_index,
             insert_index,
+            has_output_terminal = output_terminal.is_some(),
             "external window added"
         );
     }
@@ -318,12 +349,25 @@ impl ColumnCompositor {
     }
 
     /// Remove an external window by its surface
+    /// If the window had an output terminal, it's added to pending_output_terminal_cleanup
     pub fn remove_window(&mut self, surface: &WlSurface) {
         if let Some(index) = self.cells.iter().position(|cell| {
             matches!(cell, ColumnCell::External(entry) if entry.toplevel.wl_surface() == surface)
         }) {
-            if let ColumnCell::External(entry) = self.cells.remove(index) {
+            let output_terminal = if let ColumnCell::External(entry) = self.cells.remove(index) {
                 self.space.unmap_elem(&entry.window);
+                entry.output_terminal
+            } else {
+                None
+            };
+
+            // Queue output terminal for cleanup in main loop
+            if let Some(term_id) = output_terminal {
+                tracing::info!(
+                    terminal_id = term_id.0,
+                    "window closed, queuing output terminal for cleanup"
+                );
+                self.pending_output_terminal_cleanup.push(term_id);
             }
 
             self.update_focus_after_removal(index);
@@ -333,6 +377,7 @@ impl ColumnCompositor {
             tracing::info!(
                 cell_count = self.cells.len(),
                 focused = ?self.focused_index,
+                has_output_terminal = output_terminal.is_some(),
                 "external window removed"
             );
         }

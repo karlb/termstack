@@ -295,6 +295,12 @@ fn main() -> anyhow::Result<()> {
         // Process terminal PTY output and handle sizing actions
         process_terminal_output(&mut compositor, &mut terminal_manager);
 
+        // Promote output terminals that have content to standalone cells
+        promote_output_terminals(&mut compositor, &terminal_manager);
+
+        // Handle cleanup of output terminals from closed windows
+        handle_output_terminal_cleanup(&mut compositor, &mut terminal_manager);
+
         // Cleanup dead terminals and handle focus changes
         if cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
             break;
@@ -890,6 +896,16 @@ fn process_spawn_request(
                 tracing::info!(id = id.0, cols, pty_rows, height = term.height, "terminal created");
             }
             compositor.add_terminal(id);
+
+            // Set this terminal as the pending output terminal for GUI windows.
+            // If the command opens a GUI window, that window will be linked to this terminal.
+            // The terminal will be hidden until it has output, then promoted to a standalone cell.
+            // (TUI apps don't open external windows, so this is only relevant for GUI apps)
+            if !request.is_tui {
+                compositor.pending_window_output_terminal = Some(id);
+                tracing::info!(id = id.0, "set as pending output terminal for GUI windows");
+            }
+
             Some(id)
         }
         Err(e) => {
@@ -1085,6 +1101,109 @@ fn calculate_cell_heights_with_hidden(
             }
         }
     }).collect()
+}
+
+/// Promote output terminals that have content to standalone cells.
+///
+/// Checks each external window's output terminal. If it has output and isn't
+/// already a cell, inserts it as a cell right after the window.
+fn promote_output_terminals(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &TerminalManager,
+) {
+    // Collect (window_cell_idx, term_id) pairs for terminals to promote
+    let mut to_promote: Vec<(usize, TerminalId)> = Vec::new();
+
+    for (cell_idx, cell) in compositor.cells.iter().enumerate() {
+        if let ColumnCell::External(entry) = cell {
+            if let Some(term_id) = entry.output_terminal {
+                // Check if terminal already in cells
+                let already_cell = compositor.cells.iter().any(|c| {
+                    matches!(c, ColumnCell::Terminal(id) if *id == term_id)
+                });
+
+                if !already_cell {
+                    if let Some(term) = terminal_manager.get(term_id) {
+                        // Promote if terminal has any content
+                        if term.content_rows() > 0 {
+                            to_promote.push((cell_idx, term_id));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Promote terminals (one at a time to avoid index issues)
+    // Insert in reverse order so earlier insertions don't affect later indices
+    for (window_idx, term_id) in to_promote.into_iter().rev() {
+        // Insert terminal cell right after this window
+        // (cell_idx + 1 puts it below the window in the column)
+        let insert_idx = window_idx + 1;
+        compositor.cells.insert(insert_idx, ColumnCell::Terminal(term_id));
+
+        // Insert a placeholder height (will be updated on next frame)
+        if insert_idx <= compositor.cached_cell_heights.len() {
+            let height = terminal_manager.get(term_id)
+                .map(|t| t.height as i32)
+                .unwrap_or(0);
+            compositor.cached_cell_heights.insert(insert_idx, height);
+        }
+
+        tracing::info!(
+            terminal_id = term_id.0,
+            window_idx,
+            insert_idx,
+            "promoted output terminal to standalone cell"
+        );
+    }
+}
+
+/// Handle cleanup of output terminals from closed windows.
+///
+/// If the terminal has no content, it's removed. If it has content, it stays visible.
+fn handle_output_terminal_cleanup(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    let cleanup_ids = std::mem::take(&mut compositor.pending_output_terminal_cleanup);
+
+    for term_id in cleanup_ids {
+        let has_content = terminal_manager.get(term_id)
+            .map(|t| t.content_rows() > 0)
+            .unwrap_or(false);
+
+        if has_content {
+            // Terminal has output - check if it's already a cell
+            let is_cell = compositor.cells.iter().any(|c| {
+                matches!(c, ColumnCell::Terminal(id) if *id == term_id)
+            });
+
+            if !is_cell {
+                // Add it as a cell so it remains visible
+                compositor.cells.push(ColumnCell::Terminal(term_id));
+                if let Some(term) = terminal_manager.get(term_id) {
+                    compositor.cached_cell_heights.push(term.height as i32);
+                }
+                tracing::info!(
+                    terminal_id = term_id.0,
+                    "output terminal with content added as cell after window close"
+                );
+            } else {
+                tracing::info!(
+                    terminal_id = term_id.0,
+                    "output terminal with content already a cell, keeping visible"
+                );
+            }
+        } else {
+            // No content - remove from TerminalManager
+            terminal_manager.remove(term_id);
+            tracing::info!(
+                terminal_id = term_id.0,
+                "removed empty output terminal after window close"
+            );
+        }
+    }
 }
 
 /// Cleanup dead terminals, sync focus, and handle shutdown.

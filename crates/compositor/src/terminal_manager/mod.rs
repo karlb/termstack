@@ -580,6 +580,10 @@ impl TerminalManager {
                 if !running {
                     // Terminal has exited
                     if !was_already_exited {
+                        // First time detecting exit - drain PTY buffer before checking content
+                        // This ensures we capture any output that was written before exit
+                        term.process();
+
                         // First time detecting exit - handle parent unhiding
                         if let Some(parent_id) = term.parent {
                             parents_to_unhide.push(parent_id);

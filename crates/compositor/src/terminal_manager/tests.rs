@@ -2255,3 +2255,184 @@
         let has_hello = grid_lines.iter().any(|l| l.contains("HELLO"));
         assert!(has_hello, "grid should contain 'HELLO'");
     }
+
+    /// Test that fast-exiting commands with stderr output are not hidden.
+    ///
+    /// This tests the fix for the bug where commands that exit quickly
+    /// (before PTY output is read) would be incorrectly hidden even when
+    /// they produced error output.
+    #[test]
+    fn fast_exit_with_stderr_not_hidden() {
+        use std::time::Duration;
+
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(output_width, output_height);
+
+        // First spawn a parent shell terminal
+        let parent_id = manager.spawn().expect("spawn parent");
+        manager.focused = Some(parent_id);
+
+        // Now spawn a command that outputs multiple lines to stderr and exits immediately
+        // Using "echo ... >&2" to write to stderr
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let result = manager.spawn_command(
+            "echo 'Error line 1' >&2; echo 'Error line 2' >&2; echo 'Error line 3' >&2",
+            cwd,
+            &env,
+            Some(parent_id),
+            false,
+        );
+
+        assert!(result.is_ok(), "spawn_command should succeed");
+        let child_id = result.unwrap();
+
+        // Parent should be hidden
+        assert!(
+            manager.get(parent_id).unwrap().hidden,
+            "parent should be hidden while child runs"
+        );
+
+        // Wait for command to exit
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Run cleanup - this is where the bug would manifest
+        // The PTY should be drained before checking content_rows
+        let (dead, focus_changed) = manager.cleanup();
+
+        // Child should NOT be dead (keep_open = true)
+        assert!(
+            !dead.contains(&child_id),
+            "child with keep_open should not be in dead list"
+        );
+
+        // Focus should change back to parent
+        assert_eq!(
+            focus_changed,
+            Some(parent_id),
+            "focus should return to parent"
+        );
+
+        // Parent should be unhidden
+        assert!(
+            !manager.get(parent_id).unwrap().hidden,
+            "parent should be unhidden after child exits"
+        );
+
+        // Child should NOT be hidden because it had content (error output)
+        let child = manager.get(child_id).expect("child should still exist");
+        let content_rows = child.content_rows();
+
+        eprintln!("Child content_rows after cleanup: {}", content_rows);
+
+        // The key assertion: child should NOT be hidden because it had stderr output
+        // The bug was that cleanup would hide it before reading PTY
+        assert!(
+            !child.hidden,
+            "child with stderr output should NOT be hidden (content_rows={})",
+            content_rows
+        );
+
+        // content_rows should be > 1 (echo prefix + 3 error lines)
+        assert!(
+            content_rows > 1,
+            "should have multiple content rows from stderr, got {}",
+            content_rows
+        );
+    }
+
+    /// Test realistic scenario: command with echo prefix that fails immediately.
+    ///
+    /// This mimics what happens when column-term runs a command that fails:
+    /// 1. Command is prefixed with `echo '> cmd'; cmd`
+    /// 2. Command fails immediately and outputs to stderr
+    /// 3. Terminal should show both the echo and the error output
+    #[test]
+    fn command_with_echo_prefix_shows_errors() {
+        use std::time::Duration;
+
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(output_width, output_height);
+
+        // First spawn a parent shell terminal
+        let parent_id = manager.spawn().expect("spawn parent");
+        manager.focused = Some(parent_id);
+
+        // Simulate the real command format from column-term
+        // This is what process_spawn_request creates: "echo '> cmd'; cmd"
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+
+        // Use a command that will fail and output to stderr
+        // cat on a nonexistent file outputs: "cat: /nonexistent: No such file or directory"
+        let result = manager.spawn_command(
+            "echo '> cat /nonexistent'; cat /nonexistent",
+            cwd,
+            &env,
+            Some(parent_id),
+            false,
+        );
+
+        assert!(result.is_ok(), "spawn_command should succeed");
+        let child_id = result.unwrap();
+
+        // Wait for command to exit (cat fails quickly)
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Check content BEFORE cleanup to see what we have
+        {
+            let child = manager.get_mut(child_id).unwrap();
+            // Manually process PTY to ensure we have all output
+            child.process();
+            let content_before = child.content_rows();
+            eprintln!("Content rows BEFORE cleanup: {}", content_before);
+
+            // Check grid content
+            let grid = child.terminal.grid_content();
+            eprintln!("Grid content ({} lines):", grid.len());
+            for (i, line) in grid.iter().enumerate().take(10) {
+                if !line.is_empty() {
+                    eprintln!("  Line {}: '{}'", i, line);
+                }
+            }
+        }
+
+        // Now run cleanup
+        let (dead, focus_changed) = manager.cleanup();
+
+        eprintln!("Cleanup: dead={:?}, focus_changed={:?}",
+                  dead.iter().map(|id| id.0).collect::<Vec<_>>(),
+                  focus_changed.map(|id| id.0));
+
+        // Child should NOT be dead (keep_open = true)
+        assert!(
+            !dead.contains(&child_id),
+            "child with keep_open should not be in dead list"
+        );
+
+        // Check content AFTER cleanup
+        let child = manager.get(child_id).expect("child should still exist");
+        let content_after = child.content_rows();
+        eprintln!("Content rows AFTER cleanup: {}", content_after);
+        eprintln!("Child hidden: {}", child.hidden);
+
+        // content_rows should be > 1:
+        // - 1 from initial state
+        // - 1 from echo line
+        // - 1 from cat error line
+        // = at least 3
+        assert!(
+            content_after > 1,
+            "should have content rows > 1 (echo + error), got {}",
+            content_after
+        );
+
+        // Child should NOT be hidden because content_rows > 1
+        assert!(
+            !child.hidden,
+            "child with content should NOT be hidden (content_rows={})",
+            content_after
+        );
+    }
