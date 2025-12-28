@@ -2115,3 +2115,143 @@
             );
         }
     }
+
+    /// Test the full compositor growth flow with a shell terminal.
+    ///
+    /// This simulates exactly what the compositor does:
+    /// 1. Spawn shell terminal
+    /// 2. Write command to it
+    /// 3. Process PTY output (get sizing actions)
+    /// 4. Handle growth requests (call grow_terminal)
+    /// 5. Verify height is updated correctly
+    #[test]
+    fn compositor_growth_flow_with_shell() {
+        use std::time::Duration;
+
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(output_width, output_height);
+
+        // Spawn a shell terminal like the compositor does
+        let id = manager.spawn().expect("spawn shell terminal");
+
+        let cell_height = manager.cell_height;
+        let initial_height = manager.get(id).unwrap().height;
+
+        eprintln!("Initial terminal height: {}", initial_height);
+
+        // Wait for shell to initialize
+        std::thread::sleep(Duration::from_millis(500));
+        manager.process_all();
+
+        // Write a command that produces 10 lines of output
+        {
+            let terminal = manager.get_focused_mut().unwrap();
+            terminal.write(b"seq 10\n").expect("write to terminal");
+        }
+
+        // Process PTY output and collect sizing actions like compositor does
+        let mut total_growth_count = 0;
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(3);
+
+        while start.elapsed() < timeout {
+            let sizing_actions = manager.process_all();
+
+            // Handle growth requests exactly like process_terminal_output does
+            for (term_id, action) in sizing_actions {
+                if let terminal::sizing::SizingAction::RequestGrowth { target_rows } = action {
+                    eprintln!("Growth request for terminal {}: {} rows", term_id.0, target_rows);
+                    manager.grow_terminal(term_id, target_rows);
+                    total_growth_count += 1;
+                }
+            }
+
+            let current_height = manager.get(id).unwrap().height;
+            let content_rows = manager.get(id).unwrap().content_rows();
+            if content_rows >= 10 {
+                eprintln!("Got {} content rows, height now {}", content_rows, current_height);
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // Verify terminal grew
+        let final_height = manager.get(id).unwrap().height;
+        let content_rows = manager.get(id).unwrap().content_rows();
+
+        eprintln!("Final: height={}, content_rows={}, growth_count={}",
+            final_height, content_rows, total_growth_count);
+
+        assert!(
+            content_rows >= 10,
+            "should have at least 10 content rows, got {}",
+            content_rows
+        );
+
+        assert!(
+            total_growth_count > 0,
+            "should have received growth requests"
+        );
+
+        assert!(
+            final_height > initial_height,
+            "terminal height should have grown from {} to more than {}",
+            initial_height, final_height
+        );
+
+        // Final height should be at least 10 rows * cell_height
+        let min_expected = 10 * cell_height;
+        assert!(
+            final_height >= min_expected,
+            "terminal height should be at least {} (10 rows * {}), got {}",
+            min_expected, cell_height, final_height
+        );
+    }
+
+    /// Test that ManagedTerminal grid actually contains output.
+    ///
+    /// This verifies the content is in the grid, not just sizing metrics.
+    #[test]
+    fn managed_terminal_grid_has_content() {
+        use std::time::Duration;
+
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(output_width, output_height);
+
+        let id = manager.spawn().expect("spawn shell terminal");
+
+        // Wait for shell init
+        std::thread::sleep(Duration::from_millis(500));
+        manager.process_all();
+
+        // Write a simple command
+        {
+            let terminal = manager.get_focused_mut().unwrap();
+            terminal.write(b"echo HELLO\n").expect("write to terminal");
+        }
+
+        // Wait for output
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            manager.process_all();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // Check grid content
+        let terminal = manager.get(id).unwrap();
+        let grid_lines = terminal.terminal.grid_content();
+
+        eprintln!("ManagedTerminal grid ({} lines):", grid_lines.len());
+        for (i, line) in grid_lines.iter().enumerate().take(10) {
+            if !line.is_empty() {
+                eprintln!("  Line {}: '{}'", i, line);
+            }
+        }
+
+        // Should have "HELLO" somewhere in the grid
+        let has_hello = grid_lines.iter().any(|l| l.contains("HELLO"));
+        assert!(has_hello, "grid should contain 'HELLO'");
+    }

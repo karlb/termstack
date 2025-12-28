@@ -515,12 +515,25 @@ impl TerminalManager {
     pub fn process_all(&mut self) -> Vec<(TerminalId, SizingAction)> {
         let mut actions = Vec::new();
         for (id, terminal) in &mut self.terminals {
+            let content_before = terminal.content_rows();
             let (term_actions, bytes_read) = terminal.process();
+            let content_after = terminal.content_rows();
+
             if bytes_read > 0 {
-                tracing::info!(id = id.0, bytes_read, "PTY read for terminal");
+                tracing::info!(
+                    id = id.0,
+                    bytes_read,
+                    content_before,
+                    content_after,
+                    actions_count = term_actions.len(),
+                    "PTY read for terminal"
+                );
             }
-            for action in term_actions {
-                actions.push((*id, action));
+
+            // Log each action for visibility
+            for action in &term_actions {
+                tracing::info!(id = id.0, ?action, "terminal sizing action");
+                actions.push((*id, action.clone()));
             }
         }
         actions

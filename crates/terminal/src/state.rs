@@ -101,22 +101,26 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Create a new terminal
+    /// Create a new terminal running an interactive shell
     pub fn new(cols: u16, rows: u16) -> Result<Self, TerminalError> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
-        // Create PTY
-        let pty = Pty::spawn(&shell, cols, rows)?;
+        // Use 1000 rows for PTY and grid to prevent internal scrolling
+        // The sizing state uses `rows` for growth triggers
+        let pty_rows = 1000u16;
+
+        // Create PTY with large size so shell doesn't scroll internally
+        let pty = Pty::spawn(&shell, cols, pty_rows)?;
 
         // Create event channel
         let (sender, receiver) = std::sync::mpsc::channel();
         let event_proxy = TerminalEventProxy { sender };
 
-        // Create terminal
+        // Create terminal grid with large size to store all output
         let config = TermConfig::default();
         let size = Size {
             cols: cols as usize,
-            rows: rows as usize,
+            rows: pty_rows as usize,
         };
 
         let term = Term::new(config, &size, event_proxy);
@@ -129,7 +133,7 @@ impl Terminal {
         let font_config = crate::render::FontConfig::default_font();
         let renderer = TerminalRenderer::with_font(font_config);
 
-        // Create sizing state
+        // Create sizing state with visual row count (will grow as content arrives)
         let sizing = TerminalSizingState::new(rows);
 
         Ok(Self {
@@ -140,7 +144,7 @@ impl Terminal {
             renderer,
             events: receiver,
             cols,
-            rows,
+            rows: pty_rows,
         })
     }
 
@@ -392,6 +396,33 @@ impl Terminal {
     /// Get sizing state
     pub fn sizing_state(&self) -> &TerminalSizingState {
         &self.sizing
+    }
+
+    /// Get grid content as text lines (for debugging)
+    ///
+    /// Returns the content of each visible line in the grid.
+    pub fn grid_content(&self) -> Vec<String> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let mut lines = Vec::new();
+
+        for line_idx in 0..term.screen_lines() {
+            let line = &grid[alacritty_terminal::index::Line(line_idx as i32)];
+            let mut text = String::new();
+            for cell in line.into_iter() {
+                let c = cell.c;
+                if c == '\0' {
+                    text.push(' ');
+                } else {
+                    text.push(c);
+                }
+            }
+            // Trim trailing spaces
+            let trimmed = text.trim_end();
+            lines.push(trimmed.to_string());
+        }
+
+        lines
     }
 
     /// Check pending events
