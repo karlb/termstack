@@ -226,8 +226,14 @@ impl Terminal {
                     // Check if in alternate screen BEFORE processing (for logging)
                     let was_alt = term.mode().contains(TermMode::ALT_SCREEN);
 
-                    // Count newlines for sizing state machine
+                    // Count line endings for sizing state machine
+                    // Only count \n (newline) - \r is cursor control, not line advancement
                     let newlines = buf[..n].iter().filter(|&&b| b == b'\n').count();
+
+                    // Log for debugging (INFO level for visibility)
+                    if newlines > 0 {
+                        tracing::info!(bytes = n, newlines, was_alt, "PTY output with newlines");
+                    }
 
                     // Process bytes through VTE parser
                     for byte in &buf[..n] {
@@ -239,19 +245,19 @@ impl Terminal {
 
                     drop(term);
 
-                    // Only count newlines when NOT in alternate screen mode
+                    // Only count line endings when NOT in alternate screen mode
                     // TUI apps use alternate screen and their output shouldn't affect content rows
                     if !is_alt && !was_alt && newlines > 0 {
-                        tracing::debug!(newlines, content_rows = self.sizing.content_rows(), "detected newlines");
+                        tracing::info!(newlines, content_rows = self.sizing.content_rows(), "counting line endings");
                         for _ in 0..newlines {
                             let action = self.sizing.on_new_line();
                             if action != SizingAction::None {
-                                tracing::debug!(?action, "sizing action from newline");
+                                tracing::info!(?action, "sizing action from line ending");
                                 actions.push(action);
                             }
                         }
                     } else if newlines > 0 && (is_alt || was_alt) {
-                        tracing::debug!(newlines, was_alt, is_alt, "skipping newlines in alternate screen");
+                        tracing::info!(newlines, was_alt, is_alt, "skipping line endings in alternate screen");
                     }
                 }
                 Err(_) => break,
@@ -290,6 +296,7 @@ impl Terminal {
         let mut term = self.term.lock();
         let was_alt = term.mode().contains(TermMode::ALT_SCREEN);
 
+        // Count only \n for line endings - \r is cursor control
         let newlines = data.iter().filter(|&&b| b == b'\n').count();
 
         for byte in data {
@@ -299,7 +306,7 @@ impl Terminal {
         let is_alt = term.mode().contains(TermMode::ALT_SCREEN);
         drop(term);
 
-        // Only count newlines when NOT in alternate screen mode
+        // Only count line endings when NOT in alternate screen mode
         if !is_alt && !was_alt && newlines > 0 {
             for _ in 0..newlines {
                 self.sizing.on_new_line();

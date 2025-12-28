@@ -817,6 +817,204 @@ fn keyboard_input_uses_carriage_return() {
     );
 }
 
+/// Test using Terminal::new() which uses $SHELL (like the real compositor)
+///
+/// This is the most accurate reproduction of the user scenario.
+#[test]
+fn shell_terminal_with_loop_output() {
+    use std::time::Duration;
+    use terminal::sizing::SizingAction;
+
+    // Create shell terminal exactly like the compositor does
+    let mut terminal = terminal::Terminal::new(80, 3).expect("create shell terminal");
+
+    let (_cell_width, cell_height) = terminal.cell_size();
+    let mut visual_height = 3 * cell_height;
+
+    // Wait for shell prompt
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        terminal.process_pty();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let content_before = terminal.content_rows();
+    println!("Shell is: {}", std::env::var("SHELL").unwrap_or_default());
+    println!("Before command: content_rows = {}", content_before);
+
+    // Send the fish loop command (also works in bash/zsh with different syntax)
+    // Use \r like the real compositor sends for Enter key
+    terminal.write(b"for i in $(seq 5); do echo $i; done\r").expect("write command");
+
+    // Process output and handle growth
+    let mut all_actions = Vec::new();
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(5);
+    let mut bytes_total = 0;
+
+    while start.elapsed() < timeout {
+        let (actions, bytes_read) = terminal.process_pty_with_count();
+        bytes_total += bytes_read;
+
+        for action in &actions {
+            if let SizingAction::RequestGrowth { target_rows } = action {
+                let resize_action = terminal.configure(*target_rows);
+                if matches!(resize_action, SizingAction::ApplyResize { .. }) {
+                    terminal.complete_resize();
+                    visual_height = *target_rows as u32 * cell_height;
+                }
+            }
+        }
+        all_actions.extend(actions);
+
+        // Wait for 5 lines of output
+        if terminal.content_rows() >= content_before + 5 {
+            break;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let content_after = terminal.content_rows();
+    let growth_count = all_actions.iter()
+        .filter(|a| matches!(a, SizingAction::RequestGrowth { .. }))
+        .count();
+
+    println!("After command: content_rows = {}", content_after);
+    println!("Growth from {} to {}", content_before, content_after);
+    println!("Growth requests: {}", growth_count);
+    println!("Visual height: {} ({} rows)", visual_height, visual_height / cell_height);
+    println!("Total bytes read from PTY: {}", bytes_total);
+
+    // Print grid content for debugging
+    let grid_content = terminal.grid_content();
+    println!("Grid content ({} lines):", grid_content.len());
+    for (i, line) in grid_content.iter().take(20).enumerate() {
+        if !line.is_empty() {
+            println!("  {:3}: {}", i, line);
+        }
+    }
+
+    // Should have gained at least 5 content rows
+    let content_gained = content_after.saturating_sub(content_before);
+    assert!(
+        content_gained >= 5,
+        "should have gained at least 5 content rows, got {}",
+        content_gained
+    );
+
+    // Verify render output has visible content
+    let (cell_width, cell_height) = terminal.cell_size();
+    terminal.render(80 * cell_width, visual_height, true);
+    let buffer = terminal.buffer();
+    let bg_color = 0xFF1A1A1A_u32;
+    let content_pixels = buffer.iter().filter(|&&p| p != bg_color).count();
+    println!("Render buffer: {} content pixels out of {}", content_pixels, buffer.len());
+    assert!(content_pixels > 100, "render should show content, got {} pixels", content_pixels);
+}
+
+/// Test fish loop typed interactively.
+///
+/// This reproduces the exact user scenario:
+/// 1. Start fish shell interactively
+/// 2. Type "for i in (seq 5); echo $i; end"
+/// 3. Press Enter
+/// 4. Verify output is counted
+#[test]
+fn fish_loop_typed_interactively() {
+    use std::time::Duration;
+    use terminal::sizing::SizingAction;
+
+    // Skip if fish is not available
+    if std::process::Command::new("fish").arg("--version").output().is_err() {
+        eprintln!("Skipping test: fish shell not available");
+        return;
+    }
+
+    // Create terminal running fish interactively
+    let mut terminal = terminal::Terminal::new_with_command(
+        80,     // cols
+        1000,   // pty_rows
+        3,      // visual_rows
+        "fish",
+        std::path::Path::new("/tmp"),
+        &std::collections::HashMap::new(),
+    ).expect("create fish terminal");
+
+    let (_cell_width, cell_height) = terminal.cell_size();
+    let mut visual_height = 3 * cell_height;
+
+    // Wait for fish prompt
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        terminal.process_pty();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let content_before = terminal.content_rows();
+    println!("Before command: content_rows = {}", content_before);
+
+    // Type the loop command and press Enter (using \r like the real compositor)
+    terminal.write(b"for i in (seq 5); echo $i; end\r").expect("write command");
+
+    // Process output and handle growth
+    let mut all_actions = Vec::new();
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(5);
+    let mut bytes_total = 0;
+
+    while start.elapsed() < timeout {
+        let (actions, bytes_read) = terminal.process_pty_with_count();
+        bytes_total += bytes_read;
+
+        for action in &actions {
+            if let SizingAction::RequestGrowth { target_rows } = action {
+                let resize_action = terminal.configure(*target_rows);
+                if matches!(resize_action, SizingAction::ApplyResize { .. }) {
+                    terminal.complete_resize();
+                    visual_height = *target_rows as u32 * cell_height;
+                }
+            }
+        }
+        all_actions.extend(actions);
+
+        // Wait for 5 lines of output (numbers 1-5)
+        if terminal.content_rows() >= content_before + 5 {
+            break;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let content_after = terminal.content_rows();
+    let growth_count = all_actions.iter()
+        .filter(|a| matches!(a, SizingAction::RequestGrowth { .. }))
+        .count();
+
+    println!("After command: content_rows = {}", content_after);
+    println!("Growth from {} to {}", content_before, content_after);
+    println!("Growth requests: {}", growth_count);
+    println!("Visual height: {} ({} rows)", visual_height, visual_height / cell_height);
+    println!("Total bytes read from PTY: {}", bytes_total);
+
+    // Print grid content for debugging
+    let grid_content = terminal.grid_content();
+    println!("Grid content ({} lines):", grid_content.len());
+    for (i, line) in grid_content.iter().take(20).enumerate() {
+        if !line.is_empty() {
+            println!("  {:3}: {}", i, line);
+        }
+    }
+
+    // Should have gained at least 5 content rows from the loop output
+    let content_gained = content_after.saturating_sub(content_before);
+    assert!(
+        content_gained >= 5,
+        "should have gained at least 5 content rows from fish loop, got {}",
+        content_gained
+    );
+}
+
 #[test]
 fn multiple_terminals_stack_vertically() {
     let (mut tc, _terminals) = fixtures::multiple_terminals(3);

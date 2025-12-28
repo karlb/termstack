@@ -132,8 +132,11 @@ impl Pty {
 
     /// Spawn a new PTY running a specific command
     ///
-    /// The command is run via `/bin/sh -c "command"` with the given
-    /// working directory and environment variables.
+    /// The command is run via `$SHELL -c "command"` with the given
+    /// working directory and environment variables. Uses the SHELL
+    /// environment variable, falling back to /bin/sh if not set.
+    ///
+    /// This ensures shell-specific syntax (like fish loops) works correctly.
     pub fn spawn_command(
         command: &str,
         working_dir: &Path,
@@ -141,6 +144,10 @@ impl Pty {
         cols: u16,
         rows: u16,
     ) -> Result<Self, PtyError> {
+        // Use SHELL from env, or fall back to /bin/sh
+        let shell = env.get("SHELL")
+            .map(|s| s.as_str())
+            .unwrap_or("/bin/sh");
         let winsize = Winsize {
             ws_row: rows,
             ws_col: cols,
@@ -195,14 +202,14 @@ impl Pty {
             return Err(PtyError::Open(std::io::Error::last_os_error()));
         }
 
-        // Debug: log the WAYLAND_DISPLAY being used
-        if let Some(wayland) = env.get("WAYLAND_DISPLAY") {
-            eprintln!("PTY spawn_command: WAYLAND_DISPLAY={}", wayland);
-        }
+        // Debug: log the shell and WAYLAND_DISPLAY being used
+        eprintln!("PTY spawn_command: shell={} WAYLAND_DISPLAY={}",
+                  shell,
+                  env.get("WAYLAND_DISPLAY").map(|s| s.as_str()).unwrap_or("(not set)"));
 
-        // Spawn command with /bin/sh -c
+        // Spawn command with user's shell
         let child = unsafe {
-            Command::new("/bin/sh")
+            Command::new(shell)
                 .arg("-c")
                 .arg(command)
                 .current_dir(working_dir)

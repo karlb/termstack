@@ -350,9 +350,18 @@ impl TerminalManager {
         let cell_height = self.cell_height;
 
         if let Some(terminal) = self.terminals.get_mut(&id) {
+            let old_height = terminal.height;
             let new_rows = target_rows.min(max_rows);
             terminal.resize(new_rows, cell_height);
-            tracing::debug!(id = id.0, target_rows, new_rows, max_rows, "grew terminal");
+            tracing::info!(
+                id = id.0,
+                target_rows,
+                new_rows,
+                max_rows,
+                old_height,
+                new_height = terminal.height,
+                "grew terminal"
+            );
         }
     }
 

@@ -858,6 +858,11 @@ fn process_spawn_request(
     if let Ok(qt_platform) = std::env::var("QT_QPA_PLATFORM") {
         env.insert("QT_QPA_PLATFORM".to_string(), qt_platform);
     }
+    // Pass SHELL so spawn_command uses the correct shell for syntax
+    // This ensures fish loops work when user's shell is fish
+    if let Ok(shell) = std::env::var("SHELL") {
+        env.insert("SHELL".to_string(), shell);
+    }
 
     let parent = terminal_manager.focused;
 
