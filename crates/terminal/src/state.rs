@@ -315,20 +315,18 @@ impl Terminal {
     }
 
     /// Handle compositor configure (resize)
+    ///
+    /// Only resizes the PTY (what programs see), NOT the grid.
+    /// The grid stays large (1000 rows) to hold all content without scrolling.
+    /// Visual clipping is handled by the render function.
     pub fn configure(&mut self, rows: u16) -> SizingAction {
         let action = self.sizing.on_configure(rows);
 
         if let SizingAction::ApplyResize { rows } = action {
+            // Only resize PTY - programs see the new size for cursor positioning
+            // Do NOT resize the grid - it stays large to hold all content
             let _ = self.pty.resize(self.cols, rows);
-            self.rows = rows;
-
-            // Update terminal size
-            let mut term = self.term.lock();
-            let size = Size {
-                cols: self.cols as usize,
-                rows: rows as usize,
-            };
-            term.resize(size);
+            // Note: self.rows stays at pty_rows (1000) for the grid size
         }
 
         action
