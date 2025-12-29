@@ -129,6 +129,10 @@ pub struct ColumnCompositor {
 
     /// Pending copy request (set by keybinding, handled in input loop)
     pub pending_copy: bool,
+
+    /// Active selection state: (terminal_id, terminal_y_offset, terminal_height)
+    /// Set when mouse button is pressed on a terminal, cleared on release
+    pub selecting: Option<(TerminalId, i32, i32)>,
 }
 
 /// A window entry in our column
@@ -246,6 +250,7 @@ impl ColumnCompositor {
             clipboard: arboard::Clipboard::new().ok(),
             pending_paste: false,
             pending_copy: false,
+            selecting: None,
         };
 
         (compositor, display)
@@ -678,6 +683,25 @@ impl ColumnCompositor {
         self.cell_at(point)
             .map(|i| matches!(self.cells.get(i), Some(ColumnCell::Terminal(_))))
             .unwrap_or(false)
+    }
+
+    /// Get the render position (render_y, height) for a cell at the given index
+    /// Returns (render_y, height) where render_y is in render coordinates (Y=0 at bottom)
+    pub fn get_cell_render_position(&self, index: usize) -> (f64, i32) {
+        let screen_height = self.output_size.h as f64;
+        let mut content_y = -self.scroll_offset;
+
+        for (i, &height) in self.cached_cell_heights.iter().enumerate() {
+            if i == index {
+                // render_y = screen_height - content_y - height
+                let render_y = screen_height - content_y - height as f64;
+                return (render_y, height);
+            }
+            content_y += height as f64;
+        }
+
+        // Fallback if index out of bounds
+        (0.0, 0)
     }
 }
 

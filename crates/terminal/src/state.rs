@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::sync::FairMutex;
@@ -433,5 +435,39 @@ impl Terminal {
     /// Check pending events
     pub fn poll_events(&self) -> impl Iterator<Item = TerminalEvent> + '_ {
         self.events.try_iter()
+    }
+
+    /// Start a text selection at the given grid coordinates
+    pub fn start_selection(&self, col: usize, row: usize) {
+        let mut term = self.term.lock();
+        let point = Point::new(Line(row as i32), Column(col));
+        term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+    }
+
+    /// Update the selection end point
+    pub fn update_selection(&self, col: usize, row: usize) {
+        let mut term = self.term.lock();
+        if let Some(ref mut selection) = term.selection {
+            let point = Point::new(Line(row as i32), Column(col));
+            selection.update(point, Side::Right);
+        }
+    }
+
+    /// Clear the current selection
+    pub fn clear_selection(&self) {
+        let mut term = self.term.lock();
+        term.selection = None;
+    }
+
+    /// Get the selected text, if any
+    pub fn selection_text(&self) -> Option<String> {
+        let term = self.term.lock();
+        term.selection_to_string()
+    }
+
+    /// Check if there's an active selection
+    pub fn has_selection(&self) -> bool {
+        let term = self.term.lock();
+        term.selection.is_some()
     }
 }

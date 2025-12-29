@@ -8,8 +8,11 @@ use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
-use crate::state::ColumnCompositor;
+use crate::state::{ColumnCell, ColumnCompositor};
 use crate::terminal_manager::TerminalManager;
+
+/// Left mouse button code (BTN_LEFT in evdev)
+const BTN_LEFT: u32 = 0x110;
 
 /// Scroll amount per key press (pixels)
 const SCROLL_STEP: f64 = 50.0;
@@ -38,7 +41,7 @@ impl ColumnCompositor {
             }
             InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
             InputEvent::PointerMotionAbsolute { event } => {
-                self.handle_pointer_motion_absolute(event)
+                self.handle_pointer_motion_absolute(event, terminals)
             }
             InputEvent::PointerButton { event } => self.handle_pointer_button(event, Some(terminals)),
             InputEvent::PointerAxis { event } => self.handle_pointer_axis(event),
@@ -162,17 +165,24 @@ impl ColumnCompositor {
                 }
             }
 
-            // Copy terminal content to clipboard
+            // Copy selected text to clipboard (or entire content if no selection)
             if self.pending_copy {
                 self.pending_copy = false;
                 if let Some(ref mut clipboard) = self.clipboard {
                     if let Some(terminal) = terminals.get_focused_mut() {
-                        let lines = terminal.terminal.grid_content();
-                        let text = lines.join("\n");
+                        // Prefer selection text, fall back to entire grid content
+                        let text = if let Some(selected) = terminal.terminal.selection_text() {
+                            tracing::info!(len = selected.len(), "copying selection to clipboard");
+                            selected
+                        } else {
+                            let lines = terminal.terminal.grid_content();
+                            let text = lines.join("\n");
+                            tracing::info!(len = text.len(), "copying entire terminal content to clipboard (no selection)");
+                            text
+                        };
+
                         if let Err(e) = clipboard.set_text(text.clone()) {
                             tracing::error!(?e, "failed to copy to clipboard");
-                        } else {
-                            tracing::info!(len = text.len(), "copied terminal content to clipboard");
                         }
                     }
                 }
@@ -374,6 +384,7 @@ impl ColumnCompositor {
     fn handle_pointer_motion_absolute<I: InputBackend>(
         &mut self,
         event: impl AbsolutePositionEvent<I>,
+        terminals: &mut TerminalManager,
     ) {
         let output_size = self.output_size;
 
@@ -390,6 +401,24 @@ impl ColumnCompositor {
             output_height = output_size.h,
             "pointer motion"
         );
+
+        // Update selection if we're in a drag operation
+        if let Some((term_id, cell_render_y, cell_height)) = self.selecting {
+            if let Some(managed) = terminals.get(term_id) {
+                // Convert render coords to terminal-local coords
+                let cell_render_end = cell_render_y as f64 + cell_height as f64;
+                let local_y = (cell_render_end - render_y).max(0.0);
+                let local_x = screen_x.max(0.0);
+
+                // Convert to grid coordinates
+                let (cell_width, cell_height_px) = managed.terminal.cell_size();
+                let col = (local_x / cell_width as f64) as usize;
+                let row = (local_y / cell_height_px as f64) as usize;
+
+                managed.terminal.update_selection(col, row);
+                tracing::trace!(col, row, "selection updated");
+            }
+        }
 
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
@@ -442,6 +471,17 @@ impl ColumnCompositor {
 
         let pointer = self.seat.get_pointer().unwrap();
 
+        // Handle left mouse button for selection
+        if button == BTN_LEFT {
+            if state == ButtonState::Released {
+                // End selection drag (selection remains for copying)
+                if self.selecting.is_some() {
+                    tracing::info!("selection drag ended");
+                    self.selecting = None;
+                }
+            }
+        }
+
         // Focus window on click
         if state == ButtonState::Pressed {
             // Pointer location from Smithay is in screen coordinates (Y=0 at top)
@@ -468,10 +508,10 @@ impl ColumnCompositor {
 
                 // Extract cell info before doing mutable operations
                 let cell_info = match &self.cells[index] {
-                    crate::state::ColumnCell::External(entry) => {
+                    ColumnCell::External(entry) => {
                         Some((true, Some(entry.toplevel.wl_surface().clone()), None))
                     }
-                    crate::state::ColumnCell::Terminal(id) => {
+                    ColumnCell::Terminal(id) => {
                         Some((false, None, Some(*id)))
                     }
                 };
@@ -497,6 +537,47 @@ impl ColumnCompositor {
 
                         if let Some(keyboard) = self.seat.get_keyboard() {
                             keyboard.set_focus(self, None, serial);
+                        }
+
+                        // Start selection on left button press
+                        if button == BTN_LEFT {
+                            if let Some(terminals) = &terminals {
+                                if let Some(managed) = terminals.get(id) {
+                                    // Calculate cell position for coordinate conversion
+                                    let (cell_render_y, cell_height) =
+                                        self.get_cell_render_position(index);
+
+                                    // Convert render coords to terminal-local coords
+                                    // Terminal has Y=0 at top, render has Y=0 at bottom
+                                    let cell_render_end = cell_render_y + cell_height as f64;
+                                    let local_y = cell_render_end - render_location.y;
+                                    let local_x = render_location.x;
+
+                                    // Convert to grid coordinates
+                                    let (cell_width, cell_height_px) = managed.terminal.cell_size();
+                                    let col = (local_x / cell_width as f64) as usize;
+                                    let row = (local_y / cell_height_px as f64) as usize;
+
+                                    tracing::info!(
+                                        col,
+                                        row,
+                                        local_x,
+                                        local_y,
+                                        "starting selection"
+                                    );
+
+                                    // Clear any previous selection and start new one
+                                    managed.terminal.clear_selection();
+                                    managed.terminal.start_selection(col, row);
+
+                                    // Store selection state for drag tracking
+                                    self.selecting = Some((
+                                        id,
+                                        cell_render_y as i32,
+                                        cell_height,
+                                    ));
+                                }
+                            }
                         }
 
                         if let Some(terminals) = terminals {
