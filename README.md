@@ -69,6 +69,7 @@ SMITHAY_BACKEND=udev cargo run --release
 | Key | Action |
 |-----|--------|
 | Super+Q | Quit compositor |
+| Super+T | Spawn new terminal |
 | Super+J | Focus next window |
 | Super+K | Focus previous window |
 | Super+Down | Scroll down |
@@ -77,6 +78,93 @@ SMITHAY_BACKEND=udev cargo run --release
 | Super+End | Scroll to bottom |
 | Page Up | Scroll up one page |
 | Page Down | Scroll down one page |
+
+## Shell Integration
+
+For the full column-compositor experience, add shell integration so commands automatically spawn in new terminals while TUI apps run in the current terminal at full height.
+
+### Installation
+
+First, ensure `column-term` is in your PATH:
+
+```bash
+cargo install --path crates/column-term
+# Or copy target/release/column-term to ~/.local/bin/
+```
+
+### Zsh
+
+Add to `~/.zshrc`:
+
+```zsh
+# Column-compositor shell integration
+if [[ -n "$COLUMN_COMPOSITOR_SOCKET" ]]; then
+    column-exec() {
+        local cmd="$BUFFER"
+        [[ -z "$cmd" ]] && return
+        BUFFER=""
+        column-term -c "$cmd"
+        local ret=$?
+        if [[ $ret -eq 2 ]]; then
+            # Shell builtin - run in current shell
+            eval "$cmd"
+        elif [[ $ret -eq 3 ]]; then
+            # TUI app - resize to full height, run, resize back
+            column-term --resize full
+            eval "$cmd"
+            column-term --resize content
+        fi
+        zle reset-prompt
+    }
+    zle -N accept-line column-exec
+fi
+```
+
+### Bash
+
+Add to `~/.bashrc`:
+
+```bash
+# Column-compositor shell integration
+if [[ -n "$COLUMN_COMPOSITOR_SOCKET" ]]; then
+    column_prompt_command() {
+        # Reset to content size after each command (in case a TUI app ran)
+        column-term --resize content 2>/dev/null
+    }
+    PROMPT_COMMAND="column_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+fi
+```
+
+Note: Full bash integration requires a custom readline wrapper. The above provides basic TUI resize support.
+
+### Fish
+
+Add to `~/.config/fish/config.fish`:
+
+```fish
+# Column-compositor shell integration
+if set -q COLUMN_COMPOSITOR_SOCKET
+    function column_postexec --on-event fish_postexec
+        column-term --resize content 2>/dev/null
+    end
+end
+```
+
+### Configuration
+
+Create `~/.config/column-compositor/config.toml` to configure TUI apps:
+
+```toml
+# Apps that should run in current terminal at full height
+tui_apps = ["vim", "nvim", "mc", "htop", "top", "fzf", "less", "man", "nano"]
+```
+
+### How It Works
+
+- **Regular commands** (`ls`, `git status`): Spawn in a new terminal above current
+- **Shell builtins** (`cd`, `export`): Run in current shell
+- **TUI apps** (`vim`, `mc`, `fzf`): Resize terminal to full height, run, resize back
+- **GUI apps**: Get an output terminal that appears when stderr is produced
 
 ## Testing
 
