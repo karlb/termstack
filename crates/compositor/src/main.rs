@@ -563,30 +563,42 @@ fn handle_external_window_events(compositor: &mut ColumnCompositor) {
     }
 }
 
-/// Calculate cell heights for input event processing.
+/// Calculate cell heights for layout.
 ///
-/// Uses cached heights from previous frame for existing cells, falls back
-/// to terminal.height for new cells.
+/// For terminals: hidden terminals always get 0 height; otherwise uses cached
+/// height if available, falls back to terminal.height for new cells.
+///
+/// For external windows: uses cached height if available, otherwise computes
+/// from window state (including title bar height for SSD windows).
 fn calculate_cell_heights(
     compositor: &ColumnCompositor,
     terminal_manager: &TerminalManager,
 ) -> Vec<i32> {
     compositor.cells.iter().enumerate().map(|(i, cell)| {
-        // Use cached height if available
-        if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-            if cached > 0 {
-                return cached;
-            }
-        }
-
-        // Fallback for new cells
         match cell {
-            ColumnCell::Terminal(id) => {
-                terminal_manager.get(*id)
-                    .map(|t| if t.hidden { 0 } else { t.height as i32 })
+            ColumnCell::Terminal(tid) => {
+                // Hidden terminals always get 0 height
+                if terminal_manager.get(*tid).map(|t| t.hidden).unwrap_or(false) {
+                    return 0;
+                }
+                // Use cached height if available
+                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                    if cached > 0 {
+                        return cached;
+                    }
+                }
+                // Fallback for new cells
+                terminal_manager.get(*tid)
+                    .map(|t| t.height as i32)
                     .unwrap_or(200)
             }
             ColumnCell::External(entry) => {
+                // Use cached height if available
+                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
+                    if cached > 0 {
+                        return cached;
+                    }
+                }
                 // Include title bar height for SSD windows only
                 let base_height = entry.state.current_height() as i32;
                 if entry.uses_csd {
@@ -657,8 +669,8 @@ fn handle_ipc_spawn_requests(
                 }
             }
 
-            // Update cached_cell_heights (hidden terminals get 0)
-            let new_heights = calculate_cell_heights_with_hidden(compositor, terminal_manager);
+            // Update cached_cell_heights
+            let new_heights = calculate_cell_heights(compositor, terminal_manager);
             compositor.update_cached_cell_heights(new_heights);
 
             // Scroll to show the new terminal
@@ -915,43 +927,6 @@ fn handle_ipc_resize_request(
     tracing::info!("resize ACK sent");
 }
 
-/// Calculate cell heights, with hidden terminals getting 0 height.
-fn calculate_cell_heights_with_hidden(
-    compositor: &ColumnCompositor,
-    terminal_manager: &TerminalManager,
-) -> Vec<i32> {
-    compositor.cells.iter().enumerate().map(|(i, cell)| {
-        match cell {
-            ColumnCell::Terminal(tid) => {
-                if terminal_manager.get(*tid).map(|t| t.hidden).unwrap_or(false) {
-                    return 0;
-                }
-                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-                    if cached > 0 {
-                        return cached;
-                    }
-                }
-                terminal_manager.get(*tid)
-                    .map(|t| t.height as i32)
-                    .unwrap_or(200)
-            }
-            ColumnCell::External(entry) => {
-                if let Some(&cached) = compositor.cached_cell_heights.get(i) {
-                    if cached > 0 {
-                        return cached;
-                    }
-                }
-                // Include title bar height for SSD windows only
-                let base_height = entry.state.current_height() as i32;
-                if entry.uses_csd {
-                    base_height
-                } else {
-                    base_height + TITLE_BAR_HEIGHT as i32
-                }
-            }
-        }
-    }).collect()
-}
 
 /// Promote output terminals that have content to standalone cells.
 ///
