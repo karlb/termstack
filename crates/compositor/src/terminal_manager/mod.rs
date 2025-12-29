@@ -83,6 +83,7 @@ impl ManagedTerminal {
     /// - `pty_rows`: Size reported to the PTY (program sees this many rows)
     /// - `visual_rows`: Initial visual size for display
     /// - `parent`: Parent terminal to unhide when this one exits
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_command(
         id: TerminalId,
         cols: u16,

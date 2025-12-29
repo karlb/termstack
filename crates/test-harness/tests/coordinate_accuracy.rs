@@ -367,7 +367,7 @@ fn click_detection_uses_same_heights_as_rendering() {
             let test_render_y = render_y as f64 + height as f64 * fraction;
 
             // Skip if off screen
-            if test_render_y < 0.0 || test_render_y >= 600.0 {
+            if !(0.0..600.0).contains(&test_render_y) {
                 continue;
             }
 

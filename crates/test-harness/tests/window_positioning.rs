@@ -292,6 +292,7 @@ fn five_windows_with_varied_heights() {
 }
 
 #[test]
+#[allow(clippy::needless_range_loop)]
 fn ten_small_windows() {
     let mut tc = TestCompositor::new_headless(fixtures::TEST_WIDTH, fixtures::TEST_HEIGHT);
 
@@ -1707,7 +1708,7 @@ fn fix_new_window_gets_bbox_existing_preserved() {
 #[test]
 fn bug_cached_heights_set_vs_insert_on_cell_insertion() {
     // Initial state: one tall terminal
-    let mut cached_heights = vec![1000]; // Terminal at index 0, height 1000
+    let cached_heights = vec![1000]; // Terminal at index 0, height 1000
 
     // External window inserted at index 0 (above terminal)
     // Terminal shifts to index 1
@@ -1787,7 +1788,7 @@ fn bug_wrong_scroll_with_set_instead_of_insert() {
 
     // Initial: tall terminal
     let terminal_height = 1000;
-    let mut cached_heights = vec![terminal_height];
+    let mut cached_heights = [terminal_height];
 
     // BUGGY: Use SET instead of INSERT
     let window_height = 200;
@@ -1905,8 +1906,8 @@ fn frame_loop_external_window_insertion_scroll() {
 #[test]
 fn frame_loop_height_recalculation_after_insert() {
     // Simulate state after INSERT but before height recalculation
-    let cached_cell_heights = vec![200, 1000];  // [window, terminal]
-    let cells = vec!["external", "terminal"];
+    let cached_cell_heights = [200, 1000];  // [window, terminal]
+    let cells = ["external", "terminal"];
 
     // Simulate main.rs height recalculation:
     // For each cell, use cached height if available
@@ -2039,7 +2040,7 @@ fn bug_external_window_resize_without_scroll_update() {
     // State after gnome-maps is added and initial scroll is set
     // cells: [command (1000), gnome-maps (200), parent (200)]
     // scroll = 680 to show parent bottom
-    let mut cached_cell_heights = vec![1000, 200, 200];
+    let mut cached_cell_heights = [1000, 200, 200];
     let focused_index = 2;  // Parent terminal
     let scroll_offset = 680.0;
 
@@ -2103,7 +2104,7 @@ fn fix_external_window_resize_updates_scroll() {
 
     // Initial state after gnome-maps added
     // cells: [command (1000), gnome-maps (200), parent (200)]
-    let mut cached_cell_heights = vec![1000, 200, 200];
+    let mut cached_cell_heights = [1000, 200, 200];
     let focused_index = 2;  // Parent terminal
     let mut scroll_offset = 680.0;
 

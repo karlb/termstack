@@ -447,7 +447,7 @@ mod tests {
 
         // The second PTY should report the correct size
         // stty size output format: "rows cols"
-        let parts: Vec<&str> = output2.trim().split_whitespace().collect();
+        let parts: Vec<&str> = output2.split_whitespace().collect();
         if parts.len() >= 2 {
             let rows: u16 = parts[0].parse().unwrap_or(0);
             let cols: u16 = parts[1].parse().unwrap_or(0);

@@ -473,13 +473,11 @@ impl ColumnCompositor {
         let pointer = self.seat.get_pointer().unwrap();
 
         // Handle left mouse button for selection
-        if button == BTN_LEFT {
-            if state == ButtonState::Released {
-                // End selection drag (selection remains for copying)
-                if self.selecting.is_some() {
-                    tracing::info!("selection drag ended");
-                    self.selecting = None;
-                }
+        if button == BTN_LEFT && state == ButtonState::Released {
+            // End selection drag (selection remains for copying)
+            if self.selecting.is_some() {
+                tracing::info!("selection drag ended");
+                self.selecting = None;
             }
         }
 

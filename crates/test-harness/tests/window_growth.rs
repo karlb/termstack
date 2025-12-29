@@ -904,7 +904,7 @@ fn shell_terminal_with_loop_output() {
     );
 
     // Verify render output has visible content
-    let (cell_width, cell_height) = terminal.cell_size();
+    let (cell_width, _cell_height) = terminal.cell_size();
     terminal.render(80 * cell_width, visual_height, true);
     let buffer = terminal.buffer();
     let bg_color = 0xFF1A1A1A_u32;

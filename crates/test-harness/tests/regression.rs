@@ -111,10 +111,10 @@ fn external_window_height_mismatch_scroll_adjustment() {
     // With scroll=0: render_y = 720 - 1220 - 51 = -551 (WAY off screen!)
 
     let t0_render_y = positions[2].0;
-    let screen_height = 720;
+    let _screen_height = 720;
 
     // T0 bottom should be visible (not negative)
-    let t0_bottom = t0_render_y + positions[2].1;
+    let _t0_bottom = t0_render_y + positions[2].1;
 
     // Before scroll adjustment, T0 is off screen
     // After scroll adjustment, T0's bottom should be at y >= 0

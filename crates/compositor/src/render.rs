@@ -275,6 +275,7 @@ pub fn heights_changed_significantly(
 }
 
 /// Render a terminal cell
+#[allow(clippy::too_many_arguments)]
 pub fn render_terminal(
     frame: &mut GlesFrame<'_, '_>,
     terminal_manager: &TerminalManager,
@@ -321,6 +322,7 @@ pub fn render_terminal(
 }
 
 /// Render an external window cell with title bar
+#[allow(clippy::too_many_arguments)]
 pub fn render_external(
     frame: &mut GlesFrame<'_, '_>,
     y: i32,
