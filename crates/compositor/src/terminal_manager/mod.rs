@@ -120,14 +120,14 @@ impl ManagedTerminal {
         let was_dirty = self.dirty;
         self.dirty = true;
         if !was_dirty {
-            tracing::info!(id = self.id.0, "terminal marked dirty");
+            tracing::trace!(id = self.id.0, "terminal marked dirty");
         }
         (actions, bytes_read)
     }
 
     /// Write input to the terminal
     pub fn write(&mut self, data: &[u8]) -> Result<(), terminal::state::TerminalError> {
-        tracing::info!(id = self.id.0, len = data.len(), "writing to terminal PTY");
+        tracing::trace!(id = self.id.0, len = data.len(), "writing to terminal PTY");
         self.terminal.write(data)
     }
 
@@ -208,7 +208,7 @@ impl ManagedTerminal {
             return self.texture.as_ref();
         }
 
-        tracing::info!(id = self.id.0, width = self.width, height = self.height, dirty = self.dirty, "re-rendering terminal");
+        tracing::trace!(id = self.id.0, width = self.width, height = self.height, dirty = self.dirty, "re-rendering terminal");
 
         // Render terminal to pixel buffer (hide cursor if process exited)
         self.terminal.render(self.width, self.height, !self.exited);
