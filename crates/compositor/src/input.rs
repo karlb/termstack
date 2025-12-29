@@ -8,6 +8,7 @@ use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
+use crate::coords::ScreenY;
 use crate::state::{ColumnCell, ColumnCompositor};
 use crate::terminal_manager::TerminalManager;
 
@@ -390,13 +391,13 @@ impl ColumnCompositor {
 
         // Input from Winit is in screen coordinates (Y=0 at top)
         let screen_x = event.x_transformed(output_size.w);
-        let screen_y = event.y_transformed(output_size.h);
+        let screen_y = ScreenY::new(event.y_transformed(output_size.h));
 
         // Convert to render coordinates (Y=0 at bottom) for hit detection
-        let render_y = output_size.h as f64 - screen_y;
+        let render_y = screen_y.to_render(output_size.h).value();
 
         tracing::trace!(
-            screen_y,
+            screen_y = screen_y.value(),
             render_y,
             output_height = output_size.h,
             "pointer motion"
@@ -429,15 +430,15 @@ impl ColumnCompositor {
 
         // Send SCREEN coordinates to clients via pointer.motion
         // Clients expect Y=0 at top, Y increasing downward
-        let screen_position = (screen_x, screen_y);
+        let screen_position = (screen_x, screen_y.value());
 
         // Debug: show what surface-local coords will be computed
         if let Some((_, surface_pos)) = &under {
             let local_x = screen_x - surface_pos.x;
-            let local_y = screen_y - surface_pos.y;
+            let local_y = screen_y.value() - surface_pos.y;
             tracing::debug!(
                 screen_x,
-                screen_y,
+                screen_y = screen_y.value(),
                 surface_x = surface_pos.x,
                 surface_y = surface_pos.y,
                 local_x,
@@ -487,10 +488,11 @@ impl ColumnCompositor {
             // Pointer location from Smithay is in screen coordinates (Y=0 at top)
             // because that's what we send to pointer.motion()
             let screen_location = pointer.current_location();
+            let screen_y = ScreenY::new(screen_location.y);
 
             // Convert to render coordinates (Y=0 at bottom) for hit detection
-            let render_y = self.output_size.h as f64 - screen_location.y;
-            let render_location: Point<f64, Logical> = Point::from((screen_location.x, render_y));
+            let render_y = screen_y.to_render(self.output_size.h);
+            let render_location: Point<f64, Logical> = Point::from((screen_location.x, render_y.value()));
 
             // Log detailed position info for debugging
             tracing::debug!(
