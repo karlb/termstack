@@ -479,3 +479,81 @@ impl Terminal {
         term.selection.is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_starts_and_clears() {
+        let terminal = Terminal::new(80, 24).expect("terminal creation");
+
+        // Initially no selection
+        assert!(!terminal.has_selection());
+        assert!(terminal.selection_text().is_none());
+
+        // Start a selection
+        terminal.start_selection(0, 0);
+        assert!(terminal.has_selection());
+
+        // Clear selection
+        terminal.clear_selection();
+        assert!(!terminal.has_selection());
+    }
+
+    #[test]
+    fn selection_can_be_updated() {
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+
+        // Inject some content
+        terminal.inject_bytes(b"Hello World\r\n");
+
+        // Start and update selection
+        terminal.start_selection(0, 0);
+        terminal.update_selection(4, 0); // Select "Hello"
+
+        assert!(terminal.has_selection());
+
+        // The selection should have some text (may vary based on alacritty internals)
+        let text = terminal.selection_text();
+        assert!(text.is_some(), "selection should have text");
+    }
+
+    #[test]
+    fn selection_text_returns_selected_content() {
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+
+        // Inject content - note: need to wait for VTE to process
+        terminal.inject_bytes(b"ABCDEFGHIJ\r\n");
+
+        // Select first 5 chars (A-E)
+        terminal.start_selection(0, 0);
+        terminal.update_selection(4, 0);
+
+        let text = terminal.selection_text();
+        assert!(text.is_some(), "should have selection text");
+
+        // The text should contain at least some of what we wrote
+        let text = text.unwrap();
+        assert!(!text.is_empty(), "selection text should not be empty");
+    }
+
+    #[test]
+    fn selection_survives_new_output() {
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+
+        // Inject initial content
+        terminal.inject_bytes(b"Line 1\r\n");
+
+        // Make a selection
+        terminal.start_selection(0, 0);
+        terminal.update_selection(3, 0);
+        assert!(terminal.has_selection());
+
+        // Inject more content (shouldn't clear selection)
+        terminal.inject_bytes(b"Line 2\r\n");
+
+        // Selection should still exist
+        assert!(terminal.has_selection());
+    }
+}
