@@ -8,17 +8,20 @@ use std::time::Duration;
 
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Color32F, Frame, ImportMem, Renderer, Texture};
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::{AsRenderElements, Element, RenderElement};
+use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
 use smithay::reexports::wayland_server::Display;
-use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
 use compositor::config::Config;
+use compositor::render::{
+    CellRenderData, prerender_terminals, prerender_title_bars,
+    collect_cell_data, build_render_data, log_frame_state,
+    heights_changed_significantly, render_terminal, render_external,
+};
 use compositor::state::{ClientState, ColumnCell, ColumnCompositor};
 use compositor::terminal_manager::{TerminalId, TerminalManager};
 use compositor::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
@@ -328,227 +331,60 @@ fn main() -> anyhow::Result<()> {
             let (renderer, mut framebuffer) = backend.bind()
                 .map_err(|e| anyhow::anyhow!("bind error: {e:?}"))?;
 
-            // Pre-render all terminal textures
-            let all_ids = terminal_manager.ids();
-            tracing::debug!(count = all_ids.len(), ids = ?all_ids.iter().map(|id| id.0).collect::<Vec<_>>(), "pre-rendering terminals");
-            for id in all_ids {
-                if let Some(terminal) = terminal_manager.get_mut(id) {
-                    tracing::debug!(id = id.0, dirty = terminal.is_dirty(), has_texture = terminal.get_texture().is_some(), "pre-render check");
-                    terminal.render(renderer);
-                }
-            }
-
-            // Pre-render title bar textures for external windows (only for SSD windows)
-            let mut title_bar_textures: Vec<Option<_>> = Vec::new();
-            for cell in compositor.cells.iter() {
-                if let ColumnCell::External(entry) = cell {
-                    // Skip title bar for CSD windows
-                    if entry.uses_csd {
-                        title_bar_textures.push(None);
-                    } else if let Some(ref mut tb_renderer) = title_bar_renderer {
-                        let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, physical_size.w as u32);
-                        let tex = renderer.import_memory(
-                            &pixels,
-                            smithay::backend::allocator::Fourcc::Argb8888,
-                            (tb_width as i32, tb_height as i32).into(),
-                            false,
-                        ).ok();
-                        title_bar_textures.push(tex);
-                    } else {
-                        title_bar_textures.push(None);
-                    }
-                } else {
-                    title_bar_textures.push(None);
-                }
-            }
-
-            // Pre-compute render data for all cells
             let scale = Scale::from(1.0);
 
-            // Build render data for each cell
-            #[allow(dead_code)]
-            enum CellRenderData<'a> {
-                Terminal {
-                    id: TerminalId,
-                    y: i32,
-                    height: i32,
-                },
-                External {
-                    y: i32,
-                    height: i32,
-                    elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
-                    title_bar_texture: Option<&'a smithay::backend::renderer::gles::GlesTexture>,
-                },
-                // Placeholder for terminals without textures
-                Empty { height: i32 },
-            }
+            // Pre-render all terminal textures
+            prerender_terminals(&mut terminal_manager, renderer);
 
-            // First pass: collect heights for ALL cells (not using cached heights which may be stale)
-            let mut actual_heights: Vec<i32> = Vec::new();
-            let mut external_elements: Vec<Vec<WaylandSurfaceRenderElement<GlesRenderer>>> = Vec::new();
+            // Pre-render title bar textures for external windows (SSD only)
+            let title_bar_textures = prerender_title_bars(
+                &compositor.cells,
+                &mut title_bar_renderer,
+                renderer,
+                physical_size.w,
+            );
 
-            for cell in compositor.cells.iter() {
-                // Get cached height if available, otherwise use default
-                let cached_height = compositor.cached_cell_heights.get(actual_heights.len())
-                    .copied()
-                    .unwrap_or(200);
+            // Collect actual heights and external window elements
+            let (actual_heights, mut external_elements) = collect_cell_data(
+                &compositor.cells,
+                &terminal_manager,
+                &compositor.cached_cell_heights,
+                renderer,
+                scale,
+            );
 
-                match cell {
-                    ColumnCell::Terminal(id) => {
-                        // Use texture size if available, otherwise terminal.height
-                        // (texture may not exist on first frame for new terminals)
-                        let height = terminal_manager.get(*id)
-                            .map(|t| {
-                                if t.hidden {
-                                    0
-                                } else if let Some(tex) = t.get_texture() {
-                                    tex.size().h
-                                } else {
-                                    // No texture yet - use terminal.height directly
-                                    // This is critical for TUI terminals on first frame
-                                    t.height as i32
-                                }
-                            })
-                            .unwrap_or(cached_height);
-                        actual_heights.push(height);
-                        external_elements.push(Vec::new());
-                    }
-                    ColumnCell::External(entry) => {
-                        let window = &entry.window;
-                        let location: Point<i32, Physical> = Point::from((0, 0));
-                        let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                            window.render_elements(renderer, location, scale, 1.0);
+            // Build render data with computed Y positions
+            let render_data = build_render_data(
+                &compositor.cells,
+                &actual_heights,
+                &mut external_elements,
+                &title_bar_textures,
+                compositor.scroll_offset,
+                physical_size.h,
+                &terminal_manager,
+            );
 
-                        let window_height = if elements.is_empty() {
-                            cached_height
-                        } else {
-                            elements.iter()
-                                .map(|e| {
-                                    let geo = e.geometry(scale);
-                                    geo.loc.y + geo.size.h
-                                })
-                                .max()
-                                .unwrap_or(cached_height)
-                        };
+            // Debug logging for external windows
+            log_frame_state(
+                &compositor.cells,
+                &compositor.cached_cell_heights,
+                &render_data,
+                &terminal_manager,
+                compositor.scroll_offset,
+                compositor.focused_index,
+                physical_size.h,
+            );
 
-                        // Add title bar height for SSD windows only
-                        let actual_height = if entry.uses_csd {
-                            window_height
-                        } else {
-                            window_height + TITLE_BAR_HEIGHT as i32
-                        };
-
-                        actual_heights.push(actual_height);
-                        external_elements.push(elements);
-                    }
-                }
-            }
-
-            // Second pass: compute Y positions
-            // OpenGL has y=0 at BOTTOM, but we want index 0 at TOP
-            // So we need to flip: render_y = screen_height - content_y - cell_height
-
-            let mut render_data: Vec<CellRenderData> = Vec::new();
-
-            // Calculate content Y positions (index 0 at content_y=0)
-            let mut content_y: i32 = -(compositor.scroll_offset as i32);
-
-            for (cell_idx, cell) in compositor.cells.iter().enumerate() {
-                let height = actual_heights[cell_idx];
-
-                // Flip Y for OpenGL: convert from top-down to bottom-up
-                let render_y = physical_size.h - content_y - height;
-
-                match cell {
-                    ColumnCell::Terminal(id) => {
-                        // Debug: log terminal render state
-                        if let Some(term) = terminal_manager.get(*id) {
-                            let has_texture = term.get_texture().is_some();
-                            tracing::debug!(
-                                id = id.0,
-                                hidden = term.hidden,
-                                height,
-                                render_y,
-                                has_texture,
-                                content_rows = term.content_rows(),
-                                "terminal render state"
-                            );
-                        }
-                        render_data.push(CellRenderData::Terminal {
-                            id: *id,
-                            y: render_y,
-                            height,
-                        });
-                    }
-                    ColumnCell::External(_entry) => {
-                        let elements = std::mem::take(&mut external_elements[cell_idx]);
-                        let title_bar_texture = title_bar_textures.get(cell_idx).and_then(|t| t.as_ref());
-                        render_data.push(CellRenderData::External {
-                            y: render_y,
-                            height,
-                            elements,
-                            title_bar_texture,
-                        });
-                    }
-                }
-
-                content_y += height;
-            }
-
-            // Debug: dump complete frame state when there are external windows
-            let has_external = compositor.cells.iter().any(|c| matches!(c, ColumnCell::External(_)));
-            if has_external {
-                let cell_info: Vec<String> = compositor.cells.iter().enumerate().map(|(i, cell)| {
-                    match cell {
-                        ColumnCell::Terminal(id) => {
-                            let hidden = terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false);
-                            format!("[{}]Term({})h={}{}", i, id.0,
-                                compositor.cached_cell_heights.get(i).unwrap_or(&0),
-                                if hidden { " HIDDEN" } else { "" })
-                        }
-                        ColumnCell::External(e) => {
-                            format!("[{}]Ext h={}", i, e.state.current_height())
-                        }
-                    }
-                }).collect();
-
-                let render_info: Vec<String> = render_data.iter().enumerate().map(|(i, data)| {
-                    match data {
-                        CellRenderData::Terminal { id, y, height } => format!("[{}]T{}@y={},h={}", i, id.0, y, height),
-                        CellRenderData::External { y, height, .. } => format!("[{}]E@y={},h={}", i, y, height),
-                        CellRenderData::Empty { height } => format!("[{}]empty h={}", i, height),
-                    }
-                }).collect();
-
-                tracing::info!(
-                    scroll = compositor.scroll_offset,
-                    focused = ?compositor.focused_index,
-                    screen_h = physical_size.h,
-                    cells = %cell_info.join(" "),
-                    render = %render_info.join(" "),
-                    "FRAME STATE"
-                );
-            }
-
-            // Update cached heights with actual heights for next frame's click detection
-            // BUT FIRST: check if any height changed significantly - if so, we need to re-scroll
-            let heights_changed = compositor.cached_cell_heights.iter()
-                .zip(actual_heights.iter())
-                .enumerate()
-                .any(|(i, (&cached, &actual))| {
-                    // Only care about cells BEFORE or AT focused index
-                    // (changes after focused cell don't affect its visibility)
-                    if let Some(focused) = compositor.focused_index {
-                        if i <= focused && actual != cached && (actual - cached).abs() > 10 {
-                            return true;
-                        }
-                    }
-                    false
-                });
+            // Check if heights changed significantly and update cache
+            let heights_changed = heights_changed_significantly(
+                &compositor.cached_cell_heights,
+                &actual_heights,
+                compositor.focused_index,
+            );
 
             compositor.update_cached_cell_heights(actual_heights);
 
-            // If heights changed, recalculate scroll to keep focused cell visible
+            // Adjust scroll if heights changed
             if heights_changed {
                 if let Some(focused_idx) = compositor.focused_index {
                     if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
@@ -561,99 +397,42 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Begin actual rendering
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;
 
-            // Clear with background color
             frame.clear(bg_color, &[damage])
                 .map_err(|e| anyhow::anyhow!("clear error: {e:?}"))?;
 
-            // Render all cells in order
+            // Render all cells
             for (cell_idx, data) in render_data.into_iter().enumerate() {
                 let is_focused = compositor.focused_index == Some(cell_idx);
 
                 match data {
                     CellRenderData::Terminal { id, y, height } => {
-                        if let Some(terminal) = terminal_manager.get(id) {
-                            // Skip hidden terminals entirely
-                            if terminal.hidden {
-                                continue;
-                            }
-                            if let Some(texture) = terminal.get_texture() {
-                                // Only render if visible
-                                if y + height > 0 && y < physical_size.h {
-                                    frame.render_texture_at(
-                                        texture,
-                                        Point::from((0, y)),
-                                        1,     // texture_scale
-                                        1.0,   // output_scale
-                                        Transform::Flipped180,
-                                        &[damage],
-                                        &[],
-                                        1.0,
-                                    ).ok();
-
-                                    // Draw focus indicator
-                                    if is_focused && y >= 0 {
-                                        let border_height = 2;
-                                        let focus_damage = Rectangle::new(
-                                            (0, y).into(),
-                                            (physical_size.w, border_height).into(),
-                                        );
-                                        frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
-                                    }
-                                }
-                            }
-                        }
+                        render_terminal(
+                            &mut frame,
+                            &terminal_manager,
+                            id,
+                            y,
+                            height,
+                            is_focused,
+                            physical_size,
+                            damage,
+                        );
                     }
                     CellRenderData::External { y, height, elements, title_bar_texture } => {
-                        // Title bar is at the top of the cell (higher Y in OpenGL coords)
-                        let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
-
-                        // Draw focus indicator at the top of the title bar
-                        if is_focused && title_bar_y >= 0 && title_bar_y < physical_size.h {
-                            let border_height = 2;
-                            let focus_damage = Rectangle::new(
-                                (0, title_bar_y + TITLE_BAR_HEIGHT as i32 - border_height).into(),
-                                (physical_size.w, border_height).into(),
-                            );
-                            frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
-                        }
-
-                        // Render title bar (pre-rendered texture, flipped for OpenGL coords)
-                        if let Some(tex) = title_bar_texture {
-                            frame.render_texture_at(
-                                tex,
-                                Point::from((0, title_bar_y)),
-                                1,     // texture_scale
-                                1.0,   // output_scale
-                                Transform::Flipped180,
-                                &[damage],
-                                &[],   // opaque_regions
-                                1.0,
-                            ).ok();
-                        }
-
-                        // Render external window elements (below title bar)
-                        for element in elements {
-                            let geo = element.geometry(scale);
-                            let src = element.src();
-
-                            let dest = Rectangle::new(
-                                Point::from((geo.loc.x, geo.loc.y + y)),
-                                geo.size,
-                            );
-
-                            let flipped_src = Rectangle::new(
-                                Point::from((src.loc.x, src.loc.y + src.size.h)),
-                                Size::from((src.size.w, -src.size.h)),
-                            );
-
-                            element.draw(&mut frame, flipped_src, dest, &[damage], &[]).ok();
-                        }
-                    }
-                    CellRenderData::Empty { .. } => {
-                        // Nothing to render
+                        render_external(
+                            &mut frame,
+                            y,
+                            height,
+                            elements,
+                            title_bar_texture,
+                            is_focused,
+                            physical_size,
+                            damage,
+                            scale,
+                        );
                     }
                 }
             }

@@ -7,6 +7,7 @@ pub mod coords;
 pub mod input;
 pub mod ipc;
 pub mod layout;
+pub mod render;
 pub mod state;
 pub mod terminal_manager;
 pub mod title_bar;
