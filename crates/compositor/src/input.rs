@@ -21,6 +21,33 @@ const SCROLL_STEP: f64 = 50.0;
 /// Scroll amount per scroll wheel tick (pixels)
 const SCROLL_WHEEL_MULTIPLIER: f64 = 15.0;
 
+/// Convert render coordinates to terminal grid coordinates (col, row)
+///
+/// - `render_x`, `render_y`: Position in render coordinates (Y=0 at bottom)
+/// - `cell_render_y`: The terminal cell's render Y position (bottom of cell)
+/// - `cell_height`: The terminal cell's height in pixels
+/// - `char_width`, `char_height`: Character cell dimensions from the font
+fn render_to_grid_coords(
+    render_x: f64,
+    render_y: f64,
+    cell_render_y: f64,
+    cell_height: f64,
+    char_width: u32,
+    char_height: u32,
+) -> (usize, usize) {
+    // Convert render coords to terminal-local coords
+    // Terminal has Y=0 at top, render has Y=0 at bottom
+    let cell_render_end = cell_render_y + cell_height;
+    let local_y = (cell_render_end - render_y).max(0.0);
+    let local_x = render_x.max(0.0);
+
+    // Convert to grid coordinates
+    let col = (local_x / char_width as f64) as usize;
+    let row = (local_y / char_height as f64) as usize;
+
+    (col, row)
+}
+
 impl ColumnCompositor {
     /// Process an input event with terminal support
     pub fn process_input_event_with_terminals<I: InputBackend>(
@@ -406,15 +433,15 @@ impl ColumnCompositor {
         // Update selection if we're in a drag operation
         if let Some((term_id, cell_render_y, cell_height)) = self.selecting {
             if let Some(managed) = terminals.get(term_id) {
-                // Convert render coords to terminal-local coords
-                let cell_render_end = cell_render_y as f64 + cell_height as f64;
-                let local_y = (cell_render_end - render_y).max(0.0);
-                let local_x = screen_x.max(0.0);
-
-                // Convert to grid coordinates
-                let (cell_width, cell_height_px) = managed.terminal.cell_size();
-                let col = (local_x / cell_width as f64) as usize;
-                let row = (local_y / cell_height_px as f64) as usize;
+                let (char_width, char_height) = managed.terminal.cell_size();
+                let (col, row) = render_to_grid_coords(
+                    screen_x,
+                    render_y,
+                    cell_render_y as f64,
+                    cell_height as f64,
+                    char_width,
+                    char_height,
+                );
 
                 managed.terminal.update_selection(col, row);
                 tracing::trace!(col, row, "selection updated");
@@ -547,24 +574,17 @@ impl ColumnCompositor {
                                     let (cell_render_y, cell_height) =
                                         self.get_cell_render_position(index);
 
-                                    // Convert render coords to terminal-local coords
-                                    // Terminal has Y=0 at top, render has Y=0 at bottom
-                                    let cell_render_end = cell_render_y + cell_height as f64;
-                                    let local_y = cell_render_end - render_location.y;
-                                    let local_x = render_location.x;
-
-                                    // Convert to grid coordinates
-                                    let (cell_width, cell_height_px) = managed.terminal.cell_size();
-                                    let col = (local_x / cell_width as f64) as usize;
-                                    let row = (local_y / cell_height_px as f64) as usize;
-
-                                    tracing::info!(
-                                        col,
-                                        row,
-                                        local_x,
-                                        local_y,
-                                        "starting selection"
+                                    let (char_width, char_height) = managed.terminal.cell_size();
+                                    let (col, row) = render_to_grid_coords(
+                                        render_location.x,
+                                        render_location.y,
+                                        cell_render_y,
+                                        cell_height as f64,
+                                        char_width,
+                                        char_height,
                                     );
+
+                                    tracing::info!(col, row, "starting selection");
 
                                     // Clear any previous selection and start new one
                                     managed.terminal.clear_selection();
