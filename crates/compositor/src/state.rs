@@ -120,6 +120,15 @@ pub struct ColumnCompositor {
     /// Output terminals from closed windows that need cleanup
     /// Processed in main loop - if terminal has no content, remove it; otherwise keep visible
     pub pending_output_terminal_cleanup: Vec<TerminalId>,
+
+    /// Host clipboard access (None if unavailable)
+    pub clipboard: Option<arboard::Clipboard>,
+
+    /// Pending paste request (set by keybinding, handled in input loop)
+    pub pending_paste: bool,
+
+    /// Pending copy request (set by keybinding, handled in input loop)
+    pub pending_copy: bool,
 }
 
 /// A window entry in our column
@@ -234,6 +243,9 @@ impl ColumnCompositor {
             pending_window_output_terminal: None,
             pending_window_command: None,
             pending_output_terminal_cleanup: Vec::new(),
+            clipboard: arboard::Clipboard::new().ok(),
+            pending_paste: false,
+            pending_copy: false,
         };
 
         (compositor, display)

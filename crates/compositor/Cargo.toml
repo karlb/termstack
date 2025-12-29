@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 rustix.workspace = true
 fontdue.workspace = true
+arboard.workspace = true
 
 terminal = { path = "../terminal" }
 

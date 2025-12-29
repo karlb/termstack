@@ -56,6 +56,9 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Clipboard
+arboard = "3.4"
+
 # Testing
 proptest = "1"
 

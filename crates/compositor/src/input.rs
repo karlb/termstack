@@ -121,10 +121,11 @@ impl ColumnCompositor {
 
         tracing::info!(?result, "keyboard.input result");
 
-        // Forward to focused terminal if we got bytes
-        if let Some((handled, Some(bytes))) = result {
-            if !handled {
-                if let Some(terminals) = terminals {
+        // Handle keyboard input and clipboard operations (requires terminal access)
+        if let Some(terminals) = terminals {
+            // Forward to focused terminal if we got bytes
+            if let Some((handled, Some(bytes))) = result {
+                if !handled {
                     let focused_id = terminals.focused;
                     let term_count = terminals.count();
                     tracing::info!(focused = ?focused_id, term_count, ?bytes, "forwarding input to terminal");
@@ -136,6 +137,43 @@ impl ColumnCompositor {
                         }
                     } else {
                         tracing::warn!("no focused terminal to write to");
+                    }
+                }
+            }
+
+            // Paste from clipboard
+            if self.pending_paste {
+                self.pending_paste = false;
+                if let Some(ref mut clipboard) = self.clipboard {
+                    match clipboard.get_text() {
+                        Ok(text) => {
+                            if let Some(terminal) = terminals.get_focused_mut() {
+                                if let Err(e) = terminal.write(text.as_bytes()) {
+                                    tracing::error!(?e, "failed to paste to terminal");
+                                } else {
+                                    tracing::info!(len = text.len(), "pasted text to terminal");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(?e, "failed to get clipboard text");
+                        }
+                    }
+                }
+            }
+
+            // Copy terminal content to clipboard
+            if self.pending_copy {
+                self.pending_copy = false;
+                if let Some(ref mut clipboard) = self.clipboard {
+                    if let Some(terminal) = terminals.get_focused_mut() {
+                        let lines = terminal.terminal.grid_content();
+                        let text = lines.join("\n");
+                        if let Err(e) = clipboard.set_text(text.clone()) {
+                            tracing::error!(?e, "failed to copy to clipboard");
+                        } else {
+                            tracing::info!(len = text.len(), "copied terminal content to clipboard");
+                        }
                     }
                 }
             }
@@ -203,6 +241,17 @@ impl ColumnCompositor {
                 }
                 Keysym::Page_Up => {
                     self.scroll_requested = -SCROLL_STEP * 10.0;
+                    return true;
+                }
+                // Clipboard: Ctrl+Shift+V (paste) / Ctrl+Shift+C (copy)
+                Keysym::v | Keysym::V => {
+                    tracing::info!("paste from clipboard requested");
+                    self.pending_paste = true;
+                    return true;
+                }
+                Keysym::c | Keysym::C => {
+                    tracing::info!("copy to clipboard requested");
+                    self.pending_copy = true;
                     return true;
                 }
                 _ => {}
