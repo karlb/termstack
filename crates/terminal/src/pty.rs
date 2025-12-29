@@ -321,7 +321,34 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // Kill child process if still running
+        if self.exited {
+            return;
+        }
+
+        let pid = self.child.id() as i32;
+
+        // Try to terminate gracefully with SIGHUP (hangup)
+        // This allows shells to save history
+        unsafe {
+            libc::kill(pid, libc::SIGHUP);
+        }
+
+        // Wait a bit for the process to exit
+        let start = std::time::Instant::now();
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return, // Exited
+                Ok(None) => {
+                    if start.elapsed() > std::time::Duration::from_millis(500) {
+                        break; // Timeout
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(_) => break, // Error waiting
+            }
+        }
+
+        // Force kill if still running
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
