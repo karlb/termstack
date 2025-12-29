@@ -29,38 +29,43 @@
 //!
 //! # Shell Integration
 //!
+//! Scripts are available in the `scripts/` directory of the repository.
+//!
 //! ## Zsh
 //!
-//! Add to your `~/.zshrc` to make ALL commands go through column-term:
+//! Add to your `~/.zshrc` (or source `scripts/integration.zsh`):
 //! ```zsh
-//! column-exec() {
-//!     local cmd="$BUFFER"
-//!     [[ -z "$cmd" ]] && return
-//!     
-//!     # Save to history
-//!     print -s "$cmd"
-//!     
-//!     BUFFER=""
-//!     column-term -c "$cmd"
-//!     local ret=$?
-//!     
-//!     if [[ $ret -eq 2 ]]; then
-//!         # Shell builtin - run in current shell
-//!         eval "$cmd"
-//!     elif [[ $ret -eq 3 ]]; then
-//!         # TUI app - resize to full height, run, resize back
-//!         column-term --resize full
-//!         eval "$cmd"
-//!         column-term --resize content
-//!     fi
-//!     zle reset-prompt
-//! }
-//! zle -N accept-line column-exec
+//! # Only enable column-term integration inside column-compositor
+//! if [[ -n "$COLUMN_COMPOSITOR_SOCKET" ]]; then
+//!     column-exec() {
+//!         local cmd="$BUFFER"
+//!         [[ -z "$cmd" ]] && return
+//!         
+//!         # Save to history
+//!         print -s "$cmd"
+//!         
+//!         BUFFER=""
+//!         column-term -c "$cmd"
+//!         local ret=$?
+//!         
+//!         if [[ $ret -eq 2 ]]; then
+//!             # Shell builtin - run in current shell
+//!             eval "$cmd"
+//!         elif [[ $ret -eq 3 ]]; then
+//!             # TUI app - resize to full height, run, resize back
+//!             column-term --resize full
+//!             eval "$cmd"
+//!             column-term --resize content
+//!         fi
+//!         zle reset-prompt
+//!     }
+//!     zle -N accept-line column-exec
+//! fi
 //! ```
 //!
 //! ## Fish
 //!
-//! Add to your `~/.config/fish/config.fish` (or `conf.d/column-term.fish`):
+//! Add to your `~/.config/fish/config.fish` (or source `scripts/integration.fish`):
 //! ```fish
 //! # Only enable column-term integration inside column-compositor
 //! if set -q COLUMN_COMPOSITOR_SOCKET
