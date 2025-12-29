@@ -370,17 +370,13 @@ impl ColumnCompositor {
 
                 // Super+Home: Scroll to top
                 Keysym::Home => {
-                    self.scroll_offset = 0.0;
-                    self.recalculate_layout();
+                    self.scroll_to_top();
                     return true;
                 }
 
                 // Super+End: Scroll to bottom
                 Keysym::End => {
-                    let max_scroll =
-                        (self.layout.total_height as f64 - self.output_size.h as f64).max(0.0);
-                    self.scroll_offset = max_scroll;
-                    self.recalculate_layout();
+                    self.scroll_to_bottom();
                     return true;
                 }
 

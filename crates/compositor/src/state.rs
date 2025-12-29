@@ -542,12 +542,28 @@ impl ColumnCompositor {
         }
     }
 
-    /// Scroll by a delta
-    pub fn scroll(&mut self, delta: f64) {
-        // Total content height from all cells
+    /// Calculate maximum scroll offset based on content height
+    fn max_scroll(&self) -> f64 {
         let total_height: i32 = self.cached_cell_heights.iter().sum();
-        let max_scroll = (total_height as f64 - self.output_size.h as f64).max(0.0);
+        (total_height as f64 - self.output_size.h as f64).max(0.0)
+    }
+
+    /// Scroll by a delta (clamped to valid range)
+    pub fn scroll(&mut self, delta: f64) {
+        let max_scroll = self.max_scroll();
         self.scroll_offset = (self.scroll_offset + delta).clamp(0.0, max_scroll);
+        self.recalculate_layout();
+    }
+
+    /// Scroll to the top (scroll_offset = 0)
+    pub fn scroll_to_top(&mut self) {
+        self.scroll_offset = 0.0;
+        self.recalculate_layout();
+    }
+
+    /// Scroll to the bottom (scroll_offset = max)
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = self.max_scroll();
         self.recalculate_layout();
     }
 
