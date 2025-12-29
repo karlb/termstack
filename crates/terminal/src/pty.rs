@@ -102,9 +102,12 @@ impl Pty {
             return Err(PtyError::Open(std::io::Error::last_os_error()));
         }
 
-        // Spawn shell - each Stdio now owns a unique fd
+        // Spawn shell as login shell (-l) so it loads rc files (history setup, etc.)
+        // Also set TERM so shell knows it's in a terminal
         let child = unsafe {
             Command::new(shell)
+                .arg("-l")
+                .env("TERM", "xterm-256color")
                 .stdin(Stdio::from_raw_fd(slave_fd))
                 .stdout(Stdio::from_raw_fd(slave_fd_out))
                 .stderr(Stdio::from_raw_fd(slave_fd_err))
