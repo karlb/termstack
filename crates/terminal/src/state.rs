@@ -98,8 +98,13 @@ pub struct Terminal {
     /// Columns
     cols: u16,
 
-    /// Rows
-    rows: u16,
+    /// Grid rows (internal alacritty grid size, stays large)
+    /// Note: This field is stored for documentation/debugging but not read;
+    /// actual grid size is queried via grid_rows() which calls term.screen_lines()
+    _grid_rows: u16,
+
+    /// PTY rows (what programs see via tcgetwinsize)
+    pty_rows: u16,
 }
 
 impl Terminal {
@@ -146,7 +151,8 @@ impl Terminal {
             renderer,
             events: receiver,
             cols,
-            rows: pty_rows,
+            _grid_rows: pty_rows,
+            pty_rows,
         })
     }
 
@@ -203,7 +209,8 @@ impl Terminal {
             renderer,
             events: receiver,
             cols,
-            rows: pty_rows,
+            _grid_rows: pty_rows,
+            pty_rows,
         })
     }
 
@@ -328,7 +335,8 @@ impl Terminal {
             // Only resize PTY - programs see the new size for cursor positioning
             // Do NOT resize the grid - it stays large to hold all content
             let _ = self.pty.resize(self.cols, rows);
-            // Note: self.rows stays at pty_rows (1000) for the grid size
+            // Track the actual PTY size (what programs see)
+            self.pty_rows = rows;
         }
 
         action
@@ -360,9 +368,9 @@ impl Terminal {
         self.renderer.cell_size()
     }
 
-    /// Get current dimensions
+    /// Get current PTY dimensions (what programs see via tcgetwinsize)
     pub fn dimensions(&self) -> (u16, u16) {
-        (self.cols, self.rows)
+        (self.cols, self.pty_rows)
     }
 
     /// Get actual grid rows from alacritty terminal

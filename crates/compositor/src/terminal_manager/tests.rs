@@ -458,10 +458,9 @@
     }
 
     #[test]
-    fn resize_actually_changes_alacritty_grid_size() {
-        // BUG REPRODUCTION: After resize, does the alacritty terminal grid
-        // actually have the new dimensions? If not, TUI apps will draw
-        // to wrong locations.
+    fn resize_actually_changes_pty_size() {
+        // Verify that resize changes the PTY size (what programs see via tcgetwinsize).
+        // The internal alacritty grid stays at 1000 rows to prevent scrollback loss.
 
         let output_width = 800;
         let output_height = 720;
@@ -475,16 +474,16 @@
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
 
-        // Get initial grid dimensions from alacritty term
-        let initial_grid_rows = {
+        // Get initial PTY dimensions
+        let initial_pty_rows = {
             let terminal = manager.get(id).unwrap();
-            terminal.terminal.grid_rows()
+            terminal.terminal.dimensions().1
         };
 
-        eprintln!("BEFORE resize: grid_rows={}", initial_grid_rows);
+        eprintln!("BEFORE resize: pty_rows={}", initial_pty_rows);
 
-        // Non-TUI terminals have PTY with 1000 rows, but alacritty grid should match
-        // Wait - what IS the initial grid size for non-TUI?
+        // Non-TUI terminals start with 1000 PTY rows (no scrolling)
+        assert_eq!(initial_pty_rows, 1000, "non-TUI PTY starts at 1000");
 
         // Now resize to full height
         {
@@ -492,20 +491,27 @@
             terminal.resize(max_rows, cell_height);
         }
 
-        // Get grid dimensions AFTER resize
-        let after_grid_rows = {
+        // Get PTY dimensions AFTER resize
+        let after_pty_rows = {
+            let terminal = manager.get(id).unwrap();
+            terminal.terminal.dimensions().1
+        };
+
+        eprintln!("AFTER resize: pty_rows={}, expected max_rows={}", after_pty_rows, max_rows);
+
+        // The PTY should now report max_rows (what TUI apps will see)
+        assert_eq!(
+            after_pty_rows, max_rows,
+            "AFTER resize: PTY rows should be {}, but was {}",
+            max_rows, after_pty_rows
+        );
+
+        // Grid intentionally stays at 1000 to hold all content
+        let grid_rows = {
             let terminal = manager.get(id).unwrap();
             terminal.terminal.grid_rows()
         };
-
-        eprintln!("AFTER resize: grid_rows={}, expected max_rows={}", after_grid_rows, max_rows);
-
-        // The alacritty grid should now have max_rows
-        assert_eq!(
-            after_grid_rows, max_rows,
-            "AFTER resize: alacritty grid rows should be {}, but was {}",
-            max_rows, after_grid_rows
-        );
+        assert_eq!(grid_rows, 1000, "grid stays at 1000 rows");
     }
 
     #[test]
@@ -747,9 +753,10 @@
             eprintln!("  grid rows = {}", grid_rows);
             eprintln!("  terminal.height = {}", terminal.height);
 
-            // Everything should be at max_rows
+            // PTY should be at max_rows (what programs see)
             assert_eq!(pty_rows, max_rows, "PTY rows should be max_rows");
-            assert_eq!(grid_rows, max_rows, "Grid rows should be max_rows");
+            // Grid stays at 1000 to hold all content
+            assert_eq!(grid_rows, 1000, "Grid rows stay at 1000");
             assert!(sizing_state.is_stable(), "State should be Stable after resize");
         }
     }
@@ -992,14 +999,15 @@
         eprintln!("  Visual height: {}", after_height);
         eprintln!("  Dirty: {}", after_dirty);
 
-        // All these should be updated BEFORE ACK is sent
+        // PTY and visual height should be updated BEFORE ACK is sent
         assert_eq!(
             after_pty_rows, max_rows,
             "PTY rows should be max_rows BEFORE ACK"
         );
+        // Grid stays at 1000 (intentional design - holds all content)
         assert_eq!(
-            after_grid_rows, max_rows,
-            "Grid rows should be max_rows BEFORE ACK"
+            after_grid_rows, 1000,
+            "Grid rows stay at 1000"
         );
         assert_eq!(
             after_height, max_rows as u32 * cell_height,
@@ -1110,7 +1118,8 @@
             eprintln!("  height: {}", terminal.height);
 
             assert_eq!(pty_rows, max_rows, "PTY should report max_rows");
-            assert_eq!(grid_rows, max_rows, "Grid should have max_rows");
+            // Grid stays at 1000 to hold all content without scrolling
+            assert_eq!(grid_rows, 1000, "Grid stays at 1000");
         }
 
         // Step 2: Simulate what mc does when it starts:
@@ -1153,8 +1162,8 @@
         // Terminal should be dirty (needs re-render)
         assert!(is_dirty, "Terminal should be dirty after TUI output");
 
-        // Grid should still be at max_rows
-        assert_eq!(grid_rows, max_rows, "Grid rows should still be max_rows");
+        // Grid stays at 1000 by design (holds all content without scrolling)
+        assert_eq!(grid_rows, 1000, "Grid rows stay at 1000");
 
         // PTY should still report max_rows
         assert_eq!(pty_rows, max_rows, "PTY rows should still be max_rows");
@@ -1255,12 +1264,12 @@
             max_rows, pty_rows
         );
 
-        // 3. Grid rows
+        // 3. Grid rows (stays at 1000 by design to hold all content)
         let grid_rows = terminal.terminal.grid_rows();
         assert_eq!(
-            grid_rows, max_rows,
-            "Grid rows should be {} after resize, was {}",
-            max_rows, grid_rows
+            grid_rows, 1000,
+            "Grid rows should stay at 1000, was {}",
+            grid_rows
         );
 
         // 4. Dirty flag
@@ -1472,7 +1481,8 @@
             eprintln!("  grid_rows: {}", grid_rows);
             eprintln!("  sizing_state.current_rows: {}", sizing_rows);
 
-            // All should equal max_rows
+            // Visual, PTY, and sizing should equal max_rows
+            // Grid stays at 1000 by design (holds all content without scrolling)
             assert_eq!(
                 visual_rows, max_rows as u32,
                 "Visual rows should equal max_rows after resize"
@@ -1482,8 +1492,8 @@
                 "PTY rows should equal max_rows after resize"
             );
             assert_eq!(
-                grid_rows, max_rows,
-                "Grid rows should equal max_rows after resize"
+                grid_rows, 1000,
+                "Grid rows stay at 1000"
             );
             assert_eq!(
                 sizing_rows, max_rows,
@@ -1512,7 +1522,8 @@
             eprintln!("  grid_rows: {}", grid_rows);
             eprintln!("  sizing_state.current_rows: {}", sizing_rows);
 
-            // All should equal content_rows
+            // Visual, PTY, and sizing should equal content_rows
+            // Grid stays at 1000 by design (holds all content without scrolling)
             assert_eq!(
                 visual_rows, content_rows as u32,
                 "Visual rows should equal content_rows after shrink"
@@ -1522,8 +1533,8 @@
                 "PTY rows should equal content_rows after shrink"
             );
             assert_eq!(
-                grid_rows, content_rows,
-                "Grid rows should equal content_rows after shrink"
+                grid_rows, 1000,
+                "Grid rows stay at 1000"
             );
             assert_eq!(
                 sizing_rows, content_rows,
