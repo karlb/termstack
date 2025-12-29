@@ -5,9 +5,13 @@
 use std::collections::HashMap;
 
 use alacritty_terminal::event::EventListener;
+use alacritty_terminal::index::Point;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
+
+/// Selection highlight color (blue tint)
+const SELECTION_BG: u32 = 0xFF264F78;
 
 /// Font configuration
 pub struct FontConfig {
@@ -164,6 +168,9 @@ impl TerminalRenderer {
 
         let content = term.renderable_content();
 
+        // Get selection range for highlighting
+        let selection = content.selection.as_ref();
+
         // Render each cell
         for cell in content.display_iter {
             let col = cell.point.column.0 as u32;
@@ -176,7 +183,12 @@ impl TerminalRenderer {
                 continue;
             }
 
-            self.render_cell(x, y, cell.cell);
+            // Check if this cell is selected
+            let is_selected = selection
+                .map(|sel| sel.contains(Point::new(cell.point.line, cell.point.column)))
+                .unwrap_or(false);
+
+            self.render_cell(x, y, cell.cell, is_selected);
         }
 
         // Render cursor (only if process is running)
@@ -191,9 +203,13 @@ impl TerminalRenderer {
         }
     }
 
-    fn render_cell(&mut self, x: u32, y: u32, cell: &alacritty_terminal::term::cell::Cell) {
-        // Background
-        let bg = self.color_to_argb(&cell.bg);
+    fn render_cell(&mut self, x: u32, y: u32, cell: &alacritty_terminal::term::cell::Cell, is_selected: bool) {
+        // Background - use selection color if selected, otherwise cell's background
+        let bg = if is_selected {
+            SELECTION_BG
+        } else {
+            self.color_to_argb(&cell.bg)
+        };
         self.fill_rect(x, y, self.cell_width, self.cell_height, bg);
 
         // Don't render space characters
@@ -205,8 +221,12 @@ impl TerminalRenderer {
         // Debug: log all rendered characters
         tracing::trace!("Rendering char: {:?} (U+{:04X}) at ({}, {})", c, c as u32, x, y);
 
-        // Foreground (glyph)
-        let fg = self.color_to_argb(&cell.fg);
+        // Foreground (glyph) - use white text on selection for better contrast
+        let fg = if is_selected {
+            0xFFFFFFFF // White text on selection
+        } else {
+            self.color_to_argb(&cell.fg)
+        };
         self.draw_glyph(x, y, c, fg, cell.flags);
     }
 
