@@ -775,26 +775,48 @@ impl XdgDecorationHandler for ColumnCompositor {
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        // Client requested a specific decoration mode
-        // Update the window's uses_csd flag based on client preference
+        // Get app_id to check if this app respects SSD
+        let app_id = with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .and_then(|attrs| attrs.app_id.clone())
+        });
+
+        // Apps known to ignore SSD preference and always draw their own decorations
+        let csd_stubborn = app_id.as_ref().map(|id| {
+            id.starts_with("org.gnome.") ||  // GTK/GNOME apps with header bars
+            id.starts_with("org.gtk.") ||
+            id == "org.pwmt.zathura" ||      // zathura
+            id == "zathura"
+        }).unwrap_or(false);
+
         let surface = toplevel.wl_surface();
         for cell in &mut self.cells {
             if let ColumnCell::External(entry) = cell {
                 if entry.toplevel.wl_surface() == surface {
-                    entry.uses_csd = mode == DecorationMode::ClientSide;
+                    entry.uses_csd = csd_stubborn;
                     tracing::info!(
+                        requested = ?mode,
+                        app_id = ?app_id,
                         uses_csd = entry.uses_csd,
                         command = %entry.command,
-                        "decoration mode set"
+                        "decoration mode negotiated"
                     );
                     break;
                 }
             }
         }
 
-        // Acknowledge the client's preference
+        // Tell stubborn apps to use CSD, others to use SSD
+        let response_mode = if csd_stubborn {
+            DecorationMode::ClientSide
+        } else {
+            DecorationMode::ServerSide
+        };
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(mode);
+            state.decoration_mode = Some(response_mode);
         });
         toplevel.send_configure();
     }
