@@ -74,6 +74,14 @@ Cell index 0 appears at TOP of screen (highest render Y).
 
 **Important**: Click detection and rendering must use identical heights. Heights are cached from the previous frame's actual rendered heights (element geometry), NOT from `bbox()` which can differ.
 
+### Terminal Grid vs PTY Size
+
+The terminal has two row counts that must not be confused:
+- **Grid rows** (`grid_rows()`): Always 1000, internal alacritty storage for content
+- **PTY rows** (`dimensions()`): Actual size reported to programs, changes on resize
+
+The grid stays large to hold all content without scrolling. Only PTY size changes when the terminal is resized. TUI apps query PTY size via `tcgetwinsize`.
+
 ### Key Bindings
 
 - Super+T or Ctrl+Shift+T: Spawn terminal
