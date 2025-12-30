@@ -11,6 +11,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use crate::coords::ScreenY;
 use crate::state::{ColumnCell, ColumnCompositor};
 use crate::terminal_manager::TerminalManager;
+use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
 use crate::terminal_manager::TerminalId;
 
@@ -577,18 +578,57 @@ impl ColumnCompositor {
                 // Clicked on a cell - focus it
                 self.focused_index = Some(index);
 
+                // Calculate cell's render position for close button detection
+                let cell_render_top = {
+                    let screen_height = self.output_size.h as f64;
+                    let mut content_y = -self.scroll_offset;
+                    for node in self.layout_nodes.iter().take(index) {
+                        content_y += node.height as f64;
+                    }
+                    // render_y is bottom of cell, render_top is top
+                    screen_height - content_y
+                };
+
                 // Extract cell info before doing mutable operations
                 let cell_info = match &self.layout_nodes[index].cell {
                     ColumnCell::External(entry) => {
-                        Some((true, Some(entry.toplevel.wl_surface().clone()), None))
+                        Some((
+                            true,
+                            Some(entry.toplevel.wl_surface().clone()),
+                            None,
+                            !entry.uses_csd, // has_ssd
+                            Some(entry.toplevel.clone()),
+                        ))
                     }
                     ColumnCell::Terminal(id) => {
-                        Some((false, None, Some(*id)))
+                        Some((false, None, Some(*id), false, None))
                     }
                 };
 
-                if let Some((is_external, surface, terminal_id)) = cell_info {
+                if let Some((is_external, surface, terminal_id, has_ssd, toplevel)) = cell_info {
                     if is_external {
+                        // Check if click is on close button in title bar
+                        let on_close_button = if has_ssd && button == BTN_LEFT {
+                            let title_bar_top = cell_render_top;
+                            let title_bar_bottom = title_bar_top - TITLE_BAR_HEIGHT as f64;
+                            let in_title_bar = render_location.y <= title_bar_top
+                                && render_location.y > title_bar_bottom;
+                            let close_btn_left =
+                                (self.output_size.w - CLOSE_BUTTON_WIDTH as i32) as f64;
+                            let in_close_btn = render_location.x >= close_btn_left;
+                            in_title_bar && in_close_btn
+                        } else {
+                            false
+                        };
+
+                        if on_close_button {
+                            if let Some(tl) = toplevel {
+                                tracing::info!(index, "close button clicked, sending close");
+                                tl.send_close();
+                                return; // Don't process further
+                            }
+                        }
+
                         tracing::info!(
                             index,
                             render_y = render_location.y,

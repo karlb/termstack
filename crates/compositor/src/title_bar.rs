@@ -7,6 +7,9 @@ use std::collections::HashMap;
 /// Title bar height in pixels
 pub const TITLE_BAR_HEIGHT: u32 = 24;
 
+/// Close button width in pixels (square button)
+pub const CLOSE_BUTTON_WIDTH: u32 = 24;
+
 /// Title bar renderer
 pub struct TitleBarRenderer {
     /// Font for rendering
@@ -152,13 +155,97 @@ impl TitleBarRenderer {
 
             x_pos += glyph.advance;
 
-            // Stop if we're past the visible area
-            if x_pos >= (width - padding) as f32 {
+            // Stop if we're past the visible area (leave room for close button)
+            if x_pos >= (width - padding - CLOSE_BUTTON_WIDTH) as f32 {
                 break;
             }
         }
 
+        // Draw close button on the right side
+        self.render_close_button(&mut buffer, width, height);
+
         (buffer, width, height)
+    }
+
+    /// Render the close button (red background with white X)
+    fn render_close_button(&mut self, buffer: &mut [u8], width: u32, height: u32) {
+        let btn_x = width - CLOSE_BUTTON_WIDTH;
+        let btn_width = CLOSE_BUTTON_WIDTH;
+        let btn_height = height;
+
+        // Button background (slightly lighter gray: #444444)
+        let btn_bg_r = 0x44u8;
+        let btn_bg_g = 0x44u8;
+        let btn_bg_b = 0x44u8;
+
+        for y in 0..btn_height {
+            for x in 0..btn_width {
+                let px = btn_x + x;
+                let idx = ((y * width + px) * 4) as usize;
+                if idx + 3 < buffer.len() {
+                    buffer[idx] = btn_bg_b;     // B
+                    buffer[idx + 1] = btn_bg_g; // G
+                    buffer[idx + 2] = btn_bg_r; // R
+                    buffer[idx + 3] = 0xFF;     // A
+                }
+            }
+        }
+
+        // Draw "×" character centered in button
+        let close_char = '×';
+        let glyph = self.glyph_cache.entry(close_char).or_insert_with(|| {
+            let (metrics, bitmap) = self.font.rasterize(close_char, self.font_size);
+            GlyphData {
+                bitmap,
+                width: metrics.width as u32,
+                height: metrics.height as u32,
+                x_offset: metrics.xmin,
+                y_offset: metrics.ymin,
+                advance: metrics.advance_width,
+            }
+        });
+
+        // Center the glyph in the button
+        let glyph_x = btn_x + (btn_width.saturating_sub(glyph.width)) / 2;
+        let baseline_y = (height as f32 * 0.75) as i32;
+        let glyph_y = (baseline_y - glyph.height as i32 - glyph.y_offset).max(0) as u32;
+
+        // White text for the X
+        let fg_r = 0xFFu8;
+        let fg_g = 0xFFu8;
+        let fg_b = 0xFFu8;
+
+        for gy in 0..glyph.height {
+            let py = glyph_y + gy;
+            if py >= height {
+                break;
+            }
+
+            for gx in 0..glyph.width {
+                let px = glyph_x + gx;
+                if px >= width {
+                    break;
+                }
+
+                let alpha = glyph.bitmap[(gy * glyph.width + gx) as usize];
+                if alpha == 0 {
+                    continue;
+                }
+
+                let idx = ((py * width + px) * 4) as usize;
+                if idx + 3 >= buffer.len() {
+                    continue;
+                }
+
+                // Alpha blend
+                let alpha_f = alpha as f32 / 255.0;
+                let inv_alpha = 1.0 - alpha_f;
+
+                buffer[idx] = (fg_b as f32 * alpha_f + buffer[idx] as f32 * inv_alpha) as u8;
+                buffer[idx + 1] = (fg_g as f32 * alpha_f + buffer[idx + 1] as f32 * inv_alpha) as u8;
+                buffer[idx + 2] = (fg_r as f32 * alpha_f + buffer[idx + 2] as f32 * inv_alpha) as u8;
+            }
+        }
     }
 }
 
