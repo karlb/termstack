@@ -154,7 +154,18 @@ impl TerminalRenderer {
     }
 
     /// Render terminal to buffer
-    pub fn render<T: EventListener>(&mut self, term: &Term<T>, width: u32, height: u32, show_cursor: bool) {
+    ///
+    /// `viewport_offset` is how many lines we've scrolled back from the cursor:
+    /// - 0 = showing live output (cursor at bottom of viewport)
+    /// - >0 = scrolled into history
+    pub fn render<T: EventListener>(
+        &mut self,
+        term: &Term<T>,
+        width: u32,
+        height: u32,
+        show_cursor: bool,
+        viewport_offset: usize,
+    ) {
         // Resize buffer if needed
         if self.width != width || self.height != height {
             self.width = width;
@@ -168,16 +179,33 @@ impl TerminalRenderer {
 
         let content = term.renderable_content();
 
+        // Calculate viewport position
+        let visible_rows = (height / self.cell_height).max(1);
+        let cursor_line = content.cursor.point.line.0 as u32;
+
+        // Calculate first visible line based on viewport offset
+        // viewport_offset = 0: cursor at bottom (show cursor_line - visible_rows + 1 to cursor_line)
+        // viewport_offset > 0: scrolled back, show older content
+        let first_visible_line = cursor_line
+            .saturating_sub(visible_rows - 1)
+            .saturating_sub(viewport_offset as u32);
+
         // Get selection range for highlighting
         let selection = content.selection.as_ref();
 
-        // Render each cell
+        // Render each cell, offsetting by viewport position
         for cell in content.display_iter {
             let col = cell.point.column.0 as u32;
             let line = cell.point.line.0 as u32;
 
+            // Skip lines outside viewport
+            if line < first_visible_line {
+                continue;
+            }
+
             let x = col * self.cell_width;
-            let y = line * self.cell_height;
+            // Adjust Y to viewport: subtract first_visible_line
+            let y = (line - first_visible_line) * self.cell_height;
 
             if x >= width || y >= height {
                 continue;
@@ -191,11 +219,13 @@ impl TerminalRenderer {
             self.render_cell(x, y, cell.cell, is_selected);
         }
 
-        // Render cursor (only if process is running)
-        if show_cursor {
+        // Render cursor (only if process is running and at live view)
+        // Don't show cursor when scrolled into history
+        if show_cursor && viewport_offset == 0 {
             let cursor = content.cursor;
             let x = cursor.point.column.0 as u32 * self.cell_width;
-            let y = cursor.point.line.0 as u32 * self.cell_height;
+            // Adjust cursor Y to viewport
+            let y = (cursor.point.line.0 as u32).saturating_sub(first_visible_line) * self.cell_height;
 
             if x < width && y < height {
                 self.render_cursor(x, y);

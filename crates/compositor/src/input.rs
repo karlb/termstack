@@ -134,7 +134,7 @@ impl ColumnCompositor {
                 self.handle_pointer_motion_absolute(event, terminals)
             }
             InputEvent::PointerButton { event } => self.handle_pointer_button(event, Some(terminals)),
-            InputEvent::PointerAxis { event } => self.handle_pointer_axis(event),
+            InputEvent::PointerAxis { event } => self.handle_pointer_axis(event, Some(terminals)),
             _ => {}
         }
     }
@@ -176,6 +176,10 @@ impl ColumnCompositor {
             if binding_handled == Some(true) {
                 tracing::info!("compositor binding handled (external window focused)");
             }
+
+            // Update modifiers even when external window is focused
+            // (needed for Shift+Scroll terminal scrollback)
+            self.modifiers = keyboard.modifier_state();
             return;
         }
 
@@ -286,6 +290,11 @@ impl ColumnCompositor {
                     }
                 }
             }
+        }
+
+        // Update stored modifier state for use in other input handlers (e.g., Shift+Scroll)
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            self.modifiers = keyboard.modifier_state();
         }
     }
 
@@ -489,6 +498,9 @@ impl ColumnCompositor {
 
         // Convert to render coordinates (Y=0 at bottom) for hit detection
         let render_y = screen_y.to_render(output_size.h).value();
+
+        // Store pointer position for Shift+Scroll (scroll terminal under pointer)
+        self.pointer_position = Point::from((screen_x, render_y));
 
         tracing::trace!(
             screen_y = screen_y.value(),
@@ -746,23 +758,58 @@ impl ColumnCompositor {
         pointer.frame(self);
     }
 
-    fn handle_pointer_axis<I: InputBackend>(&mut self, event: impl PointerAxisEvent<I>) {
+    fn handle_pointer_axis<I: InputBackend>(
+        &mut self,
+        event: impl PointerAxisEvent<I>,
+        terminals: Option<&mut TerminalManager>,
+    ) {
         let source = event.source();
 
-        // Handle vertical scroll for column navigation
+        // Handle vertical scroll
         let vertical = event
             .amount(Axis::Vertical)
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) / 120.0 * 3.0);
 
         if vertical != 0.0 {
-            // Queue scroll for main loop (uses terminal_manager's total height)
-            // Positive vertical = wheel down = scroll content down (increase offset)
-            self.scroll_requested += vertical * SCROLL_WHEEL_MULTIPLIER;
-            tracing::info!(
-                vertical,
-                scroll_requested = self.scroll_requested,
-                "handle_pointer_axis: scroll event"
-            );
+            // Get current modifier state directly from keyboard
+            let shift_held = self.seat.get_keyboard()
+                .map(|kb| kb.modifier_state().shift)
+                .unwrap_or(false);
+
+            if shift_held {
+                // Shift+Scroll: Terminal scrollback navigation
+                // Scroll the terminal under the pointer, not the focused one
+                if let Some(terminals) = terminals {
+                    // Find which cell is under the pointer
+                    if let Some(cell_idx) = self.cell_at(self.pointer_position) {
+                        if let Some(ColumnCell::Terminal(term_id)) = self.layout_nodes.get(cell_idx).map(|n| &n.cell) {
+                            if let Some(term) = terminals.get_mut(*term_id) {
+                                // Convert scroll amount to lines
+                                // Positive vertical = wheel down = scroll toward newer output
+                                // We negate because scroll_display positive = scroll up (into history)
+                                let lines = (vertical * 3.0).round() as i32;
+                                term.terminal.scroll_display(-lines);
+                                term.mark_dirty(); // Mark for re-render
+                                tracing::debug!(
+                                    vertical,
+                                    lines,
+                                    offset = term.terminal.display_offset(),
+                                    "terminal scrollback (Shift+Scroll)"
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Regular scroll: Compositor column navigation
+                // Positive vertical = wheel down = scroll content down (increase offset)
+                self.scroll_requested += vertical * SCROLL_WHEEL_MULTIPLIER;
+                tracing::info!(
+                    vertical,
+                    scroll_requested = self.scroll_requested,
+                    "handle_pointer_axis: compositor scroll"
+                );
+            }
         }
 
         // Forward horizontal scroll to clients

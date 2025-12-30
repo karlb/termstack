@@ -105,6 +105,11 @@ pub struct Terminal {
 
     /// PTY rows (what programs see via tcgetwinsize)
     pty_rows: u16,
+
+    /// Viewport offset for scrollback navigation
+    /// 0 = showing live output (cursor at bottom)
+    /// >0 = scrolled into history (showing older content)
+    viewport_offset: usize,
 }
 
 impl Terminal {
@@ -153,6 +158,7 @@ impl Terminal {
             cols,
             _grid_rows: pty_rows,
             pty_rows,
+            viewport_offset: 0,
         })
     }
 
@@ -211,6 +217,7 @@ impl Terminal {
             cols,
             _grid_rows: pty_rows,
             pty_rows,
+            viewport_offset: 0,
         })
     }
 
@@ -377,7 +384,7 @@ impl Terminal {
     /// Render to pixel buffer
     pub fn render(&mut self, width: u32, height: u32, show_cursor: bool) {
         let term = self.term.lock();
-        self.renderer.render(&term, width, height, show_cursor);
+        self.renderer.render(&term, width, height, show_cursor, self.viewport_offset);
     }
 
     /// Get rendered pixel buffer
@@ -437,7 +444,7 @@ impl Terminal {
 
     /// Get grid content as text lines (for debugging)
     ///
-    /// Returns the content of each visible line in the grid.
+    /// Returns the content of each line in the grid (all 1000 lines).
     pub fn grid_content(&self) -> Vec<String> {
         let term = self.term.lock();
         let grid = term.grid();
@@ -455,6 +462,42 @@ impl Terminal {
                 }
             }
             // Trim trailing spaces
+            let trimmed = text.trim_end();
+            lines.push(trimmed.to_string());
+        }
+
+        lines
+    }
+
+    /// Get visible content as text lines based on cursor position
+    ///
+    /// Returns the `num_rows` lines that would be visible if we render
+    /// with the cursor at the bottom of the viewport.
+    pub fn visible_content(&self, num_rows: usize) -> Vec<String> {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let cursor_line = term.grid().cursor.point.line.0 as usize;
+
+        // Calculate which lines should be visible
+        // At viewport_offset 0: cursor at bottom (show cursor_line - num_rows + 1 to cursor_line)
+        // At viewport_offset > 0: scrolled back, show older content
+        let start_line = cursor_line
+            .saturating_sub(num_rows - 1)
+            .saturating_sub(self.viewport_offset);
+        let end_line = (start_line + num_rows).min(term.screen_lines());
+
+        let mut lines = Vec::new();
+        for line_idx in start_line..end_line {
+            let line = &grid[alacritty_terminal::index::Line(line_idx as i32)];
+            let mut text = String::new();
+            for cell in line.into_iter() {
+                let c = cell.c;
+                if c == '\0' {
+                    text.push(' ');
+                } else {
+                    text.push(c);
+                }
+            }
             let trimmed = text.trim_end();
             lines.push(trimmed.to_string());
         }
@@ -499,6 +542,46 @@ impl Terminal {
     pub fn has_selection(&self) -> bool {
         let term = self.term.lock();
         term.selection.is_some()
+    }
+
+    /// Scroll the terminal viewport into scrollback history
+    ///
+    /// Positive lines = scroll up (back in history)
+    /// Negative lines = scroll down (toward live output)
+    pub fn scroll_display(&mut self, lines: i32) {
+        let term = self.term.lock();
+        let cursor_line = term.grid().cursor.point.line.0 as usize;
+        drop(term);
+
+        // Calculate new offset
+        let new_offset = if lines > 0 {
+            self.viewport_offset.saturating_add(lines as usize)
+        } else {
+            self.viewport_offset.saturating_sub((-lines) as usize)
+        };
+
+        // Clamp to valid range (can't scroll past the beginning of content)
+        // Max offset = cursor_line (would show line 0 at top)
+        self.viewport_offset = new_offset.min(cursor_line);
+    }
+
+    /// Returns true if terminal has scrollback history available
+    /// (content above the current viewport)
+    pub fn has_scrollback(&self) -> bool {
+        let term = self.term.lock();
+        let cursor_line = term.grid().cursor.point.line.0 as usize;
+        // We have scrollback if cursor is past line 0
+        cursor_line > 0
+    }
+
+    /// Get current scroll offset (0 = live output, >0 = scrolled into history)
+    pub fn display_offset(&self) -> usize {
+        self.viewport_offset
+    }
+
+    /// Reset viewport to show live output (scroll to bottom)
+    pub fn scroll_to_bottom(&mut self) {
+        self.viewport_offset = 0;
     }
 }
 
@@ -577,5 +660,217 @@ mod tests {
 
         // Selection should still exist
         assert!(terminal.has_selection());
+    }
+
+    #[test]
+    fn scroll_display_changes_offset() {
+        // Test that scroll_display actually changes the display offset
+        let mut terminal = Terminal::new(80, 10).expect("terminal creation");
+
+        // Inject enough output to have scrollback
+        for i in 1..=100 {
+            let line = format!("{}\r\n", i);
+            terminal.inject_bytes(line.as_bytes());
+        }
+
+        // Initially at display_offset 0 (showing latest)
+        assert_eq!(terminal.display_offset(), 0, "initial offset should be 0");
+
+        // Scroll up into history (positive = scroll up)
+        terminal.scroll_display(10);
+        let offset_after_up = terminal.display_offset();
+        eprintln!("After scroll_display(10): offset = {}", offset_after_up);
+        assert!(offset_after_up > 0, "scroll up should increase offset, got {}", offset_after_up);
+
+        // Scroll back down (negative = scroll down toward live)
+        terminal.scroll_display(-5);
+        let offset_after_down = terminal.display_offset();
+        eprintln!("After scroll_display(-5): offset = {}", offset_after_down);
+        assert!(offset_after_down < offset_after_up, "scroll down should decrease offset");
+    }
+
+    #[test]
+    fn terminal_shows_latest_output_not_first() {
+        // Bug: seq 500 shows lines 1-47 instead of latest output
+        // The terminal should auto-scroll to show newest content
+        let mut terminal = Terminal::new(80, 10).expect("terminal creation");
+
+        // Simulate `seq 1 100` output - 100 lines
+        for i in 1..=100 {
+            let line = format!("{}\r\n", i);
+            terminal.inject_bytes(line.as_bytes());
+        }
+
+        // Render the terminal at 10 rows height
+        let (cell_w, cell_h) = terminal.cell_size();
+        let width = 80 * cell_w;
+        let height = 10 * cell_h;
+        terminal.render(width, height, false);
+
+        // The cursor should be at line 100 (after 100 lines of output)
+        let cursor_line = terminal.cursor_line();
+        eprintln!("Cursor at line: {}", cursor_line);
+        assert!(
+            cursor_line >= 90,
+            "Cursor should be near end of output (expected >=90, got {})",
+            cursor_line
+        );
+
+        // Get the visible lines - this should return what's actually rendered
+        // With cursor at line 100 and 10 rows visible, we should see lines 91-100
+        let visible = terminal.visible_content(10);
+        eprintln!("Visible content (should be 91-100):");
+        for (i, line) in visible.iter().enumerate() {
+            eprintln!("  [{}]: {:?}", i, line);
+        }
+
+        // The first visible line should be "91", not "1"
+        let first_visible = visible.iter().find(|s| !s.is_empty()).cloned().unwrap_or_default();
+        assert!(
+            first_visible.starts_with("9") || first_visible.starts_with("100"),
+            "First visible line should be 91-100, not the start. Got: {:?}",
+            first_visible
+        );
+    }
+
+    #[test]
+    fn scroll_to_beginning_shows_first_line() {
+        // Bug: User can't scroll to the very beginning - missing first 3 lines
+        let mut terminal = Terminal::new(80, 10).expect("terminal creation");
+
+        // Simulate `seq 1 100` output - 100 lines
+        for i in 1..=100 {
+            let line = format!("{}\r\n", i);
+            terminal.inject_bytes(line.as_bytes());
+        }
+
+        let cursor_line = terminal.cursor_line();
+        eprintln!("Cursor at line: {}", cursor_line);
+
+        // Scroll all the way up (large positive value)
+        terminal.scroll_display(1000);
+        let max_offset = terminal.display_offset();
+        eprintln!("Max scroll offset: {}", max_offset);
+
+        // Render the terminal at 10 rows height
+        let (cell_w, cell_h) = terminal.cell_size();
+        let width = 80 * cell_w;
+        let height = 10 * cell_h;
+        terminal.render(width, height, false);
+
+        // Get the visible lines at max scroll
+        let visible = terminal.visible_content(10);
+        eprintln!("Visible content at max scroll (should start with 1):");
+        for (i, line) in visible.iter().enumerate() {
+            eprintln!("  [{}]: {:?}", i, line);
+        }
+
+        // The first line should be "1"
+        let first_visible = visible.iter().find(|s| !s.is_empty()).cloned().unwrap_or_default();
+        assert!(
+            first_visible == "1",
+            "First visible line at max scroll should be '1', got: {:?}",
+            first_visible
+        );
+    }
+
+    #[test]
+    fn scroll_to_beginning_with_realistic_viewport() {
+        // Test with realistic viewport size (like real compositor)
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+
+        // Simulate `seq 1 100` output
+        for i in 1..=100 {
+            let line = format!("{}\n", i);
+            terminal.inject_bytes(line.as_bytes());
+        }
+
+        let cursor_line = terminal.cursor_line();
+        let (cell_w, cell_h) = terminal.cell_size();
+
+        // Use a realistic viewport height (e.g., 800 pixels with ~17px cell height = ~47 rows)
+        let width = 80 * cell_w;
+        let height = 47 * cell_h; // 47 visible rows
+        let visible_rows = height / cell_h;
+
+        eprintln!("cursor_line: {}", cursor_line);
+        eprintln!("visible_rows: {}", visible_rows);
+        eprintln!("cell_height: {}", cell_h);
+
+        // Scroll all the way up
+        terminal.scroll_display(1000);
+        let max_offset = terminal.display_offset();
+        eprintln!("max_offset after scroll(1000): {}", max_offset);
+
+        // Calculate what first_visible_line should be
+        let expected_first = (cursor_line as u32)
+            .saturating_sub(visible_rows - 1)
+            .saturating_sub(max_offset as u32);
+        eprintln!("expected first_visible_line: {}", expected_first);
+
+        // Render
+        terminal.render(width, height, false);
+
+        // Get visible content
+        let visible = terminal.visible_content(visible_rows as usize);
+        eprintln!("Visible content at max scroll:");
+        for (i, line) in visible.iter().take(10).enumerate() {
+            eprintln!("  [{}]: {:?}", i, line);
+        }
+
+        // First line should be "1"
+        let first_visible = visible.iter().find(|s| !s.is_empty()).cloned().unwrap_or_default();
+        assert_eq!(
+            first_visible, "1",
+            "First visible line at max scroll should be '1', got: {:?}",
+            first_visible
+        );
+    }
+
+    #[test]
+    fn scroll_to_beginning_with_shell_prompt() {
+        // Simulates real compositor scenario: shell prompt, then seq 100
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+
+        // Simulate shell prompt (like what would happen in a real shell)
+        terminal.inject_bytes(b"user@host:~$ seq 100\r\n");
+
+        // Simulate seq 100 output
+        for i in 1..=100 {
+            let line = format!("{}\r\n", i);
+            terminal.inject_bytes(line.as_bytes());
+        }
+
+        // Simulate shell prompt after command
+        terminal.inject_bytes(b"user@host:~$ ");
+
+        let cursor_line = terminal.cursor_line();
+        let (_cell_w, cell_h) = terminal.cell_size();
+
+        let height = 47 * cell_h;
+        let visible_rows = height / cell_h;
+
+        eprintln!("cursor_line: {}", cursor_line);
+        eprintln!("visible_rows: {}", visible_rows);
+
+        // Scroll all the way up
+        terminal.scroll_display(1000);
+        let max_offset = terminal.display_offset();
+        eprintln!("max_offset: {}", max_offset);
+
+        // Get visible content
+        let visible = terminal.visible_content(visible_rows as usize);
+        eprintln!("Visible content at max scroll (first 15 lines):");
+        for (i, line) in visible.iter().take(15).enumerate() {
+            eprintln!("  [{}]: {:?}", i, line);
+        }
+
+        // First line should be the original prompt
+        let first_visible = visible.first().cloned().unwrap_or_default();
+        assert!(
+            first_visible.starts_with("user@host"),
+            "First visible line should be shell prompt, got: {:?}",
+            first_visible
+        );
     }
 }

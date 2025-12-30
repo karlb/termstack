@@ -13,6 +13,7 @@ use smithay::delegate_xdg_shell;
 use smithay::wayland::output::OutputHandler;
 use smithay::desktop::{Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::input::keyboard::ModifiersState;
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
@@ -139,6 +140,13 @@ pub struct ColumnCompositor {
 
     /// Key repeat interval in milliseconds (between repeat events)
     pub repeat_interval_ms: u64,
+
+    /// Current keyboard modifier state (for Shift+Scroll detection)
+    pub modifiers: ModifiersState,
+
+    /// Last known pointer position in render coordinates (Y=0 at bottom)
+    /// Used for Shift+Scroll to scroll terminal under pointer
+    pub pointer_position: Point<f64, smithay::utils::Logical>,
 }
 
 /// A node in the column layout containing the cell and its cached height
@@ -265,6 +273,8 @@ impl ColumnCompositor {
             key_repeat: None,
             repeat_delay_ms: 400,    // Standard delay before repeat starts
             repeat_interval_ms: 30,  // ~33 keys per second
+            modifiers: ModifiersState::default(),
+            pointer_position: Point::from((0.0, 0.0)),
         };
 
         (compositor, display)
