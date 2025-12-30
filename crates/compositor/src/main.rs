@@ -991,7 +991,7 @@ fn promote_output_terminals(
 
 /// Handle cleanup of output terminals from closed windows.
 ///
-/// If the terminal has no content, it's removed. If it has content, it stays visible.
+/// Terminals that have had output stay visible. Terminals that never had output are removed.
 fn handle_output_terminal_cleanup(
     compositor: &mut ColumnCompositor,
     terminal_manager: &mut TerminalManager,
@@ -999,42 +999,25 @@ fn handle_output_terminal_cleanup(
     let cleanup_ids = std::mem::take(&mut compositor.pending_output_terminal_cleanup);
 
     for term_id in cleanup_ids {
-        let has_content = terminal_manager.get(term_id)
-            .map(|t| t.content_rows() > 0)
+        let has_had_output = terminal_manager.get(term_id)
+            .map(|t| t.has_had_output)
             .unwrap_or(false);
 
-        if has_content {
-            // Terminal has output - check if it's already a cell
-            let is_cell = compositor.layout_nodes.iter().any(|n| {
-                matches!(n.cell, ColumnCell::Terminal(id) if id == term_id)
-            });
-
-            if !is_cell {
-                // Add it as a cell so it remains visible
-                let height = terminal_manager.get(term_id)
-                    .map(|t| t.height as i32)
-                    .unwrap_or(0);
-                    
-                compositor.layout_nodes.push(compositor::state::LayoutNode {
-                    cell: ColumnCell::Terminal(term_id),
-                    height,
-                });
-                tracing::info!(
-                    terminal_id = term_id.0,
-                    "output terminal with content added as cell after window close"
-                );
-            } else {
-                tracing::info!(
-                    terminal_id = term_id.0,
-                    "output terminal with content already a cell, keeping visible"
-                );
-            }
+        if has_had_output {
+            // Terminal has had output - keep it visible
+            tracing::info!(
+                terminal_id = term_id.0,
+                "output terminal has had output, keeping visible after window close"
+            );
         } else {
-            // No content - remove from TerminalManager
+            // Never had output - remove from layout and TerminalManager
+            compositor.layout_nodes.retain(|n| {
+                !matches!(n.cell, ColumnCell::Terminal(id) if id == term_id)
+            });
             terminal_manager.remove(term_id);
             tracing::info!(
                 terminal_id = term_id.0,
-                "removed empty output terminal after window close"
+                "removed output terminal (never had output) after window close"
             );
         }
     }

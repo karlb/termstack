@@ -339,15 +339,14 @@ impl ColumnCompositor {
             uses_csd: false, // Will be set by XdgDecorationHandler if client requests CSD
         };
 
-        // If we have an output terminal, remove it from the cells list
-        // (it will be promoted back when it has output)
+        // Keep the output terminal in the layout - its title bar shows the command
+        // that launched this window, which is useful context for the user.
+        // (Previously we removed it and only promoted back if it had output,
+        // but now that we have title bars, the terminal is valuable even without output.)
         if let Some(term_id) = output_terminal {
-            self.layout_nodes.retain(|node| {
-                !matches!(node.cell, ColumnCell::Terminal(id) if id == term_id)
-            });
             tracing::info!(
                 terminal_id = term_id.0,
-                "output terminal removed from cells (hidden until output)"
+                "output terminal kept in cells (title bar shows command)"
             );
         }
 

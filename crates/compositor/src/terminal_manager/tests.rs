@@ -2305,10 +2305,10 @@
         assert!(result.is_ok(), "spawn_command should succeed");
         let child_id = result.unwrap();
 
-        // Parent should be hidden
+        // Parent should NOT be hidden for non-TUI commands (GUI apps open in separate windows)
         assert!(
-            manager.get(parent_id).unwrap().hidden,
-            "parent should be hidden while child runs"
+            !manager.get(parent_id).unwrap().hidden,
+            "parent should NOT be hidden for non-TUI commands"
         );
 
         // Wait for command to exit
@@ -2331,10 +2331,10 @@
             "focus should return to parent"
         );
 
-        // Parent should be unhidden
+        // Parent should still not be hidden
         assert!(
             !manager.get(parent_id).unwrap().hidden,
-            "parent should be unhidden after child exits"
+            "parent should remain visible"
         );
 
         // Child should NOT be hidden because it had content (error output)

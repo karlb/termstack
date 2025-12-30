@@ -56,6 +56,10 @@ pub struct ManagedTerminal {
     /// (e.g., parent hidden while child command runs)
     pub hidden: bool,
 
+    /// Whether this terminal has ever had output
+    /// Once true, the terminal stays visible forever
+    pub has_had_output: bool,
+
     /// Parent terminal that spawned this one (if any)
     /// When this terminal exits, the parent is unhidden
     pub parent: Option<TerminalId>,
@@ -87,6 +91,7 @@ impl ManagedTerminal {
             keep_open: false,
             exited: false,
             hidden: false,
+            has_had_output: true, // Shell terminals start visible
             parent: None,
             prev_alt_screen: false,
         })
@@ -123,7 +128,8 @@ impl ManagedTerminal {
             dirty: true,
             keep_open: true, // Command terminals stay open after exit
             exited: false,
-            hidden: false,
+            hidden: true, // Start invisible until output
+            has_had_output: false, // Will become true on first output
             parent,
             prev_alt_screen: false,
         })
@@ -139,6 +145,14 @@ impl ManagedTerminal {
         if !was_dirty {
             tracing::trace!(id = self.id.0, "terminal marked dirty");
         }
+
+        // If terminal has output for the first time, make it visible permanently
+        if !self.has_had_output && self.content_rows() > 0 {
+            self.has_had_output = true;
+            self.hidden = false;
+            tracing::info!(id = self.id.0, "terminal has output, now permanently visible");
+        }
+
         (actions, bytes_read)
     }
 
@@ -436,14 +450,15 @@ impl TerminalManager {
         let id = TerminalId(self.next_id);
         self.next_id += 1;
 
-        // Hide the parent terminal while command runs
-        if let Some(parent_id) = parent {
-            if let Some(parent_term) = self.terminals.get_mut(&parent_id) {
-                parent_term.hidden = true;
-                tracing::info!(parent = parent_id.0, new_child = id.0, "hiding parent terminal");
+        // Only hide the parent terminal for TUI apps (which take over the screen)
+        // For GUI apps, keep the parent visible since the app opens in a separate window
+        if is_tui {
+            if let Some(parent_id) = parent {
+                if let Some(parent_term) = self.terminals.get_mut(&parent_id) {
+                    parent_term.hidden = true;
+                    tracing::info!(parent = parent_id.0, new_child = id.0, "hiding parent terminal for TUI");
+                }
             }
-        } else {
-            tracing::warn!(new_child = id.0, "no parent to hide - terminal_manager.focused was None");
         }
 
         // For TUI apps: use full viewport height for both PTY and visual
@@ -477,6 +492,13 @@ impl TerminalManager {
 
         // Set small visual height (will grow based on content)
         terminal.height = visual_rows as u32 * self.cell_height;
+
+        // TUI terminals start visible (interactive apps that take over the screen)
+        // Regular command terminals start hidden until they produce output
+        if is_tui {
+            terminal.hidden = false;
+            terminal.has_had_output = true;
+        }
 
         tracing::info!(id = id.0, cols = self.default_cols, pty_rows, visual_rows, is_tui,
                        height = terminal.height, max_rows = self.max_rows, cell_height = self.cell_height,
@@ -607,14 +629,11 @@ impl TerminalManager {
                             focus_changed_to = Some(parent_id);
                             tracing::info!(child = id.0, parent = parent_id.0, "command exited, will unhide parent");
 
-                            // Check if command terminal has meaningful content
-                            // Only hide if truly empty (no output at all)
-                            // Previously we hid if content_rows <= 1, but that was when we had
-                            // an echo prefix. Now the title bar shows the command.
-                            let content_rows = term.content_rows();
-                            if content_rows == 0 {
+                            // Only hide if terminal has never had output
+                            // Once a terminal has had output, it stays visible forever
+                            if !term.has_had_output {
                                 terminals_to_hide.push(id);
-                                tracing::info!(id = id.0, content_rows, "hiding empty command terminal");
+                                tracing::info!(id = id.0, "hiding command terminal (never had output)");
                             }
                         }
                     }
