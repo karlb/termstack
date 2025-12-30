@@ -214,6 +214,11 @@ impl ColumnCompositor {
 
         tracing::info!(?result, "keyboard.input result");
 
+        // Handle key release - stop repeat
+        if key_state == KeyState::Released {
+            self.key_repeat = None;
+        }
+
         // Handle keyboard input and clipboard operations (requires terminal access)
         if let Some(terminals) = terminals {
             // Forward to focused terminal if we got bytes
@@ -227,6 +232,10 @@ impl ColumnCompositor {
                             tracing::error!(?e, "failed to write to terminal");
                         } else {
                             tracing::info!("write succeeded");
+                            // Set up key repeat for this key
+                            let repeat_time = std::time::Instant::now()
+                                + std::time::Duration::from_millis(self.repeat_delay_ms);
+                            self.key_repeat = Some((bytes, repeat_time));
                         }
                     } else {
                         tracing::warn!("no focused terminal to write to");

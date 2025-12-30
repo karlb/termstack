@@ -129,6 +129,16 @@ pub struct ColumnCompositor {
     /// Active selection state: (terminal_id, terminal_y_offset, terminal_height)
     /// Set when mouse button is pressed on a terminal, cleared on release
     pub selecting: Option<(TerminalId, i32, i32)>,
+
+    /// Key repeat state for terminals: (bytes to send, next repeat instant)
+    /// Set on key press, cleared on key release
+    pub key_repeat: Option<(Vec<u8>, std::time::Instant)>,
+
+    /// Key repeat delay in milliseconds (before repeat starts)
+    pub repeat_delay_ms: u64,
+
+    /// Key repeat interval in milliseconds (between repeat events)
+    pub repeat_interval_ms: u64,
 }
 
 /// A node in the column layout containing the cell and its cached height
@@ -252,6 +262,9 @@ impl ColumnCompositor {
             pending_paste: false,
             pending_copy: false,
             selecting: None,
+            key_repeat: None,
+            repeat_delay_ms: 400,    // Standard delay before repeat starts
+            repeat_interval_ms: 30,  // ~33 keys per second
         };
 
         (compositor, display)

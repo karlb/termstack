@@ -269,6 +269,9 @@ fn main() -> anyhow::Result<()> {
         // Handle resize requests from IPC (column-term --resize)
         handle_ipc_resize_request(&mut compositor, &mut terminal_manager);
 
+        // Handle key repeat for terminals
+        handle_key_repeat(&mut compositor, &mut terminal_manager);
+
         // Handle focus change requests
         if compositor.focus_change_requested != 0 {
             if compositor.focus_change_requested > 0 {
@@ -654,6 +657,42 @@ fn handle_ipc_spawn_requests(
             }
         }
     }
+}
+
+/// Handle key repeat for terminal input.
+///
+/// When a key is held down, this sends repeat events at regular intervals.
+fn handle_key_repeat(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    let Some((ref bytes, next_repeat)) = compositor.key_repeat else {
+        return;
+    };
+
+    let now = std::time::Instant::now();
+    if now < next_repeat {
+        return;
+    }
+
+    // Time to send a repeat event
+    let bytes_to_send = bytes.clone();
+
+    if let Some(terminal) = terminal_manager.get_focused_mut() {
+        if let Err(e) = terminal.write(&bytes_to_send) {
+            tracing::error!(?e, "failed to write repeat to terminal");
+            compositor.key_repeat = None;
+            return;
+        }
+    } else {
+        // No focused terminal, stop repeating
+        compositor.key_repeat = None;
+        return;
+    }
+
+    // Schedule next repeat
+    let next = now + std::time::Duration::from_millis(compositor.repeat_interval_ms);
+    compositor.key_repeat = Some((bytes_to_send, next));
 }
 
 /// Process a single spawn request, returning the new terminal ID if successful.
