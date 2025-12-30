@@ -240,7 +240,23 @@ fn main() -> anyhow::Result<()> {
                     None,
                 );
                 compositor.output_size = Size::from((size.w, size.h));
+
+                // Update terminal manager dimensions
+                terminal_manager.update_output_size(size.w as u32, size.h as u32);
+
+                // Resize all existing terminals to new width
+                terminal_manager.resize_all_terminals(size.w as u32);
+
+                // Resize all external windows to new width
+                compositor.resize_all_external_windows(size.w);
+
                 compositor.recalculate_layout();
+
+                tracing::info!(
+                    width = size.w,
+                    height = size.h,
+                    "compositor window resized, content updated"
+                );
             }
             WinitEvent::Input(event) => compositor.process_input_event_with_terminals(event, &mut terminal_manager),
             WinitEvent::Focus(focused) => {

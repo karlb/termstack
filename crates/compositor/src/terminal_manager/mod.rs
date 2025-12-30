@@ -207,6 +207,13 @@ impl ManagedTerminal {
         }
     }
 
+    /// Resize columns (width change from compositor resize)
+    pub fn resize_cols(&mut self, cols: u16, cell_width: u32) {
+        self.terminal.resize_cols(cols);
+        self.width = cols as u32 * cell_width;
+        self.dirty = true;
+    }
+
     /// Get the terminal's PTY fd for polling
     pub fn pty_fd(&self) -> RawFd {
         self.terminal.pty_fd()
@@ -373,6 +380,28 @@ impl TerminalManager {
         self.cell_height = height;
         self.default_cols = (output_width / width).max(1) as u16;
         self.max_rows = (output_height / height).max(1) as u16;
+    }
+
+    /// Update output size (called when compositor window is resized)
+    pub fn update_output_size(&mut self, width: u32, height: u32) {
+        self.default_cols = (width / self.cell_width).max(1) as u16;
+        self.max_rows = (height / self.cell_height).max(1) as u16;
+    }
+
+    /// Resize all terminals to new column width
+    pub fn resize_all_terminals(&mut self, output_width: u32) {
+        let new_cols = (output_width / self.cell_width).max(1) as u16;
+        let cell_width = self.cell_width;
+
+        for terminal in self.terminals.values_mut() {
+            terminal.resize_cols(new_cols, cell_width);
+        }
+
+        tracing::info!(
+            new_cols,
+            terminal_count = self.terminals.len(),
+            "resized all terminals to new width"
+        );
     }
 
     /// Grow a terminal to accommodate more content (capped at max_rows)

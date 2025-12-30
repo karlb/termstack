@@ -507,6 +507,24 @@ impl ColumnCompositor {
         );
     }
 
+    /// Resize all external windows to new width (called when compositor is resized)
+    pub fn resize_all_external_windows(&mut self, new_width: i32) {
+        for node in &mut self.layout_nodes {
+            if let ColumnCell::External(entry) = &mut node.cell {
+                let current_height = entry.state.current_height();
+                entry.toplevel.with_pending_state(|state| {
+                    state.size = Some(Size::from((new_width, current_height as i32)));
+                });
+                entry.toplevel.send_configure();
+            }
+        }
+
+        tracing::info!(
+            new_width,
+            "resized all external windows to new width"
+        );
+    }
+
     /// Handle window commit - check for resize completion
     pub fn handle_commit(&mut self, surface: &WlSurface) {
         let Some(index) = self.layout_nodes.iter().position(|node| {

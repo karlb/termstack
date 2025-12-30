@@ -347,6 +347,28 @@ impl Terminal {
         self.sizing.on_resize_complete()
     }
 
+    /// Resize columns (width change from compositor resize)
+    ///
+    /// This resizes both the PTY and the alacritty terminal grid to the new column count.
+    pub fn resize_cols(&mut self, cols: u16) {
+        if cols == self.cols {
+            return;
+        }
+
+        self.cols = cols;
+
+        // Resize PTY so programs see new width
+        let _ = self.pty.resize(cols, self.pty_rows);
+
+        // Resize alacritty terminal grid
+        let size = Size {
+            cols: cols as usize,
+            rows: self.grid_rows() as usize,
+        };
+        let mut term = self.term.lock();
+        term.resize(size);
+    }
+
     /// Request growth (transition from stable to growth requested)
     pub fn request_growth(&mut self, target_rows: u16) {
         self.sizing.request_growth(target_rows);
