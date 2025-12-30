@@ -329,10 +329,11 @@ fn main() -> anyhow::Result<()> {
             // Pre-render all terminal textures
             prerender_terminals(&mut terminal_manager, renderer);
 
-            // Pre-render title bar textures for external windows (SSD only)
+            // Pre-render title bar textures for all cells with SSD
             let title_bar_textures = prerender_title_bars(
                 &compositor.layout_nodes,
                 &mut title_bar_renderer,
+                &terminal_manager,
                 renderer,
                 physical_size.w,
             );
@@ -402,13 +403,14 @@ fn main() -> anyhow::Result<()> {
                 let is_focused = compositor.focused_index == Some(cell_idx);
 
                 match data {
-                    CellRenderData::Terminal { id, y, height } => {
+                    CellRenderData::Terminal { id, y, height, title_bar_texture } => {
                         render_terminal(
                             &mut frame,
                             &terminal_manager,
                             id,
                             y,
                             height,
+                            title_bar_texture,
                             is_focused,
                             physical_size,
                             damage,
@@ -661,13 +663,11 @@ fn process_spawn_request(
     request: compositor::ipc::SpawnRequest,
 ) -> Option<TerminalId> {
     // Decide what command to run
+    // Title bar now shows the command, so no need for echo prefix
     let command = if request.command.is_empty() {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-    } else if request.is_tui {
-        request.command.clone()
     } else {
-        let escaped = request.command.replace("'", "'\\''");
-        format!("echo '> {}'; {}", escaped, request.command)
+        request.command.clone()
     };
 
     // Modify environment

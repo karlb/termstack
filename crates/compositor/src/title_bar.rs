@@ -93,8 +93,7 @@ impl TitleBarRenderer {
         let fg_g = 0xCCu8;
         let fg_b = 0xCCu8;
 
-        // Add "> " prefix to match shell prompt style
-        let display_text = format!("> {}", text);
+        let display_text = text.to_string();
 
         // Starting position with padding
         let padding = 8u32;

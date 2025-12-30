@@ -18,6 +18,7 @@ pub enum CellRenderData<'a> {
         id: TerminalId,
         y: i32,
         height: i32,
+        title_bar_texture: Option<&'a GlesTexture>,
     },
     External {
         y: i32,
@@ -51,33 +52,59 @@ pub fn prerender_terminals(
     }
 }
 
-/// Pre-render title bar textures for external windows (SSD only)
+/// Pre-render title bar textures for all cells with SSD
 pub fn prerender_title_bars(
     layout_nodes: &[LayoutNode],
     title_bar_renderer: &mut Option<TitleBarRenderer>,
+    terminal_manager: &TerminalManager,
     renderer: &mut GlesRenderer,
     width: i32,
 ) -> Vec<Option<GlesTexture>> {
     let mut textures = Vec::new();
 
     for node in layout_nodes.iter() {
-        if let ColumnCell::External(entry) = &node.cell {
-            if entry.uses_csd {
-                textures.push(None);
-            } else if let Some(ref mut tb_renderer) = title_bar_renderer {
-                let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, width as u32);
-                let tex = renderer.import_memory(
-                    &pixels,
-                    smithay::backend::allocator::Fourcc::Argb8888,
-                    (tb_width as i32, tb_height as i32).into(),
-                    false,
-                ).ok();
-                textures.push(tex);
-            } else {
-                textures.push(None);
+        match &node.cell {
+            ColumnCell::Terminal(id) => {
+                // Render title bar for terminal (if enabled)
+                let show_title_bar = terminal_manager.get(*id)
+                    .map(|t| t.show_title_bar)
+                    .unwrap_or(false);
+                if show_title_bar {
+                    if let Some(ref mut tb_renderer) = title_bar_renderer {
+                        let title = terminal_manager.get(*id)
+                            .map(|t| t.title.as_str())
+                            .unwrap_or("Terminal");
+                        let (pixels, tb_width, tb_height) = tb_renderer.render(title, width as u32);
+                        let tex = renderer.import_memory(
+                            &pixels,
+                            smithay::backend::allocator::Fourcc::Argb8888,
+                            (tb_width as i32, tb_height as i32).into(),
+                            false,
+                        ).ok();
+                        textures.push(tex);
+                    } else {
+                        textures.push(None);
+                    }
+                } else {
+                    textures.push(None);
+                }
             }
-        } else {
-            textures.push(None);
+            ColumnCell::External(entry) => {
+                if entry.uses_csd {
+                    textures.push(None);
+                } else if let Some(ref mut tb_renderer) = title_bar_renderer {
+                    let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, width as u32);
+                    let tex = renderer.import_memory(
+                        &pixels,
+                        smithay::backend::allocator::Fourcc::Argb8888,
+                        (tb_width as i32, tb_height as i32).into(),
+                        false,
+                    ).ok();
+                    textures.push(tex);
+                } else {
+                    textures.push(None);
+                }
+            }
         }
     }
 
@@ -99,17 +126,24 @@ pub fn collect_cell_data(
     for node in layout_nodes.iter() {
         match &node.cell {
             ColumnCell::Terminal(id) => {
-                let height = terminal_manager.get(*id)
+                let (content_height, show_title_bar) = terminal_manager.get(*id)
                     .map(|t| {
-                        if t.hidden {
+                        let h = if t.hidden {
                             0
                         } else if let Some(tex) = t.get_texture() {
                             tex.size().h
                         } else {
                             t.height as i32
-                        }
+                        };
+                        (h, t.show_title_bar)
                     })
-                    .unwrap_or(node.height);
+                    .unwrap_or((node.height, false));
+                // Add title bar height only if title bar is shown
+                let height = if content_height > 0 && show_title_bar {
+                    content_height + TITLE_BAR_HEIGHT as i32
+                } else {
+                    content_height
+                };
                 heights.push(height);
                 external_elements.push(Vec::new());
             }
@@ -177,10 +211,12 @@ pub fn build_render_data<'a>(
                         "terminal render state"
                     );
                 }
+                let title_bar_texture = title_bar_textures.get(cell_idx).and_then(|t| t.as_ref());
                 render_data.push(CellRenderData::Terminal {
                     id: *id,
                     y: render_y,
                     height,
+                    title_bar_texture,
                 });
             }
             ColumnCell::External(_entry) => {
@@ -232,7 +268,7 @@ pub fn log_frame_state(
 
     let render_info: Vec<String> = render_data.iter().enumerate().map(|(i, data)| {
         match data {
-            CellRenderData::Terminal { id, y, height } => {
+            CellRenderData::Terminal { id, y, height, .. } => {
                 format!("[{}]T{}@y={},h={}", i, id.0, y, height)
             }
             CellRenderData::External { y, height, .. } => {
@@ -278,6 +314,7 @@ pub fn render_terminal(
     id: TerminalId,
     y: i32,
     height: i32,
+    title_bar_texture: Option<&GlesTexture>,
     is_focused: bool,
     screen_size: Size<i32, Physical>,
     damage: Rectangle<i32, Physical>,
@@ -295,6 +332,46 @@ pub fn render_terminal(
         return;
     }
 
+    // Render title bar if present
+    if let Some(tex) = title_bar_texture {
+        let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
+
+        // Draw focus indicator at the top of the title bar
+        if is_focused && title_bar_y >= 0 && title_bar_y < screen_size.h {
+            let border_height = 2;
+            let focus_damage = Rectangle::new(
+                (0, title_bar_y + TITLE_BAR_HEIGHT as i32 - border_height).into(),
+                (screen_size.w, border_height).into(),
+            );
+            frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
+        }
+
+        frame.render_texture_at(
+            tex,
+            Point::from((0, title_bar_y)),
+            1,
+            1.0,
+            Transform::Flipped180,
+            &[damage],
+            &[],
+            1.0,
+        ).ok();
+    } else {
+        // No title bar - draw focus indicator at top of terminal content
+        if is_focused {
+            let border_height = 2;
+            let top_y = y + height - border_height;
+            if top_y >= 0 && top_y < screen_size.h {
+                let focus_damage = Rectangle::new(
+                    (0, top_y).into(),
+                    (screen_size.w, border_height).into(),
+                );
+                frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
+            }
+        }
+    }
+
+    // Render terminal content
     frame.render_texture_at(
         texture,
         Point::from((0, y)),
@@ -305,16 +382,6 @@ pub fn render_terminal(
         &[],
         1.0,
     ).ok();
-
-    // Draw focus indicator
-    if is_focused && y >= 0 {
-        let border_height = 2;
-        let focus_damage = Rectangle::new(
-            (0, y).into(),
-            (screen_size.w, border_height).into(),
-        );
-        frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
-    }
 }
 
 /// Render an external window cell with title bar

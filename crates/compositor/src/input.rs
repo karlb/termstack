@@ -590,6 +590,16 @@ impl ColumnCompositor {
                 };
 
                 // Extract cell info before doing mutable operations
+                // For terminals, check if they have a title bar
+                let terminal_has_title_bar = if let ColumnCell::Terminal(id) = &self.layout_nodes[index].cell {
+                    terminals.as_ref()
+                        .and_then(|tm| tm.get(*id))
+                        .map(|t| t.show_title_bar)
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
                 let cell_info = match &self.layout_nodes[index].cell {
                     ColumnCell::External(entry) => {
                         Some((
@@ -601,7 +611,7 @@ impl ColumnCompositor {
                         ))
                     }
                     ColumnCell::Terminal(id) => {
-                        Some((false, None, Some(*id), false, None))
+                        Some((false, None, Some(*id), terminal_has_title_bar, None))
                     }
                 };
 
@@ -639,6 +649,41 @@ impl ColumnCompositor {
                             keyboard.set_focus(self, surface, serial);
                         }
                     } else if let Some(id) = terminal_id {
+                        // Check if click is on close button in title bar (for terminals with title bars)
+                        let on_close_button = if has_ssd && button == BTN_LEFT {
+                            let title_bar_top = cell_render_top;
+                            let title_bar_bottom = title_bar_top - TITLE_BAR_HEIGHT as f64;
+                            let in_title_bar = render_location.y <= title_bar_top
+                                && render_location.y > title_bar_bottom;
+                            let close_btn_left =
+                                (self.output_size.w - CLOSE_BUTTON_WIDTH as i32) as f64;
+                            let in_close_btn = render_location.x >= close_btn_left;
+                            in_title_bar && in_close_btn
+                        } else {
+                            false
+                        };
+
+                        if on_close_button {
+                            tracing::info!(index, terminal_id = ?id, "close button clicked on terminal, removing");
+                            // Remove the terminal from the layout
+                            self.layout_nodes.remove(index);
+                            // Remove from terminal manager
+                            if let Some(terminals) = terminals {
+                                terminals.remove(id);
+                            }
+                            // Adjust focus if needed
+                            if let Some(focused) = self.focused_index {
+                                if focused >= self.layout_nodes.len() {
+                                    self.focused_index = if self.layout_nodes.is_empty() {
+                                        None
+                                    } else {
+                                        Some(self.layout_nodes.len() - 1)
+                                    };
+                                }
+                            }
+                            return; // Don't process further
+                        }
+
                         tracing::info!(
                             index,
                             terminal_id = ?id,

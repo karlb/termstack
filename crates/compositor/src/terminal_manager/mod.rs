@@ -34,6 +34,12 @@ pub struct ManagedTerminal {
     /// Pixel height
     pub height: u32,
 
+    /// Title for the title bar
+    pub title: String,
+
+    /// Whether to show the title bar (false for initial shell terminals)
+    pub show_title_bar: bool,
+
     /// Cached texture for rendering
     texture: Option<GlesTexture>,
 
@@ -63,11 +69,19 @@ impl ManagedTerminal {
     pub fn new(id: TerminalId, cols: u16, rows: u16, cell_width: u32, cell_height: u32) -> Result<Self, terminal::state::TerminalError> {
         let terminal = Terminal::new(cols, rows)?;
 
+        // Use shell name as title
+        let title = std::env::var("SHELL")
+            .ok()
+            .and_then(|s| s.rsplit('/').next().map(String::from))
+            .unwrap_or_else(|| "Terminal".to_string());
+
         Ok(Self {
             terminal,
             id,
             width: cols as u32 * cell_width,
             height: rows as u32 * cell_height,
+            title,
+            show_title_bar: false, // Shell terminals don't show title bar
             texture: None,
             dirty: true,
             keep_open: false,
@@ -103,6 +117,8 @@ impl ManagedTerminal {
             id,
             width: cols as u32 * cell_width,
             height: visual_rows as u32 * cell_height, // Use visual rows for display
+            title: command.to_string(),
+            show_title_bar: true, // Command terminals show title bar
             texture: None,
             dirty: true,
             keep_open: true, // Command terminals stay open after exit
@@ -592,9 +608,11 @@ impl TerminalManager {
                             tracing::info!(child = id.0, parent = parent_id.0, "command exited, will unhide parent");
 
                             // Check if command terminal has meaningful content
-                            // If content_rows <= 1 (just the echo line or empty), hide it
+                            // Only hide if truly empty (no output at all)
+                            // Previously we hid if content_rows <= 1, but that was when we had
+                            // an echo prefix. Now the title bar shows the command.
                             let content_rows = term.content_rows();
-                            if content_rows <= 1 {
+                            if content_rows == 0 {
                                 terminals_to_hide.push(id);
                                 tracing::info!(id = id.0, content_rows, "hiding empty command terminal");
                             }
