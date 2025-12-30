@@ -5,8 +5,6 @@
 
 use std::ops::Range;
 
-use crate::state::WindowEntry;
-
 /// Calculated layout for all windows
 #[derive(Debug, Clone)]
 pub struct ColumnLayout {
@@ -74,18 +72,6 @@ impl ColumnLayout {
             total_height,
             visible_range: scroll_offset as u32..scroll_offset as u32 + output_height,
         }
-    }
-
-    /// Calculate layout from windows and scroll state.
-    ///
-    /// Convenience wrapper that extracts heights from WindowEntry slice.
-    pub fn calculate(
-        windows: &[WindowEntry],
-        output_height: u32,
-        scroll_offset: f64,
-    ) -> Self {
-        let heights = windows.iter().map(|w| w.state.current_height());
-        Self::calculate_from_heights(heights, output_height, scroll_offset)
     }
 
     /// Calculate scroll offset to show the bottom of a window

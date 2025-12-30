@@ -117,14 +117,6 @@ impl ColumnCompositor {
         event: InputEvent<I>,
         terminals: &mut TerminalManager,
     ) {
-        match &event {
-            InputEvent::Keyboard { .. } => tracing::info!("INPUT: Keyboard event!"),
-            InputEvent::PointerMotion { .. } => tracing::trace!("INPUT: PointerMotion"),
-            InputEvent::PointerMotionAbsolute { .. } => tracing::trace!("INPUT: PointerMotionAbsolute"),
-            InputEvent::PointerButton { .. } => tracing::info!("INPUT: PointerButton"),
-            InputEvent::PointerAxis { .. } => tracing::info!("INPUT: PointerAxis"),
-            _ => tracing::info!("INPUT: Other event"),
-        }
         match event {
             InputEvent::Keyboard { event } => {
                 self.handle_keyboard_event(event, Some(terminals));
@@ -176,10 +168,6 @@ impl ColumnCompositor {
             if binding_handled == Some(true) {
                 tracing::info!("compositor binding handled (external window focused)");
             }
-
-            // Update modifiers even when external window is focused
-            // (needed for Shift+Scroll terminal scrollback)
-            self.modifiers = keyboard.modifier_state();
             return;
         }
 
@@ -290,11 +278,6 @@ impl ColumnCompositor {
                     }
                 }
             }
-        }
-
-        // Update stored modifier state for use in other input handlers (e.g., Shift+Scroll)
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            self.modifiers = keyboard.modifier_state();
         }
     }
 
