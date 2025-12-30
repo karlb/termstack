@@ -32,22 +32,22 @@
 //!
 //! Add to your `~/.zshrc` (or source `scripts/integration.zsh`):
 //! ```zsh
-//! # Only enable column-term integration inside column-compositor
 //! if [[ -n "$COLUMN_COMPOSITOR_SOCKET" ]]; then
 //!     column-exec() {
 //!         local cmd="$BUFFER"
 //!         [[ -z "$cmd" ]] && return
 //!
-//!         # Save to history
-//!         print -s "$cmd"
-//!
-//!         BUFFER=""
 //!         column-term -c "$cmd"
 //!         local ret=$?
 //!
+//!         if [[ $ret -eq 3 ]]; then
+//!             zle .accept-line  # Incomplete syntax
+//!             return
+//!         fi
 //!         if [[ $ret -eq 2 ]]; then
-//!             # Shell builtin - run in current shell
-//!             eval "$cmd"
+//!             print -s "$cmd"; BUFFER=""; eval "$cmd"  # Shell builtin
+//!         else
+//!             print -s "$cmd"; BUFFER=""  # Spawned in new terminal
 //!         fi
 //!         zle reset-prompt
 //!     }
@@ -59,39 +59,30 @@
 //!
 //! Add to your `~/.config/fish/config.fish` (or source `scripts/integration.fish`):
 //! ```fish
-//! # Only enable column-term integration inside column-compositor
 //! if set -q COLUMN_COMPOSITOR_SOCKET
 //!     function column_exec
 //!         set -l cmd (commandline)
-//!         if test -z "$cmd"
-//!             commandline -f execute
-//!             return
-//!         end
+//!         test -z "$cmd"; and commandline -f execute; and return
 //!
-//!         # Check command type
 //!         column-term -c "$cmd"
-//!         set -l ret $status
-//!
-//!         if test $ret -eq 2
-//!             # Shell builtin (cd, export) - run in current shell
-//!             # Let fish execute normally (handles history auto)
-//!             commandline -f execute
-//!         else
-//!             # Standard command - spawned in new terminal
-//!             history append -- "$cmd"
-//!             commandline ""
-//!             commandline -f repaint
+//!         switch $status
+//!             case 2 3  # Shell builtin or incomplete syntax
+//!                 commandline -f execute
+//!             case '*'  # Spawned in new terminal
+//!                 history append -- "$cmd"
+//!                 commandline ""
+//!                 commandline -f repaint
 //!         end
 //!     end
-//!
 //!     bind \r column_exec
 //!     bind \n column_exec
 //! end
 //! ```
 //!
 //! Exit codes:
-//! - 0: Command handled (spawned in terminal)
+//! - 0: Command spawned in new terminal
 //! - 2: Shell builtin - run in current shell via eval
+//! - 3: Incomplete/invalid syntax - let shell handle it
 
 use std::env;
 use std::io::Write;
@@ -187,12 +178,69 @@ impl Config {
 /// Exit code indicating command should run in current shell
 const EXIT_SHELL_COMMAND: i32 = 2;
 
+/// Exit code indicating command has incomplete/invalid syntax
+/// Shell integration should let the shell handle it (show continuation or error)
+const EXIT_INCOMPLETE_SYNTAX: i32 = 3;
+
 /// Check if debug mode is enabled via DEBUG_COLUMN_TERM environment variable
 fn debug_enabled() -> bool {
     // Cache result to avoid repeated env lookups (inline const fn not stable yet)
     use std::sync::OnceLock;
     static DEBUG: OnceLock<bool> = OnceLock::new();
     *DEBUG.get_or_init(|| env::var("DEBUG_COLUMN_TERM").is_ok())
+}
+
+/// Check if a command is syntactically complete for the current shell
+///
+/// Uses the shell's syntax check (-n flag) to determine if the command
+/// is complete. Returns false if incomplete (like `begin` without `end`)
+/// or if there's a syntax error.
+pub(crate) fn is_syntax_complete(command: &str) -> bool {
+    use std::process::Command;
+
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell_name = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("sh");
+
+    let debug = debug_enabled();
+    if debug {
+        eprintln!("[column-term] syntax check: shell={}, shell_name={}", shell, shell_name);
+    }
+
+    // Different shells have different syntax check flags
+    let result = match shell_name {
+        "fish" => Command::new(&shell)
+            .args(["-n", "-c", command])
+            .output(),
+        "zsh" | "bash" | "sh" | "ksh" | "dash" => Command::new(&shell)
+            .args(["-n", "-c", command])
+            .output(),
+        _ => {
+            // Unknown shell, assume syntax is complete
+            if debug {
+                eprintln!("[column-term] syntax check: unknown shell, assuming complete");
+            }
+            return true;
+        }
+    };
+
+    match result {
+        Ok(output) => {
+            let complete = output.status.success();
+            if debug {
+                eprintln!("[column-term] syntax check: exit={:?}, complete={}", output.status.code(), complete);
+            }
+            complete
+        }
+        Err(e) => {
+            if debug {
+                eprintln!("[column-term] syntax check: error running shell: {}", e);
+            }
+            true // If we can't run the shell, assume syntax is complete
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -238,6 +286,13 @@ fn main() -> Result<()> {
         if debug { eprintln!("[column-term] shell command, exit 2"); }
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
+    }
+
+    // Check if command is syntactically complete
+    // If not, let the shell handle it (show continuation prompt or syntax error)
+    if !is_syntax_complete(&command) {
+        if debug { eprintln!("[column-term] incomplete syntax, exit 3"); }
+        std::process::exit(EXIT_INCOMPLETE_SYNTAX);
     }
 
     // Regular command, GUI app, or TUI app - spawn in new terminal

@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::Config;
+    use crate::{is_syntax_complete, Config};
 
     #[test]
     fn shell_commands_from_config() {
@@ -136,6 +136,37 @@ mod tests {
             Err(e) => {
                 eprintln!("Skipping test: failed to run column-term: {}", e);
             }
+        }
+    }
+
+    #[test]
+    fn syntax_check_complete_commands() {
+        // Simple complete commands should be valid in any shell
+        assert!(is_syntax_complete("echo hello"), "simple echo should be complete");
+        assert!(is_syntax_complete("ls -la"), "ls with args should be complete");
+        assert!(is_syntax_complete("cat /etc/passwd"), "cat should be complete");
+    }
+
+    #[test]
+    fn syntax_check_incomplete_commands() {
+        // These are incomplete in most shells
+        // (unterminated string)
+        assert!(!is_syntax_complete("echo 'hello"), "unterminated single quote");
+        assert!(!is_syntax_complete("echo \"hello"), "unterminated double quote");
+    }
+
+    #[test]
+    fn syntax_check_shell_specific_incomplete() {
+        // Test shell-specific incomplete syntax
+        // This tests with the user's actual shell
+        let shell = std::env::var("SHELL").unwrap_or_default();
+
+        if shell.ends_with("fish") {
+            assert!(!is_syntax_complete("begin"), "fish begin without end");
+            assert!(is_syntax_complete("begin; echo hi; end"), "fish complete begin/end");
+        } else if shell.ends_with("zsh") || shell.ends_with("bash") {
+            assert!(!is_syntax_complete("if true; then"), "if without fi");
+            assert!(is_syntax_complete("if true; then echo hi; fi"), "complete if/fi");
         }
     }
 }
