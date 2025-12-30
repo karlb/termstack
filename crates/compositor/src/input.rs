@@ -12,6 +12,8 @@ use crate::coords::ScreenY;
 use crate::state::{ColumnCell, ColumnCompositor};
 use crate::terminal_manager::TerminalManager;
 
+use crate::terminal_manager::TerminalId;
+
 /// Left mouse button code (BTN_LEFT in evdev)
 const BTN_LEFT: u32 = 0x110;
 
@@ -46,6 +48,65 @@ fn render_to_grid_coords(
     let row = (local_y / char_height as f64) as usize;
 
     (col, row)
+}
+
+/// Start a text selection on a terminal at the given render coordinates
+///
+/// Returns the selection tracking state (terminal id, cell render y, cell height)
+/// which should be stored in `compositor.selecting` for drag tracking.
+fn start_terminal_selection(
+    compositor: &ColumnCompositor,
+    terminals: &TerminalManager,
+    terminal_id: TerminalId,
+    cell_index: usize,
+    render_x: f64,
+    render_y: f64,
+) -> Option<(TerminalId, i32, i32)> {
+    let managed = terminals.get(terminal_id)?;
+    let (cell_render_y, cell_height) = compositor.get_cell_render_position(cell_index);
+
+    let (char_width, char_height) = managed.terminal.cell_size();
+    let (col, row) = render_to_grid_coords(
+        render_x,
+        render_y,
+        cell_render_y,
+        cell_height as f64,
+        char_width,
+        char_height,
+    );
+
+    tracing::info!(col, row, "starting selection");
+
+    // Clear any previous selection and start new one
+    managed.terminal.clear_selection();
+    managed.terminal.start_selection(col, row);
+
+    Some((terminal_id, cell_render_y as i32, cell_height))
+}
+
+/// Update an ongoing selection during pointer drag
+fn update_terminal_selection(
+    terminals: &TerminalManager,
+    terminal_id: TerminalId,
+    cell_render_y: i32,
+    cell_height: i32,
+    render_x: f64,
+    render_y: f64,
+) {
+    if let Some(managed) = terminals.get(terminal_id) {
+        let (char_width, char_height) = managed.terminal.cell_size();
+        let (col, row) = render_to_grid_coords(
+            render_x,
+            render_y,
+            cell_render_y as f64,
+            cell_height as f64,
+            char_width,
+            char_height,
+        );
+
+        managed.terminal.update_selection(col, row);
+        tracing::trace!(col, row, "selection updated");
+    }
 }
 
 impl ColumnCompositor {
@@ -428,20 +489,7 @@ impl ColumnCompositor {
 
         // Update selection if we're in a drag operation
         if let Some((term_id, cell_render_y, cell_height)) = self.selecting {
-            if let Some(managed) = terminals.get(term_id) {
-                let (char_width, char_height) = managed.terminal.cell_size();
-                let (col, row) = render_to_grid_coords(
-                    screen_x,
-                    render_y,
-                    cell_render_y as f64,
-                    cell_height as f64,
-                    char_width,
-                    char_height,
-                );
-
-                managed.terminal.update_selection(col, row);
-                tracing::trace!(col, row, "selection updated");
-            }
+            update_terminal_selection(terminals, term_id, cell_render_y, cell_height, screen_x, render_y);
         }
 
         let serial = SERIAL_COUNTER.next_serial();
@@ -565,34 +613,14 @@ impl ColumnCompositor {
                         // Start selection on left button press
                         if button == BTN_LEFT {
                             if let Some(terminals) = &terminals {
-                                if let Some(managed) = terminals.get(id) {
-                                    // Calculate cell position for coordinate conversion
-                                    let (cell_render_y, cell_height) =
-                                        self.get_cell_render_position(index);
-
-                                    let (char_width, char_height) = managed.terminal.cell_size();
-                                    let (col, row) = render_to_grid_coords(
-                                        render_location.x,
-                                        render_location.y,
-                                        cell_render_y,
-                                        cell_height as f64,
-                                        char_width,
-                                        char_height,
-                                    );
-
-                                    tracing::info!(col, row, "starting selection");
-
-                                    // Clear any previous selection and start new one
-                                    managed.terminal.clear_selection();
-                                    managed.terminal.start_selection(col, row);
-
-                                    // Store selection state for drag tracking
-                                    self.selecting = Some((
-                                        id,
-                                        cell_render_y as i32,
-                                        cell_height,
-                                    ));
-                                }
+                                self.selecting = start_terminal_selection(
+                                    self,
+                                    terminals,
+                                    id,
+                                    index,
+                                    render_location.x,
+                                    render_location.y,
+                                );
                             }
                         }
 

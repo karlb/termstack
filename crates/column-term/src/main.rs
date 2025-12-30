@@ -235,11 +235,19 @@ const EXIT_SHELL_COMMAND: i32 = 2;
 /// Exit code indicating TUI app - shell should resize terminal, run, then resize back
 const EXIT_TUI_APP: i32 = 3;
 
+/// Check if debug mode is enabled via DEBUG_COLUMN_TERM environment variable
+fn debug_enabled() -> bool {
+    // Cache result to avoid repeated env lookups (inline const fn not stable yet)
+    use std::sync::OnceLock;
+    static DEBUG: OnceLock<bool> = OnceLock::new();
+    *DEBUG.get_or_init(|| env::var("DEBUG_COLUMN_TERM").is_ok())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     // Debug: show we're running (only if DEBUG_COLUMN_TERM is set)
-    let debug = env::var("DEBUG_COLUMN_TERM").is_ok();
+    let debug = debug_enabled();
     if debug {
         eprintln!("[column-term] args: {:?}", args);
         eprintln!("[column-term] COLUMN_COMPOSITOR_SOCKET={:?}", env::var("COLUMN_COMPOSITOR_SOCKET"));
@@ -340,7 +348,7 @@ fn send_resize_request(mode: &str) -> Result<()> {
 /// If is_tui is true, the terminal will be created at full viewport height
 /// for TUI applications like vim, mc, fzf, etc.
 fn spawn_in_terminal(command: &str, is_tui: bool) -> Result<()> {
-    let debug = env::var("DEBUG_COLUMN_TERM").is_ok();
+    let debug = debug_enabled();
 
     // Get socket path from environment
     let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")

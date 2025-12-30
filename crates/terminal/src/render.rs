@@ -421,3 +421,119 @@ impl Default for TerminalRenderer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Terminal;
+
+    /// Get the background color at a specific character position from Terminal's buffer
+    fn get_bg_color_at(terminal: &Terminal, col: u32, row: u32) -> u32 {
+        let (cell_width, cell_height) = terminal.cell_size();
+        let x = col * cell_width + 1; // Sample near center of cell
+        let y = row * cell_height + 1;
+        let buffer = terminal.buffer();
+        let width = 80 * cell_width; // Assumes we rendered at 80 cols
+        let idx = (y * width + x) as usize;
+        buffer[idx]
+    }
+
+    #[test]
+    fn selection_uses_distinct_background_color() {
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+        terminal.inject_bytes(b"Hello World\r\n");
+
+        let (cell_width, cell_height) = terminal.cell_size();
+        let width = 80 * cell_width;
+        let height = 24 * cell_height;
+
+        // Render without selection
+        terminal.render(width, height, true);
+        let unselected_bg = get_bg_color_at(&terminal, 0, 0);
+
+        // Make a selection on first character
+        terminal.start_selection(0, 0);
+        terminal.update_selection(4, 0);
+
+        // Render with selection
+        terminal.render(width, height, true);
+        let selected_bg = get_bg_color_at(&terminal, 0, 0);
+
+        // Selected background should be different (SELECTION_BG)
+        assert_ne!(
+            unselected_bg, selected_bg,
+            "selection background should differ from normal background"
+        );
+        assert_eq!(
+            selected_bg, SELECTION_BG,
+            "selected cell should use SELECTION_BG color"
+        );
+    }
+
+    #[test]
+    fn selection_only_affects_selected_cells() {
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+        terminal.inject_bytes(b"ABCDEFGHIJ\r\n");
+
+        // Select first 3 characters (cols 0-2)
+        terminal.start_selection(0, 0);
+        terminal.update_selection(2, 0);
+
+        let (cell_width, cell_height) = terminal.cell_size();
+        let width = 80 * cell_width;
+        let height = 24 * cell_height;
+        terminal.render(width, height, true);
+
+        // Cols 0-2 should have selection background
+        for col in 0..=2 {
+            let bg = get_bg_color_at(&terminal, col, 0);
+            assert_eq!(
+                bg, SELECTION_BG,
+                "col {} should be selected",
+                col
+            );
+        }
+
+        // Cols 3+ should NOT have selection background
+        for col in 3..10 {
+            let bg = get_bg_color_at(&terminal, col, 0);
+            assert_ne!(
+                bg, SELECTION_BG,
+                "col {} should not be selected",
+                col
+            );
+        }
+    }
+
+    #[test]
+    fn cleared_selection_restores_normal_background() {
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+        terminal.inject_bytes(b"Hello\r\n");
+
+        let (cell_width, cell_height) = terminal.cell_size();
+        let width = 80 * cell_width;
+        let height = 24 * cell_height;
+
+        // Render without selection first
+        terminal.render(width, height, true);
+        let normal_bg = get_bg_color_at(&terminal, 0, 0);
+
+        // Add selection
+        terminal.start_selection(0, 0);
+        terminal.update_selection(4, 0);
+        terminal.render(width, height, true);
+        let selected_bg = get_bg_color_at(&terminal, 0, 0);
+        assert_eq!(selected_bg, SELECTION_BG);
+
+        // Clear selection
+        terminal.clear_selection();
+        terminal.render(width, height, true);
+        let cleared_bg = get_bg_color_at(&terminal, 0, 0);
+
+        // Background should return to normal
+        assert_eq!(
+            cleared_bg, normal_bg,
+            "cleared selection should restore normal background"
+        );
+    }
+}
