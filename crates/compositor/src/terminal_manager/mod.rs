@@ -66,6 +66,10 @@ pub struct ManagedTerminal {
 
     /// Previous alternate screen state (for detecting transitions)
     prev_alt_screen: bool,
+
+    /// Whether this terminal has been manually resized
+    /// When true, auto-growth is disabled (user explicitly chose a size)
+    pub manually_sized: bool,
 }
 
 impl ManagedTerminal {
@@ -94,6 +98,7 @@ impl ManagedTerminal {
             has_had_output: true, // Shell terminals start visible
             parent: None,
             prev_alt_screen: false,
+            manually_sized: false,
         })
     }
 
@@ -132,6 +137,7 @@ impl ManagedTerminal {
             has_had_output: false, // Will become true on first output
             parent,
             prev_alt_screen: false,
+            manually_sized: false,
         })
     }
 
@@ -217,6 +223,20 @@ impl ManagedTerminal {
         if let SizingAction::ApplyResize { .. } = action {
             self.terminal.complete_resize();
         }
+    }
+
+    /// Resize to a specific pixel height (used for manual drag resize)
+    /// Also sets `manually_sized` to disable auto-growth
+    pub fn resize_to_height(&mut self, height_px: u32, cell_height: u32) {
+        let rows = (height_px / cell_height).max(1) as u16;
+        self.resize(rows, cell_height);
+        self.manually_sized = true;
+        tracing::info!(
+            id = self.id.0,
+            height_px,
+            rows,
+            "terminal manually resized, auto-growth disabled"
+        );
     }
 
     /// Resize columns (width change from compositor resize)

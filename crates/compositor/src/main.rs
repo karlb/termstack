@@ -7,6 +7,7 @@ use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
 use smithay::backend::winit::{self, WinitEvent};
+use smithay::reexports::winit::window::CursorIcon;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::desktop::utils::send_frames_surface_tree;
@@ -268,6 +269,14 @@ fn main() -> anyhow::Result<()> {
             }
         }});
 
+        // Update cursor based on whether we're over a resize handle
+        let cursor = if compositor.cursor_on_resize_handle {
+            CursorIcon::NsResize
+        } else {
+            CursorIcon::Default
+        };
+        backend.window().set_cursor(cursor);
+
         if !compositor.running {
             break;
         }
@@ -397,8 +406,9 @@ fn main() -> anyhow::Result<()> {
 
             compositor.update_layout_heights(actual_heights);
 
-            // Adjust scroll if heights changed
-            if heights_changed {
+            // Adjust scroll if heights changed, but NOT during manual resize drag
+            // (user is intentionally changing heights, auto-scroll would be disruptive)
+            if heights_changed && compositor.resizing.is_none() {
                 if let Some(focused_idx) = compositor.focused_index {
                     if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                         tracing::info!(
@@ -802,6 +812,12 @@ fn process_terminal_output(
     // Handle sizing actions
     for (id, action) in sizing_actions {
         if let terminal::sizing::SizingAction::RequestGrowth { target_rows } = action {
+            // Skip auto-growth if terminal was manually resized
+            if terminal_manager.get(id).map(|t| t.manually_sized).unwrap_or(false) {
+                tracing::debug!(id = id.0, "skipping growth request - terminal was manually resized");
+                continue;
+            }
+
             tracing::info!(id = id.0, target_rows, "processing growth request");
             terminal_manager.grow_terminal(id, target_rows);
 

@@ -44,6 +44,22 @@ use crate::ipc::{ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
+/// Active resize drag state
+pub struct ResizeDrag {
+    /// Index of the cell being resized
+    pub cell_index: usize,
+    /// Initial pointer Y in screen coordinates (Y=0 at top)
+    pub start_screen_y: i32,
+    /// Cell height when drag started
+    pub start_height: i32,
+}
+
+/// Size of the resize handle zone at cell borders (pixels)
+pub const RESIZE_HANDLE_SIZE: i32 = 8;
+
+/// Minimum cell height (pixels)
+pub const MIN_CELL_HEIGHT: i32 = 50;
+
 /// Main compositor state
 pub struct ColumnCompositor {
     /// Wayland display handle
@@ -131,6 +147,10 @@ pub struct ColumnCompositor {
     /// Set when mouse button is pressed on a terminal, cleared on release
     pub selecting: Option<(TerminalId, i32, i32)>,
 
+    /// Active resize drag state
+    /// Set when mouse button is pressed on a resize handle, cleared on release
+    pub resizing: Option<ResizeDrag>,
+
     /// Key repeat state for terminals: (bytes to send, next repeat instant)
     /// Set on key press, cleared on key release
     pub key_repeat: Option<(Vec<u8>, std::time::Instant)>,
@@ -147,6 +167,10 @@ pub struct ColumnCompositor {
     /// Last known pointer position in render coordinates (Y=0 at bottom)
     /// Used for Shift+Scroll to scroll terminal under pointer
     pub pointer_position: Point<f64, smithay::utils::Logical>,
+
+    /// Whether the cursor should show a resize icon
+    /// Set by input handling when pointer is over a resize handle
+    pub cursor_on_resize_handle: bool,
 }
 
 /// A node in the column layout containing the cell and its cached height
@@ -270,11 +294,13 @@ impl ColumnCompositor {
             pending_paste: false,
             pending_copy: false,
             selecting: None,
+            resizing: None,
             key_repeat: None,
             repeat_delay_ms: 400,    // Standard delay before repeat starts
             repeat_interval_ms: 30,  // ~33 keys per second
             modifiers: ModifiersState::default(),
             pointer_position: Point::from((0.0, 0.0)),
+            cursor_on_resize_handle: false,
         };
 
         (compositor, display)
@@ -777,6 +803,55 @@ impl ColumnCompositor {
 
         // Fallback if index out of bounds
         (0.0, 0)
+    }
+
+    /// Get the screen bounds (top_y, bottom_y) for a cell at the given index
+    /// Returns (top_y, bottom_y) in screen coordinates (Y=0 at top)
+    pub fn get_cell_screen_bounds(&self, index: usize) -> Option<(i32, i32)> {
+        let mut content_y = -(self.scroll_offset as i32);
+
+        for (i, node) in self.layout_nodes.iter().enumerate() {
+            if i == index {
+                // In screen coords: top_y = content_y, bottom_y = content_y + height
+                let top_y = content_y;
+                let bottom_y = content_y + node.height;
+                return Some((top_y, bottom_y));
+            }
+            content_y += node.height;
+        }
+        None
+    }
+
+    /// Find if a screen Y coordinate is on a resize handle between cells
+    /// Returns the index of the cell whose bottom border is being grabbed
+    /// (i.e., the cell that will be resized)
+    ///
+    /// The resize handle is at the bottom edge of each cell (except the last).
+    /// In screen coordinates (Y=0 at top): handle zone is [cell_bottom - HANDLE_SIZE/2, cell_bottom + HANDLE_SIZE/2]
+    pub fn find_resize_handle_at(&self, screen_y: i32) -> Option<usize> {
+        // Don't allow resizing the last cell (no border below it)
+        if self.layout_nodes.len() < 2 {
+            return None;
+        }
+
+        let mut content_y = -(self.scroll_offset as i32);
+        let half_handle = RESIZE_HANDLE_SIZE / 2;
+
+        for (i, node) in self.layout_nodes.iter().enumerate() {
+            let bottom_y = content_y + node.height;
+
+            // Check if screen_y is in the handle zone around this cell's bottom edge
+            // But not for the last cell (nothing below to resize into)
+            if i < self.layout_nodes.len() - 1
+                && screen_y >= bottom_y - half_handle
+                && screen_y <= bottom_y + half_handle
+            {
+                return Some(i);
+            }
+
+            content_y = bottom_y;
+        }
+        None
     }
 }
 

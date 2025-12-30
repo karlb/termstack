@@ -9,7 +9,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::coords::ScreenY;
-use crate::state::{ColumnCell, ColumnCompositor};
+use crate::state::{ColumnCell, ColumnCompositor, ResizeDrag, MIN_CELL_HEIGHT};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
@@ -509,6 +509,50 @@ impl ColumnCompositor {
             "pointer motion"
         );
 
+        // Check if pointer is on a resize handle (for cursor change)
+        // Do this before checking for active resize drag
+        let on_resize_handle = self.find_resize_handle_at(screen_y.value() as i32).is_some();
+        self.cursor_on_resize_handle = on_resize_handle || self.resizing.is_some();
+
+        // Handle resize drag if active
+        if let Some(drag) = &self.resizing {
+            let cell_index = drag.cell_index;
+            let delta = screen_y.value() as i32 - drag.start_screen_y;
+            let new_height = (drag.start_height + delta).max(MIN_CELL_HEIGHT);
+
+            // Get the cell type to determine how to resize
+            let cell_type = self.layout_nodes.get(cell_index).and_then(|node| {
+                match &node.cell {
+                    ColumnCell::Terminal(id) => Some(*id),
+                    ColumnCell::External(_) => None,
+                }
+            });
+
+            match cell_type {
+                Some(id) => {
+                    // Terminal
+                    let cell_height = terminals.cell_height;
+                    if let Some(terminal) = terminals.get_mut(id) {
+                        terminal.resize_to_height(new_height as u32, cell_height);
+                    }
+                    // Update cached height in layout
+                    if let Some(node) = self.layout_nodes.get_mut(cell_index) {
+                        node.height = new_height;
+                    }
+                }
+                None => {
+                    // External window - request resize through the state
+                    self.request_resize(cell_index, new_height as u32);
+                    // Update cached height
+                    if let Some(node) = self.layout_nodes.get_mut(cell_index) {
+                        node.height = new_height;
+                    }
+                }
+            }
+            self.recalculate_layout();
+            return; // Don't process normal pointer motion during resize
+        }
+
         // Update selection if we're in a drag operation
         if let Some((term_id, cell_render_y, cell_height)) = self.selecting {
             update_terminal_selection(terminals, term_id, cell_render_y, cell_height, screen_x, render_y);
@@ -565,8 +609,15 @@ impl ColumnCompositor {
 
         let pointer = self.seat.get_pointer().unwrap();
 
-        // Handle left mouse button for selection
+        // Handle left mouse button release
         if button == BTN_LEFT && state == ButtonState::Released {
+            // End resize drag
+            if self.resizing.is_some() {
+                tracing::info!("resize drag ended");
+                self.resizing = None;
+                return; // Don't process further
+            }
+
             // End selection drag (selection remains for copying)
             if self.selecting.is_some() {
                 tracing::info!("selection drag ended");
@@ -594,6 +645,26 @@ impl ColumnCompositor {
                 cell_count = self.layout_nodes.len(),
                 "handle_pointer_button: click pressed"
             );
+
+            // Check for resize handle before normal cell hit detection
+            if button == BTN_LEFT {
+                if let Some(cell_index) = self.find_resize_handle_at(screen_location.y as i32) {
+                    // Start resize drag
+                    let start_height = self.get_cell_height(cell_index).unwrap_or(100);
+                    tracing::info!(
+                        cell_index,
+                        start_height,
+                        screen_y = screen_location.y,
+                        "starting resize drag"
+                    );
+                    self.resizing = Some(ResizeDrag {
+                        cell_index,
+                        start_screen_y: screen_location.y as i32,
+                        start_height,
+                    });
+                    return; // Don't process as normal click
+                }
+            }
 
             if let Some(index) = self.cell_at(render_location) {
                 // Clicked on a cell - focus it
