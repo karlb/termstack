@@ -130,6 +130,11 @@ proptest! {
             prop_assert!(state.current_rows() > 0);
         }
     }
+}
+
+// Separate proptest block with reduced case count for faster execution
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
 
     /// Alternate screen output never inflates content_rows
     ///

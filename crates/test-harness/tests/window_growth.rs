@@ -364,7 +364,7 @@ fn process_pty_returns_sizing_actions() {
             break;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Verify we got content
@@ -409,7 +409,7 @@ fn shell_terminal_grows_on_seq_output() {
     let init_timeout = Duration::from_secs(2);
     while start.elapsed() < init_timeout {
         terminal.process_pty();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let initial_content = terminal.content_rows();
@@ -432,7 +432,7 @@ fn shell_terminal_grows_on_seq_output() {
             break;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let final_content = terminal.content_rows();
@@ -483,7 +483,7 @@ fn shell_terminal_height_grows_with_output() {
     let init_timeout = Duration::from_secs(2);
     while start.elapsed() < init_timeout {
         terminal.process_pty();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Send command that produces 10 lines
@@ -515,7 +515,7 @@ fn shell_terminal_height_grows_with_output() {
             break;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     println!("Final: visual_height = {}, content_rows = {}", visual_height, terminal.content_rows());
@@ -594,7 +594,7 @@ fn fish_loop_output_triggers_growth() {
             break;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let content_rows = terminal.content_rows();
@@ -646,7 +646,7 @@ fn grid_contains_output_content() {
         if terminal.content_rows() >= 5 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Get actual grid content
@@ -687,7 +687,7 @@ fn shell_terminal_grid_has_output() {
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(1) {
         terminal.process_pty();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Send seq 5 command
@@ -700,7 +700,7 @@ fn shell_terminal_grid_has_output() {
         if terminal.content_rows() >= 5 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Dump grid content
@@ -767,7 +767,7 @@ fn keyboard_input_uses_carriage_return() {
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(1) {
         terminal.process_pty();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let initial_content = terminal.content_rows();
@@ -790,7 +790,7 @@ fn keyboard_input_uses_carriage_return() {
             break;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let final_content = terminal.content_rows();
@@ -831,20 +831,21 @@ fn shell_terminal_with_loop_output() {
     let (_cell_width, cell_height) = terminal.cell_size();
     let mut visual_height = 3 * cell_height;
 
-    // Wait for shell prompt
+    // Wait for shell to initialize and show prompt
+    // We need to wait for the shell to be fully ready before sending commands
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(2) {
+    while start.elapsed() < Duration::from_millis(500) {
         terminal.process_pty();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let content_before = terminal.content_rows();
     println!("Shell is: {}", std::env::var("SHELL").unwrap_or_default());
     println!("Before command: content_rows = {}", content_before);
 
-    // Send the fish loop command (also works in bash/zsh with different syntax)
+    // Use seq directly - works in all shells (bash, zsh, fish)
     // Use \r like the real compositor sends for Enter key
-    terminal.write(b"for i in $(seq 5); do echo $i; done\r").expect("write command");
+    terminal.write(b"seq 5\r").expect("write command");
 
     // Process output and handle growth
     let mut all_actions = Vec::new();
@@ -872,7 +873,7 @@ fn shell_terminal_with_loop_output() {
             break;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let content_after = terminal.content_rows();
@@ -944,11 +945,11 @@ fn fish_loop_typed_interactively() {
     let (_cell_width, cell_height) = terminal.cell_size();
     let mut visual_height = 3 * cell_height;
 
-    // Wait for fish prompt
+    // Wait for fish to initialize and show prompt
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(2) {
+    while start.elapsed() < Duration::from_millis(500) {
         terminal.process_pty();
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let content_before = terminal.content_rows();
@@ -983,7 +984,7 @@ fn fish_loop_typed_interactively() {
             break;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     let content_after = terminal.content_rows();

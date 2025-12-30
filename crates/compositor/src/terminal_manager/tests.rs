@@ -801,7 +801,7 @@
         }
 
         // Wait for cat to echo back
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(10));
 
         // Process PTY output
         manager.process_all();
@@ -826,7 +826,7 @@
         let id = manager.spawn_command("echo 'test output'", cwd, &env, None, false).unwrap();
 
         // Wait for command to produce output
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(10));
 
         // Clear dirty flag
         {
@@ -1045,7 +1045,7 @@
             terminal.write(b"First line\n").unwrap();
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(10));
         manager.process_all();
 
         let content1 = manager.get(id).unwrap().content_rows();
@@ -1058,7 +1058,7 @@
             terminal.write(b"Second line\n").unwrap();
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(10));
         manager.process_all();
 
         let content2 = manager.get(id).unwrap().content_rows();
@@ -1341,7 +1341,7 @@
                 terminal.write(line.as_bytes()).unwrap();
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(10));
         manager.process_all();
 
         // Phase 3: Resize back to content (TUI exited)
@@ -1584,7 +1584,7 @@
             if total_bytes_from_tui > 0 {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
         // We should have read SOME output from the TUI terminal
@@ -1636,7 +1636,7 @@
             if tui_bytes > 0 {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
         eprintln!("Shell bytes: {}, TUI bytes: {}", shell_bytes, tui_bytes);
@@ -2185,7 +2185,7 @@
                 break;
             }
 
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         // Verify terminal grew
@@ -2244,11 +2244,17 @@
             terminal.write(b"echo HELLO\n").expect("write to terminal");
         }
 
-        // Wait for output
+        // Wait for output (break early when content appears)
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
             manager.process_all();
-            std::thread::sleep(Duration::from_millis(50));
+            // Check if terminal has received output
+            let terminal = manager.get(id).unwrap();
+            let grid_content = terminal.terminal.grid_content().join("");
+            if grid_content.contains("HELLO") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         // Check grid content
