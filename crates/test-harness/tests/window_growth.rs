@@ -379,15 +379,15 @@ fn process_pty_returns_sizing_actions() {
         content_rows
     );
 
-    // Should have received growth requests
-    // (first 3 lines don't trigger, lines 4-10 each trigger one)
+    // Should have received at least one growth request
+    // (cursor-based detection generates one request to target size, not one per line)
     let growth_count = all_actions.iter()
         .filter(|a| matches!(a, terminal::sizing::SizingAction::RequestGrowth { .. }))
         .count();
 
     assert!(
-        growth_count >= 7,
-        "should have at least 7 RequestGrowth actions (lines 4-10), got {}",
+        growth_count >= 1,
+        "should have at least 1 RequestGrowth action, got {}",
         growth_count
     );
 }
@@ -612,10 +612,11 @@ fn fish_loop_output_triggers_growth() {
         content_rows
     );
 
-    // Should have received growth requests
+    // Should have received at least one growth request
+    // (cursor-based detection generates one request to target size, not one per line)
     assert!(
-        growth_count >= 7,
-        "should have at least 7 growth requests (for rows 4-10), got {}",
+        growth_count >= 1,
+        "should have at least 1 growth request, got {}",
         growth_count
     );
 }

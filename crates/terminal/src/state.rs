@@ -259,22 +259,35 @@ impl Terminal {
                     // Check if in alternate screen AFTER processing
                     let is_alt = term.mode().contains(TermMode::ALT_SCREEN);
 
-                    drop(term);
+                    // Use cursor position for both content tracking and growth decisions
+                    // This is more accurate than counting \n bytes, which can be emitted
+                    // during shell prompt redrawing without actual content growth
+                    if !is_alt && !was_alt {
+                        let cursor_line = term.grid().cursor.point.line.0 as u16;
+                        let visual_rows = self.sizing.current_rows();
 
-                    // Only count line endings when NOT in alternate screen mode
-                    // TUI apps use alternate screen and their output shouldn't affect content rows
-                    if !is_alt && !was_alt && newlines > 0 {
-                        tracing::info!(newlines, content_rows = self.sizing.content_rows(), "counting line endings");
-                        for _ in 0..newlines {
-                            let action = self.sizing.on_new_line();
-                            if action != SizingAction::None {
-                                tracing::info!(?action, "sizing action from line ending");
-                                actions.push(action);
+                        // Update content_rows to cursor position + 1 (cursor is 0-indexed)
+                        // This tracks actual content extent, not newline count
+                        let content_line = (cursor_line + 1) as u32;
+                        if content_line > self.sizing.content_rows() {
+                            // Update sizing state with new content extent
+                            while self.sizing.content_rows() < content_line {
+                                self.sizing.on_new_line();
                             }
                         }
+
+                        // Cursor is 0-indexed, so cursor_line >= visual_rows means we need more space
+                        // Compare against visual rows (terminal height), not PTY rows (1000)
+                        if cursor_line >= visual_rows {
+                            let target_rows = cursor_line + 1;
+                            tracing::info!(cursor_line, visual_rows, target_rows, "cursor exceeded visual size, requesting growth");
+                            actions.push(SizingAction::RequestGrowth { target_rows });
+                        }
                     } else if newlines > 0 && (is_alt || was_alt) {
-                        tracing::info!(newlines, was_alt, is_alt, "skipping line endings in alternate screen");
+                        tracing::info!(newlines, was_alt, is_alt, "skipping growth check in alternate screen");
                     }
+
+                    drop(term);
                 }
                 Err(_) => break,
             }
