@@ -8,7 +8,7 @@ use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Color32F, Frame, ImportMem, Texture};
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 
-use crate::state::ColumnCell;
+use crate::state::{ColumnCell, LayoutNode};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
@@ -53,15 +53,15 @@ pub fn prerender_terminals(
 
 /// Pre-render title bar textures for external windows (SSD only)
 pub fn prerender_title_bars(
-    cells: &[ColumnCell],
+    layout_nodes: &[LayoutNode],
     title_bar_renderer: &mut Option<TitleBarRenderer>,
     renderer: &mut GlesRenderer,
     width: i32,
 ) -> Vec<Option<GlesTexture>> {
     let mut textures = Vec::new();
 
-    for cell in cells.iter() {
-        if let ColumnCell::External(entry) = cell {
+    for node in layout_nodes.iter() {
+        if let ColumnCell::External(entry) = &node.cell {
             if entry.uses_csd {
                 textures.push(None);
             } else if let Some(ref mut tb_renderer) = title_bar_renderer {
@@ -88,19 +88,16 @@ pub fn prerender_title_bars(
 ///
 /// Returns (heights, external_elements_per_cell)
 pub fn collect_cell_data(
-    cells: &[ColumnCell],
+    layout_nodes: &[LayoutNode],
     terminal_manager: &TerminalManager,
-    cached_heights: &[i32],
     renderer: &mut GlesRenderer,
     scale: Scale<f64>,
 ) -> (Vec<i32>, Vec<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>) {
     let mut heights = Vec::new();
     let mut external_elements = Vec::new();
 
-    for cell in cells.iter() {
-        let cached_height = cached_heights.get(heights.len()).copied().unwrap_or(200);
-
-        match cell {
+    for node in layout_nodes.iter() {
+        match &node.cell {
             ColumnCell::Terminal(id) => {
                 let height = terminal_manager.get(*id)
                     .map(|t| {
@@ -112,7 +109,7 @@ pub fn collect_cell_data(
                             t.height as i32
                         }
                     })
-                    .unwrap_or(cached_height);
+                    .unwrap_or(node.height);
                 heights.push(height);
                 external_elements.push(Vec::new());
             }
@@ -123,7 +120,7 @@ pub fn collect_cell_data(
                     window.render_elements(renderer, location, scale, 1.0);
 
                 let window_height = if elements.is_empty() {
-                    cached_height
+                    node.height
                 } else {
                     elements.iter()
                         .map(|e| {
@@ -131,7 +128,7 @@ pub fn collect_cell_data(
                             geo.loc.y + geo.size.h
                         })
                         .max()
-                        .unwrap_or(cached_height)
+                        .unwrap_or(node.height)
                 };
 
                 let actual_height = if entry.uses_csd {
@@ -151,7 +148,7 @@ pub fn collect_cell_data(
 
 /// Build render data with computed Y positions for each cell
 pub fn build_render_data<'a>(
-    cells: &[ColumnCell],
+    layout_nodes: &[LayoutNode],
     heights: &[i32],
     external_elements: &mut [Vec<WaylandSurfaceRenderElement<GlesRenderer>>],
     title_bar_textures: &'a [Option<GlesTexture>],
@@ -162,11 +159,11 @@ pub fn build_render_data<'a>(
     let mut render_data = Vec::new();
     let mut content_y: i32 = -(scroll_offset as i32);
 
-    for (cell_idx, cell) in cells.iter().enumerate() {
+    for (cell_idx, node) in layout_nodes.iter().enumerate() {
         let height = heights[cell_idx];
         let render_y = screen_height - content_y - height;
 
-        match cell {
+        match &node.cell {
             ColumnCell::Terminal(id) => {
                 if let Some(term) = terminal_manager.get(*id) {
                     let has_texture = term.get_texture().is_some();
@@ -206,26 +203,25 @@ pub fn build_render_data<'a>(
 
 /// Log frame state for debugging (only when external windows present)
 pub fn log_frame_state(
-    cells: &[ColumnCell],
-    cached_heights: &[i32],
+    layout_nodes: &[LayoutNode],
     render_data: &[CellRenderData],
     terminal_manager: &TerminalManager,
     scroll_offset: f64,
     focused_index: Option<usize>,
     screen_height: i32,
 ) {
-    let has_external = cells.iter().any(|c| matches!(c, ColumnCell::External(_)));
+    let has_external = layout_nodes.iter().any(|n| matches!(n.cell, ColumnCell::External(_)));
     if !has_external {
         return;
     }
 
-    let cell_info: Vec<String> = cells.iter().enumerate().map(|(i, cell)| {
-        match cell {
+    let cell_info: Vec<String> = layout_nodes.iter().enumerate().map(|(i, node)| {
+        match &node.cell {
             ColumnCell::Terminal(id) => {
                 let hidden = terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false);
                 format!("[{}]Term({})h={}{}",
                     i, id.0,
-                    cached_heights.get(i).unwrap_or(&0),
+                    node.height,
                     if hidden { " HIDDEN" } else { "" })
             }
             ColumnCell::External(e) => {

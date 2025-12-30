@@ -874,7 +874,7 @@ fn handle_ipc_resize_request(
         term.resize(new_rows, cell_height);
 
         // Update cached height
-        for (i, node) in compositor.layout_nodes.iter_mut().enumerate() {
+        for node in compositor.layout_nodes.iter_mut() {
             if let ColumnCell::Terminal(tid) = node.cell {
                 if tid == focused_id {
                     node.height = term.height as i32;

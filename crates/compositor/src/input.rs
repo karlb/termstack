@@ -521,7 +521,7 @@ impl ColumnCompositor {
                 render_location = ?(render_location.x, render_location.y),
                 output_size = ?(self.output_size.w, self.output_size.h),
                 scroll_offset = self.scroll_offset,
-                cell_count = self.cells.len(),
+                cell_count = self.layout_nodes.len(),
                 "handle_pointer_button: click pressed"
             );
 
@@ -530,7 +530,7 @@ impl ColumnCompositor {
                 self.focused_index = Some(index);
 
                 // Extract cell info before doing mutable operations
-                let cell_info = match &self.cells[index] {
+                let cell_info = match &self.layout_nodes[index].cell {
                     ColumnCell::External(entry) => {
                         Some((true, Some(entry.toplevel.wl_surface().clone()), None))
                     }
@@ -675,15 +675,14 @@ impl ColumnCompositor {
         // Find which cell is under the point (only external windows have surfaces)
         let index = self.window_at(point)?;
 
-        let crate::state::ColumnCell::External(entry) = &self.cells[index] else {
+        let crate::state::ColumnCell::External(entry) = &self.layout_nodes[index].cell else {
             return None;
         };
 
         tracing::debug!(
             render_point = ?point,
             scroll_offset = self.scroll_offset,
-            cached_heights = ?self.cached_cell_heights,
-            cell_count = self.cells.len(),
+            cell_count = self.layout_nodes.len(),
             hit_index = index,
             "surface_under: checking point"
         );
@@ -692,11 +691,11 @@ impl ColumnCompositor {
 
         // Calculate the cell's content_y position (Y from top in content space)
         let mut content_y = -self.scroll_offset;
-        for (i, &h) in self.cached_cell_heights.iter().enumerate() {
+        for (i, node) in self.layout_nodes.iter().enumerate() {
             if i == index {
                 break;
             }
-            content_y += h as f64;
+            content_y += node.height as f64;
         }
 
         let cell_height = self.get_cell_height(index).unwrap_or(0) as f64;
