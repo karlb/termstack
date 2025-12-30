@@ -169,9 +169,32 @@ pub struct ColumnCompositor {
     pub cursor_on_resize_handle: bool,
 }
 
-/// A node in the column layout containing the cell and its cached height
+/// A node in the column layout containing the cell and its cached height.
+///
+/// # Height Consistency (Critical!)
+///
+/// The `height` field is cached from the previous frame's *actual rendered height*,
+/// not from querying the cell's preferred or bbox height. This is essential because:
+///
+/// 1. **Click detection must use render heights**: When a user clicks, we need to know
+///    which cell they hit. This calculation uses `height` from LayoutNode.
+///
+/// 2. **Heights must match render positions**: The render loop calculates Y positions
+///    using element geometry. If click detection used different heights (e.g., from
+///    `bbox()` which can differ), clicks would hit the wrong cells.
+///
+/// 3. **Frame-to-frame lag is acceptable**: Heights are updated at the start of each
+///    frame via `update_layout_heights()`. This means click detection uses heights from
+///    frame N-1, but since we also rendered with those heights in frame N-1, coordinates
+///    remain consistent.
+///
+/// **Do not** read heights from `Terminal.bbox()` or `WindowState.current_height()` for
+/// positioning calculations - always use `LayoutNode.height` which matches what was
+/// actually rendered.
 pub struct LayoutNode {
     pub cell: ColumnCell,
+    /// Cached height from last render frame. Used for layout, click detection, and scroll.
+    /// Updated by `update_layout_heights()` at the start of each frame.
     pub height: i32,
 }
 
@@ -656,8 +679,13 @@ impl ColumnCompositor {
         }
     }
 
-    /// Update cached cell heights from actual render heights
-    /// Called at the start of each frame with heights from rendering
+    /// Update cached cell heights from actual render heights.
+    ///
+    /// Called at the start of each frame with heights from the previous frame's
+    /// rendering. This ensures click detection coordinates match what was actually
+    /// rendered. See [`LayoutNode`] for why this consistency matters.
+    ///
+    /// The `heights` vector must have the same length as `layout_nodes`.
     pub fn update_layout_heights(&mut self, heights: Vec<i32>) {
         if heights.len() != self.layout_nodes.len() {
             tracing::warn!(
