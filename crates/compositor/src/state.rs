@@ -63,7 +63,7 @@ pub struct ColumnCompositor {
     pub space: Space<Window>,
 
     /// All cells in column order (terminals and external windows unified)
-    pub cells: Vec<ColumnCell>,
+    pub layout_nodes: Vec<LayoutNode>,
 
     /// Current scroll offset (pixels from top)
     pub scroll_offset: f64,
@@ -91,10 +91,6 @@ pub struct ColumnCompositor {
 
     /// Scroll request (in pixels, positive = down)
     pub scroll_requested: f64,
-
-    /// Cached cell heights for consistent positioning between input and render
-    /// Updated at start of each frame before input processing
-    pub cached_cell_heights: Vec<i32>,
 
     /// Pending spawn requests from IPC (column-term commands)
     pub pending_spawn_requests: Vec<SpawnRequest>,
@@ -133,6 +129,12 @@ pub struct ColumnCompositor {
     /// Active selection state: (terminal_id, terminal_y_offset, terminal_height)
     /// Set when mouse button is pressed on a terminal, cleared on release
     pub selecting: Option<(TerminalId, i32, i32)>,
+}
+
+/// A node in the column layout containing the cell and its cached height
+pub struct LayoutNode {
+    pub cell: ColumnCell,
+    pub height: i32,
 }
 
 /// A window entry in our column
@@ -229,7 +231,7 @@ impl ColumnCompositor {
             seat_state,
             data_device_state,
             space: Space::default(),
-            cells: Vec::new(),
+            layout_nodes: Vec::new(),
             scroll_offset: 0.0,
             focused_index: None,
             layout: ColumnLayout::empty(),
@@ -239,7 +241,6 @@ impl ColumnCompositor {
             spawn_terminal_requested: false,
             focus_change_requested: 0,
             scroll_requested: 0.0,
-            cached_cell_heights: Vec::new(),
             pending_spawn_requests: Vec::new(),
             pending_resize_request: None,
             new_external_window_index: None,
@@ -259,7 +260,7 @@ impl ColumnCompositor {
     /// Recalculate layout after any change
     pub fn recalculate_layout(&mut self) {
         // Use cached heights for layout calculation
-        let heights = self.cached_cell_heights.iter().map(|&h| h as u32);
+        let heights = self.layout_nodes.iter().map(|node| node.height as u32);
         self.layout = ColumnLayout::calculate_from_heights(
             heights,
             self.output_size.h as u32,
@@ -277,11 +278,11 @@ impl ColumnCompositor {
         let screen_height = self.output_size.h;
         let mut content_y: i32 = -(self.scroll_offset as i32);
 
-        for (i, cell) in self.cells.iter().enumerate() {
-            let height = self.get_cell_height(i).unwrap_or(200);
+        for (i, node) in self.layout_nodes.iter().enumerate() {
+            let height = node.height;
 
             // Only external windows need to be mapped in Space
-            if let ColumnCell::External(entry) = cell {
+            if let ColumnCell::External(entry) = &node.cell {
                 // Apply Y-flip: render_y = screen_height - content_y - height
                 let render_y = screen_height - content_y - height;
                 let loc = Point::from((0, render_y));
@@ -328,8 +329,8 @@ impl ColumnCompositor {
         // If we have an output terminal, remove it from the cells list
         // (it will be promoted back when it has output)
         if let Some(term_id) = output_terminal {
-            self.cells.retain(|cell| {
-                !matches!(cell, ColumnCell::Terminal(id) if *id == term_id)
+            self.layout_nodes.retain(|node| {
+                !matches!(node.cell, ColumnCell::Terminal(id) if id == term_id)
             });
             tracing::info!(
                 terminal_id = term_id.0,
@@ -338,8 +339,11 @@ impl ColumnCompositor {
         }
 
         // Insert AT focused index (appears above/before it on screen since lower index = higher Y)
-        let insert_index = self.focused_index.unwrap_or(self.cells.len());
-        self.cells.insert(insert_index, ColumnCell::External(entry));
+        let insert_index = self.focused_index.unwrap_or(self.layout_nodes.len());
+        self.layout_nodes.insert(insert_index, LayoutNode {
+            cell: ColumnCell::External(entry),
+            height: initial_height as i32,
+        });
 
         // Keep focus on the previously focused cell (which moved down by 1)
         // If nothing was focused, focus the new cell
@@ -351,7 +355,7 @@ impl ColumnCompositor {
         self.recalculate_layout();
 
         tracing::info!(
-            cell_count = self.cells.len(),
+            cell_count = self.layout_nodes.len(),
             focused = ?self.focused_index,
             insert_index,
             has_output_terminal = output_terminal.is_some(),
@@ -364,15 +368,13 @@ impl ColumnCompositor {
     pub fn add_terminal(&mut self, id: TerminalId) {
         // Insert at focused index to appear ABOVE the focused cell
         // (lower index = higher on screen after Y-flip)
-        let insert_index = self.focused_index.unwrap_or(self.cells.len());
+        let insert_index = self.focused_index.unwrap_or(self.layout_nodes.len());
 
-        self.cells.insert(insert_index, ColumnCell::Terminal(id));
-
-        // Also insert placeholder into cached_cell_heights to keep indices aligned
-        // Using 0 ensures the height calculation will use terminal.height instead of a stale value
-        if insert_index <= self.cached_cell_heights.len() {
-            self.cached_cell_heights.insert(insert_index, 0);
-        }
+        // Insert with placeholder height 0, will be updated in next frame
+        self.layout_nodes.insert(insert_index, LayoutNode {
+            cell: ColumnCell::Terminal(id),
+            height: 0,
+        });
 
         // Keep focus on the previously focused cell (which moved down by 1)
         // If nothing was focused, focus the new cell
@@ -383,7 +385,7 @@ impl ColumnCompositor {
         tracing::info!(
             terminal_id = id.0,
             insert_index,
-            cell_count = self.cells.len(),
+            cell_count = self.layout_nodes.len(),
             "terminal added"
         );
     }
@@ -391,10 +393,10 @@ impl ColumnCompositor {
     /// Remove an external window by its surface
     /// If the window had an output terminal, it's added to pending_output_terminal_cleanup
     pub fn remove_window(&mut self, surface: &WlSurface) {
-        if let Some(index) = self.cells.iter().position(|cell| {
-            matches!(cell, ColumnCell::External(entry) if entry.toplevel.wl_surface() == surface)
+        if let Some(index) = self.layout_nodes.iter().position(|node| {
+            matches!(&node.cell, ColumnCell::External(entry) if entry.toplevel.wl_surface() == surface)
         }) {
-            let output_terminal = if let ColumnCell::External(entry) = self.cells.remove(index) {
+            let output_terminal = if let ColumnCell::External(entry) = &self.layout_nodes.remove(index).cell {
                 self.space.unmap_elem(&entry.window);
                 entry.output_terminal
             } else {
@@ -415,7 +417,7 @@ impl ColumnCompositor {
             self.recalculate_layout();
 
             tracing::info!(
-                cell_count = self.cells.len(),
+                cell_count = self.layout_nodes.len(),
                 focused = ?self.focused_index,
                 has_output_terminal = output_terminal.is_some(),
                 "external window removed"
@@ -425,15 +427,15 @@ impl ColumnCompositor {
 
     /// Remove a terminal by its ID
     pub fn remove_terminal(&mut self, id: TerminalId) {
-        if let Some(index) = self.cells.iter().position(|cell| {
-            matches!(cell, ColumnCell::Terminal(tid) if *tid == id)
+        if let Some(index) = self.layout_nodes.iter().position(|node| {
+            matches!(node.cell, ColumnCell::Terminal(tid) if tid == id)
         }) {
-            self.cells.remove(index);
+            self.layout_nodes.remove(index);
             self.update_focus_after_removal(index);
             self.recalculate_layout();
 
             tracing::info!(
-                cell_count = self.cells.len(),
+                cell_count = self.layout_nodes.len(),
                 focused = ?self.focused_index,
                 terminal_id = ?id,
                 "terminal removed"
@@ -443,11 +445,11 @@ impl ColumnCompositor {
 
     /// Update focus after removing a cell at the given index
     fn update_focus_after_removal(&mut self, removed_index: usize) {
-        if self.cells.is_empty() {
+        if self.layout_nodes.is_empty() {
             self.focused_index = None;
         } else if let Some(focused) = self.focused_index {
-            if focused >= self.cells.len() {
-                self.focused_index = Some(self.cells.len() - 1);
+            if focused >= self.layout_nodes.len() {
+                self.focused_index = Some(self.layout_nodes.len() - 1);
             } else if focused > removed_index {
                 self.focused_index = Some(focused - 1);
             }
@@ -456,7 +458,10 @@ impl ColumnCompositor {
 
     /// Request an external window resize (by cell index)
     pub fn request_resize(&mut self, index: usize, new_height: u32) {
-        let Some(ColumnCell::External(entry)) = self.cells.get_mut(index) else {
+        let Some(node) = self.layout_nodes.get_mut(index) else {
+            return;
+        };
+        let ColumnCell::External(entry) = &mut node.cell else {
             return;
         };
 
@@ -492,13 +497,16 @@ impl ColumnCompositor {
 
     /// Handle window commit - check for resize completion
     pub fn handle_commit(&mut self, surface: &WlSurface) {
-        let Some(index) = self.cells.iter().position(|cell| {
-            matches!(cell, ColumnCell::External(entry) if entry.toplevel.wl_surface() == surface)
+        let Some(index) = self.layout_nodes.iter().position(|node| {
+            matches!(&node.cell, ColumnCell::External(entry) if entry.toplevel.wl_surface() == surface)
         }) else {
             return;
         };
 
-        let Some(ColumnCell::External(entry)) = self.cells.get_mut(index) else {
+        let Some(node) = self.layout_nodes.get_mut(index) else {
+            return;
+        };
+        let ColumnCell::External(entry) = &mut node.cell else {
             return;
         };
 
@@ -544,7 +552,7 @@ impl ColumnCompositor {
 
     /// Calculate maximum scroll offset based on content height
     fn max_scroll(&self) -> f64 {
-        let total_height: i32 = self.cached_cell_heights.iter().sum();
+        let total_height: i32 = self.layout_nodes.iter().map(|n| n.height).sum();
         (total_height as f64 - self.output_size.h as f64).max(0.0)
     }
 
@@ -580,7 +588,7 @@ impl ColumnCompositor {
     /// Focus next cell
     pub fn focus_next(&mut self) {
         if let Some(current) = self.focused_index {
-            if current + 1 < self.cells.len() {
+            if current + 1 < self.layout_nodes.len() {
                 self.focused_index = Some(current + 1);
                 self.ensure_focused_visible();
             }
@@ -589,23 +597,34 @@ impl ColumnCompositor {
 
     /// Update cached cell heights from actual render heights
     /// Called at the start of each frame with heights from rendering
-    pub fn update_cached_cell_heights(&mut self, heights: Vec<i32>) {
-        self.cached_cell_heights = heights;
+    pub fn update_layout_heights(&mut self, heights: Vec<i32>) {
+        if heights.len() != self.layout_nodes.len() {
+            tracing::warn!(
+                expected = self.layout_nodes.len(),
+                actual = heights.len(),
+                "update_layout_heights length mismatch"
+            );
+            return;
+        }
+
+        for (node, height) in self.layout_nodes.iter_mut().zip(heights.into_iter()) {
+            node.height = height;
+        }
     }
 
     /// Get the height of a cell at the given index
     pub fn get_cell_height(&self, index: usize) -> Option<i32> {
-        self.cached_cell_heights.get(index).copied()
+        self.layout_nodes.get(index).map(|n| n.height)
     }
 
     /// Scroll to ensure a cell's bottom edge is visible on screen.
     /// Returns the new scroll offset if it changed, None otherwise.
     pub fn scroll_to_show_cell_bottom(&mut self, cell_index: usize) -> Option<f64> {
-        let y: i32 = self.cached_cell_heights.iter().take(cell_index).sum();
+        let y: i32 = self.layout_nodes.iter().take(cell_index).map(|n| n.height).sum();
         let height = self.get_cell_height(cell_index).unwrap_or(200);
         let bottom_y = y + height;
         let visible_height = self.output_size.h;
-        let total_height: i32 = self.cached_cell_heights.iter().sum();
+        let total_height: i32 = self.layout_nodes.iter().map(|n| n.height).sum();
         let max_scroll = (total_height - visible_height).max(0) as f64;
         let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
         let new_scroll = min_scroll_for_bottom.min(max_scroll);
@@ -628,24 +647,24 @@ impl ColumnCompositor {
     /// Check if the focused cell is a terminal
     pub fn is_terminal_focused(&self) -> bool {
         self.focused_index
-            .and_then(|i| self.cells.get(i))
-            .map(|cell| matches!(cell, ColumnCell::Terminal(_)))
+            .and_then(|i| self.layout_nodes.get(i))
+            .map(|node| matches!(node.cell, ColumnCell::Terminal(_)))
             .unwrap_or(false)
     }
 
     /// Check if the focused cell is an external window
     pub fn is_external_focused(&self) -> bool {
         self.focused_index
-            .and_then(|i| self.cells.get(i))
-            .map(|cell| matches!(cell, ColumnCell::External(_)))
+            .and_then(|i| self.layout_nodes.get(i))
+            .map(|node| matches!(node.cell, ColumnCell::External(_)))
             .unwrap_or(false)
     }
 
     /// Get the focused terminal ID, if any
     pub fn focused_terminal(&self) -> Option<TerminalId> {
         self.focused_index
-            .and_then(|i| self.cells.get(i))
-            .and_then(|cell| match cell {
+            .and_then(|i| self.layout_nodes.get(i))
+            .and_then(|node| match &node.cell {
                 ColumnCell::Terminal(id) => Some(*id),
                 ColumnCell::External(_) => None,
             })
@@ -662,8 +681,8 @@ impl ColumnCompositor {
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
-        for (i, &height) in self.cached_cell_heights.iter().enumerate() {
-            let cell_height = height as f64;
+        for (i, node) in self.layout_nodes.iter().enumerate() {
+            let cell_height = node.height as f64;
 
             // Calculate render Y for this cell (same formula as main.rs rendering)
             // render_y = screen_height - content_y - height
@@ -690,14 +709,14 @@ impl ColumnCompositor {
     /// This is for compatibility with existing code that only cares about external windows
     pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
         self.cell_at(point).filter(|&i| {
-            matches!(self.cells.get(i), Some(ColumnCell::External(_)))
+            matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, ColumnCell::External(_)))
         })
     }
 
     /// Check if a point is on a terminal cell
     pub fn is_on_terminal(&self, point: Point<f64, smithay::utils::Logical>) -> bool {
         self.cell_at(point)
-            .map(|i| matches!(self.cells.get(i), Some(ColumnCell::Terminal(_))))
+            .map(|i| matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, ColumnCell::Terminal(_))))
             .unwrap_or(false)
     }
 
@@ -707,13 +726,13 @@ impl ColumnCompositor {
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
-        for (i, &height) in self.cached_cell_heights.iter().enumerate() {
+        for (i, node) in self.layout_nodes.iter().enumerate() {
             if i == index {
                 // render_y = screen_height - content_y - height
-                let render_y = screen_height - content_y - height as f64;
-                return (render_y, height);
+                let render_y = screen_height - content_y - node.height as f64;
+                return (render_y, node.height);
             }
-            content_y += height as f64;
+            content_y += node.height as f64;
         }
 
         // Fallback if index out of bounds
@@ -845,8 +864,8 @@ impl XdgDecorationHandler for ColumnCompositor {
         }).unwrap_or(false);
 
         let surface = toplevel.wl_surface();
-        for cell in &mut self.cells {
-            if let ColumnCell::External(entry) = cell {
+        for node in &mut self.layout_nodes {
+            if let ColumnCell::External(entry) = &mut node.cell {
                 if entry.toplevel.wl_surface() == surface {
                     entry.uses_csd = csd_stubborn;
                     tracing::info!(
@@ -876,8 +895,8 @@ impl XdgDecorationHandler for ColumnCompositor {
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         // Client unset mode preference - revert to server-side
         let surface = toplevel.wl_surface();
-        for cell in &mut self.cells {
-            if let ColumnCell::External(entry) = cell {
+        for node in &mut self.layout_nodes {
+            if let ColumnCell::External(entry) = &mut node.cell {
                 if entry.toplevel.wl_surface() == surface {
                     entry.uses_csd = false;
                     tracing::info!(
@@ -928,7 +947,7 @@ mod tests {
     struct MockPositioning {
         screen_height: i32,
         scroll_offset: f64,
-        cached_cell_heights: Vec<i32>,
+        layout_heights: Vec<i32>,
     }
 
     impl MockPositioning {
@@ -938,7 +957,7 @@ mod tests {
             let screen_height = self.screen_height as f64;
             let mut content_y = -self.scroll_offset;
 
-            for (i, &height) in self.cached_cell_heights.iter().enumerate() {
+            for (i, &height) in self.layout_heights.iter().enumerate() {
                 let cell_height = height as f64;
 
                 // Y-flip formula: render_y = screen_height - content_y - height
@@ -959,7 +978,7 @@ mod tests {
             let screen_height = self.screen_height;
             let mut content_y = -(self.scroll_offset as i32);
 
-            self.cached_cell_heights
+            self.layout_heights
                 .iter()
                 .map(|&height| {
                     let render_y = screen_height - content_y - height;
@@ -974,7 +993,7 @@ mod tests {
             let screen_height = self.screen_height as f64;
             let mut content_y = -self.scroll_offset;
 
-            self.cached_cell_heights
+            self.layout_heights
                 .iter()
                 .map(|&height| {
                     let cell_height = height as f64;
@@ -992,7 +1011,7 @@ mod tests {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
-            cached_cell_heights: vec![200],
+            layout_heights: vec![200],
         };
 
         // With Y-flip: cell 0 (height 200) at content_y=0
@@ -1012,7 +1031,7 @@ mod tests {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
-            cached_cell_heights: vec![200, 300],
+            layout_heights: vec![200, 300],
         };
 
         // Cell 0: content_y=0, height=200
@@ -1041,7 +1060,7 @@ mod tests {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
-            cached_cell_heights: vec![150, 200, 100],
+            layout_heights: vec![150, 200, 100],
         };
 
         let render_pos = pos.render_positions();
@@ -1069,7 +1088,7 @@ mod tests {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 50.0,
-            cached_cell_heights: vec![200, 300],
+            layout_heights: vec![200, 300],
         };
 
         // With scroll=50:
@@ -1093,7 +1112,7 @@ mod tests {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
-            cached_cell_heights: vec![100, 200, 150],
+            layout_heights: vec![100, 200, 150],
         };
 
         // Total height = 100 + 200 + 150 = 450
@@ -1126,7 +1145,7 @@ mod tests {
         let pos = MockPositioning {
             screen_height: 800,
             scroll_offset: 0.0,
-            cached_cell_heights: heights.clone(),
+            layout_heights: heights.clone(),
         };
 
         let ranges = pos.cell_ranges();
@@ -1154,11 +1173,11 @@ mod tests {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
-            cached_cell_heights: vec![100, 150, 200],
+            layout_heights: vec![100, 150, 200],
         };
 
         // Check every pixel in the cell range
-        let total_height: i32 = pos.cached_cell_heights.iter().sum();
+        let total_height: i32 = pos.layout_heights.iter().sum();
         let bottom_y = pos.screen_height - total_height;
 
         for y in bottom_y..pos.screen_height {
@@ -1177,117 +1196,41 @@ mod tests {
     #[test]
     fn test_new_terminals_insert_above_focused() {
         use crate::terminal_manager::TerminalId;
-        use crate::state::ColumnCell;
+        use crate::state::{ColumnCell, LayoutNode};
 
         // Simulate cell insertion behavior
-        let mut cells: Vec<ColumnCell> = Vec::new();
+        let mut layout_nodes: Vec<LayoutNode> = Vec::new();
         let mut focused_index: Option<usize> = None;
 
         // Helper to add terminal with the same logic as add_terminal
-        let add_terminal = |id: u32, cells: &mut Vec<ColumnCell>, focused: &mut Option<usize>| {
-            let insert_index = focused.unwrap_or(cells.len());
-            cells.insert(insert_index, ColumnCell::Terminal(TerminalId(id)));
+        let add_terminal = |id: u32, nodes: &mut Vec<LayoutNode>, focused: &mut Option<usize>| {
+            let insert_index = focused.unwrap_or(nodes.len());
+            nodes.insert(insert_index, LayoutNode {
+                cell: ColumnCell::Terminal(TerminalId(id)),
+                height: 0
+            });
             *focused = Some(focused.map(|idx| idx + 1).unwrap_or(insert_index));
         };
 
         // Add first terminal - should be focused
-        add_terminal(0, &mut cells, &mut focused_index);
-        assert_eq!(cells.len(), 1);
+        add_terminal(0, &mut layout_nodes, &mut focused_index);
+        assert_eq!(layout_nodes.len(), 1);
         assert_eq!(focused_index, Some(0));
-        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(0))));
+        assert!(matches!(layout_nodes[0].cell, ColumnCell::Terminal(TerminalId(0))));
 
         // Add second terminal - should appear above T0, focus stays on T0
-        add_terminal(1, &mut cells, &mut focused_index);
-        assert_eq!(cells.len(), 2);
+        add_terminal(1, &mut layout_nodes, &mut focused_index);
+        assert_eq!(layout_nodes.len(), 2);
         assert_eq!(focused_index, Some(1), "focus should move to index 1 (still T0)");
-        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0 (top)");
-        assert!(matches!(cells[1], ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 1");
+        assert!(matches!(layout_nodes[0].cell, ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0 (top)");
+        assert!(matches!(layout_nodes[1].cell, ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 1");
 
         // Add third terminal - should appear above T0 (at index 1), focus stays on T0
-        add_terminal(2, &mut cells, &mut focused_index);
-        assert_eq!(cells.len(), 3);
+        add_terminal(2, &mut layout_nodes, &mut focused_index);
+        assert_eq!(layout_nodes.len(), 3);
         assert_eq!(focused_index, Some(2), "focus should move to index 2 (still T0)");
-        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0");
-        assert!(matches!(cells[1], ColumnCell::Terminal(TerminalId(2))), "T2 should be at index 1");
-        assert!(matches!(cells[2], ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 2 (bottom)");
-    }
-
-    #[test]
-    fn test_add_terminal_syncs_cached_heights() {
-        // Tests that add_terminal inserts a placeholder into cached_cell_heights
-        // to keep indices aligned with cells
-        //
-        // This simulates the exact logic used in add_terminal:
-        // 1. Insert new cell at insert_index
-        // 2. Insert 0 into cached_cell_heights at same index
-
-        use crate::terminal_manager::TerminalId;
-        use super::ColumnCell;
-
-        // Simulate initial state: one terminal with cached height 51
-        let mut cells: Vec<ColumnCell> = vec![ColumnCell::Terminal(TerminalId(0))];
-        let mut cached_cell_heights: Vec<i32> = vec![51];
-        let mut focused_index: Option<usize> = Some(0);
-
-        // Simulate add_terminal logic
-        let insert_index = focused_index.unwrap_or(cells.len());
-        cells.insert(insert_index, ColumnCell::Terminal(TerminalId(1)));
-
-        // This is the fix: insert 0 into cached heights to keep indices aligned
-        if insert_index <= cached_cell_heights.len() {
-            cached_cell_heights.insert(insert_index, 0);
-        }
-
-        focused_index = Some(focused_index.map(|idx| idx + 1).unwrap_or(insert_index));
-
-        // After add_terminal:
-        // - cells should be [Terminal(1), Terminal(0)]
-        // - cached_cell_heights should be [0, 51]
-        // The 0 is a placeholder for the new terminal, old height (51) shifted to index 1
-
-        assert_eq!(cells.len(), 2);
-        assert!(matches!(cells[0], ColumnCell::Terminal(TerminalId(1))), "new terminal at index 0");
-        assert!(matches!(cells[1], ColumnCell::Terminal(TerminalId(0))), "old terminal at index 1");
-
-        assert_eq!(cached_cell_heights.len(), 2,
-            "cached_cell_heights should grow with cells");
-        assert_eq!(cached_cell_heights[0], 0,
-            "new terminal should have placeholder height 0");
-        assert_eq!(cached_cell_heights[1], 51,
-            "old terminal's height should shift to index 1");
-
-        assert_eq!(focused_index, Some(1), "focus should stay on old terminal");
-
-        // Now simulate the height recalculation that happens after add_terminal in main.rs
-        // The key is: for the new terminal, we should NOT use cached_cell_heights[0]
-        // because it's 0 (placeholder), not a real cached height
-
-        // This mimics the logic in main.rs:
-        let new_terminal_height = 714; // Full TUI height
-        let old_terminal_hidden = true; // Parent is hidden
-
-        let new_heights: Vec<i32> = cells.iter().enumerate().map(|(i, cell)| {
-            match cell {
-                ColumnCell::Terminal(tid) => {
-                    // Check if hidden first
-                    let is_hidden = if tid.0 == 0 { old_terminal_hidden } else { false };
-                    if is_hidden {
-                        return 0;
-                    }
-                    // Use cached if available AND > 0
-                    if let Some(&cached) = cached_cell_heights.get(i) {
-                        if cached > 0 {
-                            return cached;
-                        }
-                    }
-                    // For new terminals (cached=0), use actual terminal.height
-                    if tid.0 == 1 { new_terminal_height } else { 51 }
-                }
-                _ => 200,
-            }
-        }).collect();
-
-        assert_eq!(new_heights[0], 714, "new TUI terminal should use full height, not stale cached value");
-        assert_eq!(new_heights[1], 0, "old terminal is hidden, should be 0");
+        assert!(matches!(layout_nodes[0].cell, ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0");
+        assert!(matches!(layout_nodes[1].cell, ColumnCell::Terminal(TerminalId(2))), "T2 should be at index 1");
+        assert!(matches!(layout_nodes[2].cell, ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 2 (bottom)");
     }
 }
