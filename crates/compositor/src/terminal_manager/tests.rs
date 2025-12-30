@@ -2,81 +2,57 @@
     use std::collections::HashMap;
 
     #[test]
-    fn tui_terminal_has_full_viewport_height() {
-        // Create a terminal manager with known dimensions
+    fn command_terminal_starts_small() {
+        // All command terminals now start small - TUI apps are auto-detected via alternate screen
         let output_width = 800;
         let output_height = 720;
         let mut manager = TerminalManager::new_with_size(output_width, output_height);
 
-        // Capture initial values BEFORE spawning (these use default cell_height=17)
-        let initial_cell_height = manager.cell_height;
-        let initial_max_rows = manager.max_rows;
-
-        assert_eq!(initial_cell_height, 17, "initial cell_height should be 17");
-        assert_eq!(initial_max_rows, 42, "initial max_rows should be 720/17 = 42");
-
-        // Spawn a TUI command
+        // Spawn a command terminal
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None, true);
+        let result = manager.spawn_command("echo test", cwd, &env, None);
 
         assert!(result.is_ok(), "spawn_command should succeed");
         let id = result.unwrap();
 
-        // After spawning, cell dimensions may have been updated from the font
-        let actual_cell_height = manager.cell_height;
-        let actual_max_rows = manager.max_rows;
-
-        // The terminal should use the CURRENT max_rows and cell_height
-        let expected_height = actual_max_rows as u32 * actual_cell_height;
-
-        // Get the terminal and check its height
         let terminal = manager.get(id).expect("terminal should exist");
+        let cell_height = manager.cell_height;
+        let initial_rows = manager.initial_rows;
+        let expected_height = initial_rows as u32 * cell_height;
 
-        // Debug output
-        eprintln!("initial_cell_height={}, actual_cell_height={}", initial_cell_height, actual_cell_height);
-        eprintln!("initial_max_rows={}, actual_max_rows={}", initial_max_rows, actual_max_rows);
-        eprintln!("terminal.height={}, expected_height={}", terminal.height, expected_height);
-
+        // Terminal should start at initial_rows height (small)
         assert_eq!(
             terminal.height,
             expected_height,
-            "TUI terminal height should be {} (max_rows={} * cell_height={}), but was {}",
+            "command terminal should start small: {} (initial_rows={} * cell_height={}), but was {}",
             expected_height,
-            actual_max_rows,
-            actual_cell_height,
+            initial_rows,
+            cell_height,
             terminal.height
         );
     }
 
     #[test]
-    fn tui_uses_max_rows_after_font_loads() {
-        // This test verifies that when a TUI terminal is spawned,
-        // it uses the CURRENT max_rows (which may differ from initial if font changed)
+    fn command_terminal_pty_has_large_rows() {
+        // All command terminals use 1000 PTY rows (no scrolling needed)
         let output_width = 800;
         let output_height = 720;
         let mut manager = TerminalManager::new_with_size(output_width, output_height);
 
-        // Spawn a TUI command
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None, true);
+        let result = manager.spawn_command("echo test", cwd, &env, None);
         let id = result.unwrap();
 
         let terminal = manager.get(id).expect("terminal should exist");
+        let (_, pty_rows) = terminal.terminal.dimensions();
 
-        // The key assertion: terminal height should fill the viewport
-        // (within one cell_height, since max_rows is floor division)
-        let viewport_height = output_height as i32;
-        let terminal_height = terminal.height as i32;
-        let cell_height = manager.cell_height as i32;
-
-        // Terminal should be within one cell of viewport height
-        let height_diff = (viewport_height - terminal_height).abs();
-        assert!(
-            height_diff < cell_height,
-            "TUI terminal should fill viewport: viewport={}, terminal={}, diff={}, cell_height={}",
-            viewport_height, terminal_height, height_diff, cell_height
+        // PTY should have large row count for internal scrollback
+        assert_eq!(
+            pty_rows, 1000,
+            "command terminal PTY should have 1000 rows, but was {}",
+            pty_rows
         );
     }
 
@@ -93,7 +69,7 @@
         // Spawn any terminal to trigger font loading
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let _ = manager.spawn_command("echo test", cwd, &env, None, false);
+        let _ = manager.spawn_command("echo test", cwd, &env, None);
 
         let new_cell_height = manager.cell_height;
         let new_max_rows = manager.max_rows;
@@ -121,7 +97,7 @@
         // Spawn a non-TUI command
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None, false);
+        let result = manager.spawn_command("echo test", cwd, &env, None);
 
         assert!(result.is_ok(), "spawn_command should succeed");
         let id = result.unwrap();
@@ -143,32 +119,29 @@
     }
 
     #[test]
-    fn tui_terminal_pty_rows_equals_max_rows() {
-        // The PTY must report the correct number of rows to the program
+    fn command_terminal_pty_has_1000_rows() {
+        // All command terminals use 1000 PTY rows for internal scrollback
+        // TUI apps are auto-detected via alternate screen and resized then
         let output_width = 800;
         let output_height = 720;
         let mut manager = TerminalManager::new_with_size(output_width, output_height);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None, true);
+        let result = manager.spawn_command("echo test", cwd, &env, None);
         let id = result.unwrap();
 
         let terminal = manager.get(id).expect("terminal should exist");
         let (cols, rows) = terminal.terminal.dimensions();
 
-        // For TUI apps, the PTY should report max_rows
-        // (within one cell due to floor division)
-        let expected_rows = manager.max_rows;
-
+        // PTY should have 1000 rows
         assert_eq!(
-            rows, expected_rows,
-            "TUI terminal PTY rows should be max_rows={}, but was {}",
-            expected_rows, rows
+            rows, 1000,
+            "command terminal PTY rows should be 1000, but was {}",
+            rows
         );
 
         eprintln!("PTY dimensions: cols={}, rows={}", cols, rows);
-        eprintln!("max_rows={}, cell_height={}", manager.max_rows, manager.cell_height);
     }
 
     #[test]
@@ -180,7 +153,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None, false);
+        let result = manager.spawn_command("echo test", cwd, &env, None);
         let id = result.unwrap();
 
         let terminal = manager.get(id).expect("terminal should exist");
@@ -194,56 +167,46 @@
     }
 
     #[test]
-    fn layout_height_uses_terminal_height_not_default() {
-        // This test simulates what main.rs does when calculating heights
-        // for layout after spawning a terminal
+    fn terminal_height_property_is_correct() {
+        // Command terminals start with small height (initial_rows * cell_height)
+        // They also start hidden until they produce output
         let output_width = 800;
         let output_height = 720;
         let mut manager = TerminalManager::new_with_size(output_width, output_height);
 
-        // Spawn a TUI terminal
+        // Spawn a command terminal
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, true).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
-        // Simulate what main.rs does for calculating heights:
-        // It iterates over cells and for each terminal, gets terminal.height
         let terminal = manager.get(id).unwrap();
 
-        // The height used for layout MUST be the terminal's height, not some default
-        let layout_height = if terminal.hidden {
-            0
-        } else {
-            terminal.height as i32
-        };
+        // Command terminals start small
+        let cell_height = manager.cell_height;
+        let initial_rows = manager.initial_rows;
+        let expected_height = initial_rows as u32 * cell_height;
 
-        // For TUI, layout height should be full viewport (within one cell)
-        let viewport_height = output_height as i32;
-        let cell_height = manager.cell_height as i32;
+        eprintln!("terminal.height={}, expected={}, hidden={}",
+                  terminal.height, expected_height, terminal.hidden);
 
-        eprintln!("layout_height={}, viewport_height={}, cell_height={}",
-                  layout_height, viewport_height, cell_height);
-
-        // Layout height should be close to viewport height
-        let height_diff = (viewport_height - layout_height).abs();
-        assert!(
-            height_diff < cell_height,
-            "TUI layout height should be close to viewport: layout={}, viewport={}, diff={}",
-            layout_height, viewport_height, height_diff
+        // The height property should be small initially
+        assert_eq!(
+            terminal.height, expected_height,
+            "terminal.height should be initial size: expected={}, got={}",
+            expected_height, terminal.height
         );
 
-        // And NOT be the old default of 200
+        // Command terminals start hidden (become visible when output arrives)
         assert!(
-            layout_height > 200,
-            "TUI layout height should NOT be default 200: was {}",
-            layout_height
+            terminal.hidden,
+            "command terminal should start hidden"
         );
     }
 
     #[test]
-    fn tui_mc_gets_full_height() {
-        // Spawn actual mc command and verify it gets full terminal dimensions
-        // This simulates EXACTLY what main.rs does for IPC spawn
+    fn mc_command_spawns_with_correct_dimensions() {
+        // Spawn actual mc command and verify terminal dimensions
+        // mc (and other TUI apps) are auto-detected via alternate screen
         let output_width = 800;
         let output_height = 720;
         let mut manager = TerminalManager::new_with_size(output_width, output_height);
@@ -256,12 +219,11 @@
 
         let cwd = std::path::Path::new("/tmp");
 
-        // Simulate the command transformation from main.rs:
-        // format!("echo '> {}'; {}", escaped, request.command)
+        // Simulate the command transformation from main.rs
         let command = "echo '> mc'; mc";
 
-        // Spawn mc as a TUI app (is_tui = true)
-        let result = manager.spawn_command(command, cwd, &env, None, true);
+        // Spawn mc
+        let result = manager.spawn_command(command, cwd, &env, None);
         assert!(result.is_ok(), "spawn mc should succeed: {:?}", result.err());
         let id = result.unwrap();
 
@@ -270,31 +232,31 @@
         // Check terminal dimensions
         let (cols, pty_rows) = terminal.terminal.dimensions();
         let visual_height = terminal.height;
-        let max_rows = manager.max_rows;
         let cell_height = manager.cell_height;
+        let initial_rows = manager.initial_rows;
 
         eprintln!("mc terminal: cols={}, pty_rows={}, visual_height={}", cols, pty_rows, visual_height);
-        eprintln!("expected: max_rows={}, expected_height={}", max_rows, max_rows as u32 * cell_height);
 
-        // PTY rows should equal max_rows for TUI
+        // PTY should have 1000 rows (all command terminals)
         assert_eq!(
-            pty_rows, max_rows,
-            "mc PTY rows should be max_rows={}, but was {}",
-            max_rows, pty_rows
+            pty_rows, 1000,
+            "mc PTY rows should be 1000, but was {}",
+            pty_rows
         );
 
-        // Visual height should be max_rows * cell_height
-        let expected_height = max_rows as u32 * cell_height;
+        // Visual height should be small initially (initial_rows * cell_height)
+        // TUI apps resize to full when they enter alternate screen
+        let expected_height = initial_rows as u32 * cell_height;
         assert_eq!(
             visual_height, expected_height,
-            "mc visual height should be {}, but was {}",
+            "mc visual height should be {} (initial), but was {}",
             expected_height, visual_height
         );
     }
 
     #[test]
-    fn tui_stty_reports_correct_size() {
-        // Use stty to verify the PTY size is correctly set
+    fn stty_command_has_large_pty() {
+        // All command terminals have 1000 PTY rows for internal scrollback
         let output_width = 800;
         let output_height = 720;
         let mut manager = TerminalManager::new_with_size(output_width, output_height);
@@ -303,7 +265,7 @@
         let cwd = std::path::Path::new("/tmp");
 
         // Spawn stty size which prints "rows cols"
-        let result = manager.spawn_command("stty size", cwd, &env, None, true);
+        let result = manager.spawn_command("stty size", cwd, &env, None);
         assert!(result.is_ok(), "spawn stty should succeed");
         let id = result.unwrap();
 
@@ -311,14 +273,15 @@
         let (cols, pty_rows) = terminal.terminal.dimensions();
 
         eprintln!("stty terminal: pty_rows={}, cols={}", pty_rows, cols);
-        eprintln!("expected max_rows={}", manager.max_rows);
 
-        // For TUI, PTY should report max_rows
+        // PTY should have 1000 rows
         assert_eq!(
-            pty_rows, manager.max_rows,
-            "TUI stty PTY rows should be {}, was {}",
-            manager.max_rows, pty_rows
+            pty_rows, 1000,
+            "stty PTY rows should be 1000, was {}",
+            pty_rows
         );
+
+        assert!(cols > 0, "cols should be set");
     }
 
     #[test]
@@ -338,7 +301,7 @@
         // Spawn a non-TUI terminal (like a shell)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None, false);
+        let result = manager.spawn_command("echo test", cwd, &env, None);
         assert!(result.is_ok(), "spawn should succeed");
         let id = result.unwrap();
 
@@ -414,7 +377,7 @@
         // Spawn a non-TUI terminal
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -469,7 +432,7 @@
         // Spawn a non-TUI terminal (like shell)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -525,7 +488,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let terminal = manager.get(id).unwrap();
 
@@ -566,7 +529,7 @@
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         // Use a command that outputs multiple lines
-        let id = manager.spawn_command("seq 1 50", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("seq 1 50", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -617,7 +580,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -670,7 +633,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -715,7 +678,7 @@
         // Spawn a terminal that outputs a lot of content (triggers growth)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("seq 1 100", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("seq 1 100", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -774,7 +737,7 @@
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         // Use cat which will echo back what we write
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -823,7 +786,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo 'test output'", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo 'test output'", cwd, &env, None).unwrap();
 
         // Wait for command to produce output
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -863,7 +826,7 @@
         // Use cat to simulate a terminal we can write to
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -957,7 +920,7 @@
         // Spawn a shell (non-TUI)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1027,7 +990,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1095,7 +1058,7 @@
         let cwd = std::path::Path::new("/tmp");
         // Use bash -c with a script that waits, then draws
         // This simulates the shell waiting for mc to start
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1180,7 +1143,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1229,7 +1192,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1298,7 +1261,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1384,7 +1347,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1437,7 +1400,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1564,7 +1527,7 @@
         let cwd = std::path::Path::new("/tmp");
 
         // Spawn a TUI terminal with echo - should produce output immediately
-        let result = manager.spawn_command("echo 'TUI OUTPUT TEST'", cwd, &env, None, true);
+        let result = manager.spawn_command("echo 'TUI OUTPUT TEST'", cwd, &env, None);
         assert!(result.is_ok(), "spawn should succeed");
         let id = result.unwrap();
 
@@ -1611,11 +1574,11 @@
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
 
-        // First spawn a "shell" terminal (non-TUI, just sits there)
-        let shell_id = manager.spawn_command("sleep 10", cwd, &env, None, false).unwrap();
+        // First spawn a "shell" terminal (just sits there)
+        let shell_id = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
 
-        // Then spawn a TUI terminal with echo
-        let tui_id = manager.spawn_command("echo 'FROM TUI'", cwd, &env, Some(shell_id), true).unwrap();
+        // Then spawn a child terminal with echo
+        let tui_id = manager.spawn_command("echo 'FROM TUI'", cwd, &env, Some(shell_id)).unwrap();
 
         // Allow time for output
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1663,7 +1626,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("sleep 60", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("sleep 60", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1779,7 +1742,7 @@
         // Spawn a terminal - we'll inject bytes directly instead of using PTY
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("sleep 10", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
 
         // Step 1: Simulate initial shell content (prompt, maybe previous commands)
         // Inject bytes directly to terminal emulator
@@ -1887,7 +1850,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         // Initially not in alternate screen
         {
@@ -1940,7 +1903,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         // Resize the terminal to max height (simulating content growth)
         {
@@ -1966,7 +1929,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let parent_id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let parent_id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         // Parent is not in alternate screen - spawns should be allowed
         {
@@ -1978,7 +1941,7 @@
         }
 
         // Child spawn should succeed
-        let child_id = manager.spawn_command("echo child", cwd, &env, Some(parent_id), false).unwrap();
+        let child_id = manager.spawn_command("echo child", cwd, &env, Some(parent_id)).unwrap();
         assert!(manager.get(child_id).is_some(), "Child should be spawned");
     }
 
@@ -1989,7 +1952,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let parent_id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let parent_id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         // Enter alternate screen (simulating TUI app start)
         {
@@ -2017,7 +1980,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let max_height = manager.max_rows as u32 * manager.cell_height;
 
@@ -2055,22 +2018,24 @@
         }
     }
 
-    /// Test that no resize is needed if terminal is already at max height.
+    /// Test that entering alternate screen triggers resize when terminal is small.
     #[test]
-    fn no_resize_if_already_at_max_height() {
+    fn resize_needed_when_entering_alt_screen() {
         let mut manager = TerminalManager::new_with_size(800, 600);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
 
-        // Spawn as TUI terminal (already at max height)
-        let id = manager.spawn_command("echo test", cwd, &env, None, true).unwrap();
+        // Spawn a command terminal (starts small)
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let max_height = manager.max_rows as u32 * manager.cell_height;
+        let initial_rows = manager.initial_rows;
+        let expected_small_height = initial_rows as u32 * manager.cell_height;
 
-        // Verify terminal is at max height
+        // Verify terminal starts small
         {
             let terminal = manager.get(id).unwrap();
-            assert_eq!(terminal.height, max_height, "TUI terminal should be at max height");
+            assert_eq!(terminal.height, expected_small_height, "terminal should start small");
         }
 
         // Enter alternate screen
@@ -2079,12 +2044,12 @@
             terminal.inject_bytes(b"\x1b[?1049h");
         }
 
-        // Check resize needed - should be false since already at max
+        // Check resize needed - should be true since terminal is small
         {
             let terminal = manager.get_mut(id).unwrap();
             assert!(
-                !terminal.check_alt_screen_resize_needed(max_height),
-                "Should not need resize when already at max height"
+                terminal.check_alt_screen_resize_needed(max_height),
+                "Should need resize when entering alt screen from small terminal"
             );
         }
     }
@@ -2095,7 +2060,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None, false).unwrap();
+        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
 
         let max_height = manager.max_rows as u32 * manager.cell_height;
 
@@ -2299,7 +2264,6 @@
             cwd,
             &env,
             Some(parent_id),
-            false,
         );
 
         assert!(result.is_ok(), "spawn_command should succeed");
@@ -2389,7 +2353,6 @@
             cwd,
             &env,
             Some(parent_id),
-            false,
         );
 
         assert!(result.is_ok(), "spawn_command should succeed");

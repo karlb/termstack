@@ -15,19 +15,9 @@ if set -q COLUMN_COMPOSITOR_SOCKET
             # Shell builtin (cd, export) - run in current shell
             # Let fish execute normally (handles history auto)
             commandline -f execute
-        else if test $ret -eq 3
-            # TUI app - run in current terminal
-            history append -- "$cmd"
-            commandline ""
-            
-            column-term --resize full
-            eval "$cmd"
-            sleep 0.05 # Allow TUI cleanup
-            column-term --resize content
-            
-            commandline -f repaint
         else
             # Standard command - spawned in new terminal
+            # TUI apps are auto-detected via alternate screen mode
             history append -- "$cmd"
             commandline ""
             commandline -f repaint

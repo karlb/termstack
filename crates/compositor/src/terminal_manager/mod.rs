@@ -177,23 +177,35 @@ impl ManagedTerminal {
     /// already at full height. This allows reactive resizing for TUI apps that
     /// weren't pre-configured in tui_apps list.
     ///
-    /// Updates internal state to track the transition.
+    /// Updates internal state to track the transition. Also makes hidden terminals
+    /// visible when they enter alternate screen (since TUI apps like fzf enter
+    /// alternate screen before producing any content_rows).
     pub fn check_alt_screen_resize_needed(&mut self, max_height: u32) -> bool {
         let is_alt = self.terminal.is_alternate_screen();
         let transitioned_to_alt = is_alt && !self.prev_alt_screen;
         self.prev_alt_screen = is_alt;
 
-        if transitioned_to_alt && self.height < max_height {
-            tracing::info!(
-                id = self.id.0,
-                current_height = self.height,
-                max_height,
-                "terminal entered alternate screen, needs resize"
-            );
-            true
-        } else {
-            false
+        if transitioned_to_alt {
+            // Make visible when entering alternate screen (TUI apps like fzf)
+            if self.hidden {
+                self.hidden = false;
+                tracing::info!(
+                    id = self.id.0,
+                    "terminal entered alternate screen, now visible"
+                );
+            }
+
+            if self.height < max_height {
+                tracing::info!(
+                    id = self.id.0,
+                    current_height = self.height,
+                    max_height,
+                    "terminal entered alternate screen, needs resize"
+                );
+                return true;
+            }
         }
+        false
     }
 
     /// Handle resize
@@ -464,39 +476,22 @@ impl TerminalManager {
 
     /// Spawn a new terminal running a specific command
     ///
-    /// If `parent` is provided, that terminal will be hidden while this one runs.
-    /// When this terminal's command exits, the parent will be unhidden.
-    ///
-    /// If `is_tui` is true, the terminal starts at full viewport height for TUI apps.
+    /// If `parent` is provided, that terminal will be unhidden when this one exits.
+    /// Terminals start hidden and become visible when they produce output.
+    /// TUI apps are detected via alternate screen mode and auto-resized.
     pub fn spawn_command(
         &mut self,
         command: &str,
         working_dir: &Path,
         env: &HashMap<String, String>,
         parent: Option<TerminalId>,
-        is_tui: bool,
     ) -> Result<TerminalId, terminal::state::TerminalError> {
         let id = TerminalId(self.next_id);
         self.next_id += 1;
 
-        // Only hide the parent terminal for TUI apps (which take over the screen)
-        // For GUI apps, keep the parent visible since the app opens in a separate window
-        if is_tui {
-            if let Some(parent_id) = parent {
-                if let Some(parent_term) = self.terminals.get_mut(&parent_id) {
-                    parent_term.hidden = true;
-                    tracing::info!(parent = parent_id.0, new_child = id.0, "hiding parent terminal for TUI");
-                }
-            }
-        }
-
-        // For TUI apps: use full viewport height for both PTY and visual
-        // For regular commands: use large PTY (no scrolling) but small visual size
-        let (pty_rows, visual_rows) = if is_tui {
-            (self.max_rows, self.max_rows)
-        } else {
-            (1000, self.initial_rows)
-        };
+        // Use large PTY (no scrolling) but small visual size
+        // TUI apps will auto-resize when alternate screen is detected
+        let (pty_rows, visual_rows) = (1000, self.initial_rows);
 
         let mut terminal = ManagedTerminal::new_with_command(
             id,
@@ -522,14 +517,10 @@ impl TerminalManager {
         // Set small visual height (will grow based on content)
         terminal.height = visual_rows as u32 * self.cell_height;
 
-        // TUI terminals start visible (interactive apps that take over the screen)
-        // Regular command terminals start hidden until they produce output
-        if is_tui {
-            terminal.hidden = false;
-            terminal.has_had_output = true;
-        }
+        // Command terminals start hidden until they produce output
+        // (has_had_output defaults to false in new_with_command)
 
-        tracing::info!(id = id.0, cols = self.default_cols, pty_rows, visual_rows, is_tui,
+        tracing::info!(id = id.0, cols = self.default_cols, pty_rows, visual_rows,
                        height = terminal.height, max_rows = self.max_rows, cell_height = self.cell_height,
                        ?parent, command, "spawned command terminal");
 

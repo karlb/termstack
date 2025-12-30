@@ -5,96 +5,40 @@ mod tests {
     use crate::Config;
 
     #[test]
-    fn tui_apps_from_config() {
+    fn shell_commands_from_config() {
         let toml = r#"
-            tui_apps = ["mc", "vim", "fzf", "htop"]
+            shell_commands = ["cd", "export", "source"]
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
 
-        assert!(config.is_tui_app("mc"), "mc should be detected as TUI app");
-        assert!(config.is_tui_app("vim"), "vim should be detected as TUI app");
-        assert!(config.is_tui_app("fzf"), "fzf should be detected as TUI app");
-        assert!(config.is_tui_app("htop"), "htop should be detected as TUI app");
-        assert!(!config.is_tui_app("ls"), "ls should NOT be detected as TUI app");
+        assert!(config.is_shell_command("cd"), "cd should be detected as shell command");
+        assert!(config.is_shell_command("export"), "export should be detected as shell command");
+        assert!(config.is_shell_command("source"), "source should be detected as shell command");
+        assert!(!config.is_shell_command("ls"), "ls should NOT be detected as shell command");
     }
 
     #[test]
-    fn tui_app_with_args() {
+    fn shell_command_with_args() {
         let toml = r#"
-            tui_apps = ["mc", "vim"]
-        "#;
-
-        let config: Config = toml::from_str(toml).unwrap();
-
-        assert!(config.is_tui_app("mc -a"), "mc with args should be detected");
-        assert!(config.is_tui_app("vim file.txt"), "vim with args should be detected");
-    }
-
-    #[test]
-    fn tui_app_in_pipeline() {
-        let toml = r#"
-            tui_apps = ["fzf", "less"]
-        "#;
-
-        let config: Config = toml::from_str(toml).unwrap();
-
-        // Pipeline: echo | fzf
-        assert!(config.is_tui_app("echo a | fzf"), "fzf in pipeline should be detected");
-        assert!(config.is_tui_app("cat file | less"), "less in pipeline should be detected");
-
-        // Multiple pipes
-        assert!(config.is_tui_app("find . | grep foo | fzf"), "fzf at end of pipeline should be detected");
-
-        // Command chains
-        assert!(config.is_tui_app("cd /tmp && fzf"), "fzf after && should be detected");
-        assert!(config.is_tui_app("echo test; fzf"), "fzf after ; should be detected");
-
-        // Not a TUI app
-        assert!(!config.is_tui_app("echo hello | grep h"), "grep should NOT be detected as TUI");
-    }
-
-    #[test]
-    fn tui_app_with_path() {
-        let toml = r#"
-            tui_apps = ["mc", "vim"]
-        "#;
-
-        let config: Config = toml::from_str(toml).unwrap();
-
-        assert!(config.is_tui_app("/usr/bin/mc"), "mc with path should be detected");
-        assert!(config.is_tui_app("/usr/bin/vim file.txt"), "vim with path and args should be detected");
-    }
-
-    #[test]
-    fn empty_tui_apps_default() {
-        let config = Config::default();
-
-        assert!(!config.is_tui_app("mc"), "default config should have no TUI apps");
-        assert!(!config.is_tui_app("vim"), "default config should have no TUI apps");
-    }
-
-    #[test]
-    fn config_with_all_app_types() {
-        let toml = r#"
-            tui_apps = ["mc", "vim", "fzf"]
             shell_commands = ["cd", "export"]
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
 
-        // TUI apps
-        assert!(config.is_tui_app("mc"), "mc should be TUI");
-        assert!(config.is_tui_app("vim"), "vim should be TUI");
-        assert!(config.is_tui_app("fzf"), "fzf should be TUI");
+        assert!(config.is_shell_command("cd /tmp"), "cd with args should be detected");
+        assert!(config.is_shell_command("export FOO=bar"), "export with args should be detected");
+    }
 
-        // Shell commands
-        assert!(config.is_shell_command("cd"), "cd should be shell");
-        assert!(config.is_shell_command("export"), "export should be shell");
+    #[test]
+    fn default_shell_commands() {
+        let config = Config::default();
 
-        // Cross-checks
-        assert!(!config.is_tui_app("firefox"), "firefox should NOT be TUI");
-        assert!(!config.is_shell_command("mc"), "mc should NOT be shell");
+        // Default shell commands should be populated
+        assert!(config.is_shell_command("cd"), "cd should be in default shell commands");
+        assert!(config.is_shell_command("export"), "export should be in default shell commands");
+        assert!(config.is_shell_command("source"), "source should be in default shell commands");
+        assert!(config.is_shell_command("alias"), "alias should be in default shell commands");
     }
 
     #[test]

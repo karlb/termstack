@@ -760,12 +760,11 @@ fn process_spawn_request(
 
     tracing::info!(
         command = %command,
-        is_tui = request.is_tui,
         ?parent,
         "spawning command terminal"
     );
 
-    match terminal_manager.spawn_command(&command, &request.cwd, &env, parent, request.is_tui) {
+    match terminal_manager.spawn_command(&command, &request.cwd, &env, parent) {
         Ok(id) => {
             if let Some(term) = terminal_manager.get(id) {
                 let (cols, pty_rows) = term.terminal.dimensions();
@@ -776,12 +775,9 @@ fn process_spawn_request(
             // Set this terminal as the pending output terminal for GUI windows.
             // If the command opens a GUI window, that window will be linked to this terminal.
             // The terminal will be hidden until it has output, then promoted to a standalone cell.
-            // (TUI apps don't open external windows, so this is only relevant for GUI apps)
-            if !request.is_tui {
-                compositor.pending_window_output_terminal = Some(id);
-                compositor.pending_window_command = Some(request.command.clone());
-                tracing::info!(id = id.0, command = %request.command, "set as pending output terminal for GUI windows");
-            }
+            compositor.pending_window_output_terminal = Some(id);
+            compositor.pending_window_command = Some(request.command.clone());
+            tracing::info!(id = id.0, command = %request.command, "set as pending output terminal for GUI windows");
 
             Some(id)
         }
@@ -833,10 +829,12 @@ fn auto_resize_alt_screen_terminals(
     terminal_manager: &mut TerminalManager,
 ) {
     let max_height = terminal_manager.max_rows as u32 * terminal_manager.cell_height;
-    let visible_ids = terminal_manager.visible_ids();
+    // Check ALL terminals, not just visible ones - TUI apps like fzf enter
+    // alternate screen before producing content_rows, so they'd be hidden
+    let all_ids = terminal_manager.ids();
 
     let mut ids_to_resize = Vec::new();
-    for id in visible_ids {
+    for id in all_ids {
         if let Some(term) = terminal_manager.get_mut(id) {
             if term.check_alt_screen_resize_needed(max_height) {
                 ids_to_resize.push(id);

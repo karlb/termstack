@@ -12,6 +12,18 @@ use crate::state::{ColumnCell, LayoutNode};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
+/// Focus indicator width in pixels
+const FOCUS_INDICATOR_WIDTH: i32 = 2;
+
+/// Draw focus indicator on left side of cell
+fn draw_focus_indicator(frame: &mut GlesFrame<'_, '_>, y: i32, height: i32) {
+    let focus_rect = Rectangle::new(
+        (0, y).into(),
+        (FOCUS_INDICATOR_WIDTH, height).into(),
+    );
+    frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_rect]).ok();
+}
+
 /// Data needed to render a single cell
 pub enum CellRenderData<'a> {
     Terminal {
@@ -336,16 +348,6 @@ pub fn render_terminal(
     if let Some(tex) = title_bar_texture {
         let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
 
-        // Draw focus indicator at the top of the title bar
-        if is_focused && title_bar_y >= 0 && title_bar_y < screen_size.h {
-            let border_height = 2;
-            let focus_damage = Rectangle::new(
-                (0, title_bar_y + TITLE_BAR_HEIGHT as i32 - border_height).into(),
-                (screen_size.w, border_height).into(),
-            );
-            frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
-        }
-
         frame.render_texture_at(
             tex,
             Point::from((0, title_bar_y)),
@@ -356,19 +358,6 @@ pub fn render_terminal(
             &[],
             1.0,
         ).ok();
-    } else {
-        // No title bar - draw focus indicator at top of terminal content
-        if is_focused {
-            let border_height = 2;
-            let top_y = y + height - border_height;
-            if top_y >= 0 && top_y < screen_size.h {
-                let focus_damage = Rectangle::new(
-                    (0, top_y).into(),
-                    (screen_size.w, border_height).into(),
-                );
-                frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
-            }
-        }
     }
 
     // Render terminal content
@@ -382,6 +371,11 @@ pub fn render_terminal(
         &[],
         1.0,
     ).ok();
+
+    // Draw focus indicator on left side of cell (after content so it's visible)
+    if is_focused {
+        draw_focus_indicator(frame, y, height);
+    }
 }
 
 /// Render an external window cell with title bar
@@ -393,21 +387,11 @@ pub fn render_external(
     elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     title_bar_texture: Option<&GlesTexture>,
     is_focused: bool,
-    screen_size: Size<i32, Physical>,
+    _screen_size: Size<i32, Physical>,
     damage: Rectangle<i32, Physical>,
     scale: Scale<f64>,
 ) {
     let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
-
-    // Draw focus indicator at the top of the title bar
-    if is_focused && title_bar_y >= 0 && title_bar_y < screen_size.h {
-        let border_height = 2;
-        let focus_damage = Rectangle::new(
-            (0, title_bar_y + TITLE_BAR_HEIGHT as i32 - border_height).into(),
-            (screen_size.w, border_height).into(),
-        );
-        frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_damage]).ok();
-    }
 
     // Render title bar
     if let Some(tex) = title_bar_texture {
@@ -439,5 +423,10 @@ pub fn render_external(
         );
 
         element.draw(frame, flipped_src, dest, &[damage], &[]).ok();
+    }
+
+    // Draw focus indicator on left side of cell (after content so it's visible)
+    if is_focused {
+        draw_focus_indicator(frame, y, height);
     }
 }

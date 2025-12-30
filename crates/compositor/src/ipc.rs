@@ -55,17 +55,6 @@ pub enum IpcMessage {
         cwd: String,
         /// Environment variables to inherit
         env: HashMap<String, String>,
-        /// Whether this is a TUI app (pre-resize optimization).
-        ///
-        /// When true:
-        /// - Terminal starts at full viewport height
-        /// - Command is run without echo prefix
-        ///
-        /// Note: Even if false, terminals auto-resize to full height when
-        /// alternate screen mode is detected (see main.rs auto-resize logic).
-        /// This flag provides proactive pre-sizing for known TUI apps.
-        #[serde(default)]
-        is_tui: bool,
     },
     /// Resize the focused terminal
     #[serde(rename = "resize")]
@@ -93,9 +82,6 @@ pub struct SpawnRequest {
     pub cwd: PathBuf,
     /// Environment variables
     pub env: HashMap<String, String>,
-    /// Whether this is a TUI app (pre-resize optimization).
-    /// See IpcMessage::Spawn::is_tui for details.
-    pub is_tui: bool,
 }
 
 /// Read a request from a Unix stream
@@ -146,13 +132,12 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
     let stream = reader.into_inner();
 
     match message {
-        IpcMessage::Spawn { command, cwd, env, is_tui } => {
-            tracing::info!(command = %command, cwd = %cwd, is_tui, "spawn request received");
+        IpcMessage::Spawn { command, cwd, env } => {
+            tracing::info!(command = %command, cwd = %cwd, "spawn request received");
             Ok((IpcRequest::Spawn(SpawnRequest {
                 command,
                 cwd: PathBuf::from(cwd),
                 env,
-                is_tui,
             }), stream))
         }
         IpcMessage::Resize { mode } => {

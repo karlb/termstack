@@ -6,87 +6,67 @@ mod tests {
     use crate::terminal_manager::TerminalManager;
 
     #[test]
-    fn tui_flag_serializes_correctly() {
+    fn spawn_message_parses_correctly() {
         let msg = serde_json::json!({
             "type": "spawn",
             "command": "mc",
             "cwd": "/home/user",
             "env": {},
-            "is_tui": true,
         });
 
         let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
 
         match parsed {
-            IpcMessage::Spawn { command, is_tui, .. } => {
+            IpcMessage::Spawn { command, .. } => {
                 assert_eq!(command, "mc");
-                assert!(is_tui, "is_tui should be true");
             }
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
         }
     }
 
     #[test]
-    fn tui_flag_defaults_to_false() {
-        // Old-style message without is_tui field
+    fn spawn_with_env_parses_correctly() {
         let msg = serde_json::json!({
             "type": "spawn",
             "command": "ls",
             "cwd": "/home/user",
-            "env": {},
+            "env": {
+                "HOME": "/home/user",
+                "PATH": "/usr/bin"
+            },
         });
 
         let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
 
         match parsed {
-            IpcMessage::Spawn { command, is_tui, .. } => {
+            IpcMessage::Spawn { command, env, .. } => {
                 assert_eq!(command, "ls");
-                assert!(!is_tui, "is_tui should default to false");
+                assert_eq!(env.get("HOME"), Some(&"/home/user".to_string()));
             }
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
         }
     }
 
     #[test]
-    fn tui_terminal_should_be_full_height() {
+    fn terminal_starts_small_and_grows() {
         // This test documents the expected behavior:
-        // When is_tui=true, the terminal should be created at max_rows height
+        // Command terminals start small and grow based on content.
+        // TUI apps are auto-detected via alternate screen mode.
 
         // Given a viewport of 720 pixels and cell_height of 17
-        let output_height = 720u32;
         let cell_height = 17u32;
-        let max_rows = (output_height / cell_height) as u16; // = 42 rows
         let initial_rows = 3u16;
 
-        // For TUI apps
-        let is_tui = true;
-        let (_pty_rows, visual_rows) = if is_tui {
-            (max_rows, max_rows)
-        } else {
-            (1000, initial_rows)
-        };
-
+        // Command terminals use small initial size
+        let visual_rows = initial_rows;
         let expected_height = visual_rows as u32 * cell_height;
 
-        assert_eq!(visual_rows, 42, "TUI should use max_rows");
-        assert_eq!(expected_height, 714, "TUI terminal height should be ~full viewport");
-
-        // For non-TUI apps
-        let is_tui = false;
-        let (_pty_rows, visual_rows) = if is_tui {
-            (max_rows, max_rows)
-        } else {
-            (1000, initial_rows)
-        };
-
-        let expected_height = visual_rows as u32 * cell_height;
-
-        assert_eq!(visual_rows, 3, "non-TUI should use initial_rows");
-        assert_eq!(expected_height, 51, "non-TUI terminal height should be small");
+        assert_eq!(visual_rows, 3, "should use initial_rows");
+        assert_eq!(expected_height, 51, "terminal height should be small initially");
     }
 
     #[test]
-    fn full_ipc_flow_tui_gets_full_height() {
+    fn full_ipc_flow_spawns_terminal() {
         // This test simulates the COMPLETE flow from IPC message to terminal creation
         // exactly as main.rs does it
 
@@ -98,20 +78,17 @@ mod tests {
             "env": {
                 "HOME": "/home/user",
                 "PATH": "/usr/bin"
-            },
-            "is_tui": true
+            }
         });
 
         // Step 2: Parse the message (like ipc.rs does)
         let parsed: IpcMessage = serde_json::from_value(json_from_column_term).unwrap();
-        let (command, cwd, env, is_tui) = match parsed {
-            IpcMessage::Spawn { command, cwd, env, is_tui } => (command, cwd, env, is_tui),
+        let (command, cwd, env) = match parsed {
+            IpcMessage::Spawn { command, cwd, env } => (command, cwd, env),
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
         };
 
-        // Verify is_tui was parsed correctly
-        assert!(is_tui, "is_tui should be true from JSON");
-        eprintln!("Parsed from JSON: command={}, is_tui={}", command, is_tui);
+        eprintln!("Parsed from JSON: command={}", command);
 
         // Step 3: Transform command like main.rs does
         let escaped = command.replace("'", "'\\''");
@@ -130,43 +107,24 @@ mod tests {
         let mut manager = TerminalManager::new_with_size(output_width, output_height);
 
         let cwd_path = std::path::Path::new(&cwd);
-        let result = manager.spawn_command(&transformed_command, cwd_path, &spawn_env, None, is_tui);
+        let result = manager.spawn_command(&transformed_command, cwd_path, &spawn_env, None);
 
         assert!(result.is_ok(), "spawn_command should succeed: {:?}", result.err());
         let id = result.unwrap();
 
-        // Step 6: Verify terminal dimensions
+        // Step 6: Verify terminal was created
         let terminal = manager.get(id).unwrap();
         let (cols, pty_rows) = terminal.terminal.dimensions();
         let visual_height = terminal.height;
-        let max_rows = manager.max_rows;
-        let cell_height = manager.cell_height;
-        let expected_height = max_rows as u32 * cell_height;
 
         eprintln!("Terminal created:");
         eprintln!("  PTY: cols={}, rows={}", cols, pty_rows);
         eprintln!("  Visual height: {} pixels", visual_height);
-        eprintln!("  Expected: max_rows={}, height={} pixels", max_rows, expected_height);
 
-        // The critical assertions
-        assert_eq!(
-            pty_rows, max_rows,
-            "PTY rows should equal max_rows={}, but was {}",
-            max_rows, pty_rows
-        );
-
-        assert_eq!(
-            visual_height, expected_height,
-            "Visual height should be {}, but was {}",
-            expected_height, visual_height
-        );
-
-        // Verify it's NOT the old buggy default of 200 or small height
-        assert!(
-            visual_height > 200,
-            "Height should NOT be default 200, was {}",
-            visual_height
-        );
+        // Terminal starts small (initial_rows * cell_height)
+        // TUI apps will auto-resize via alternate screen detection
+        assert!(cols > 0, "cols should be set");
+        assert!(pty_rows > 0, "pty_rows should be set");
     }
 
     #[test]
@@ -202,19 +160,4 @@ mod tests {
             IpcMessage::Spawn { .. } => panic!("expected Resize"),
         }
     }
-
-    // NOTE: This test documents the race condition that causes TUI apps to see wrong size
-    //
-    // The flow is:
-    // 1. Shell runs: column-term --resize full
-    // 2. column-term sends IPC message and exits immediately (FIRE-AND-FORGET!)
-    // 3. Shell runs: eval "mc"
-    // 4. mc queries terminal size (stty, ioctl)
-    // 5. BUT compositor is asynchronous - it processes messages on next event loop iteration
-    // 6. If mc's size query happens BEFORE compositor processes resize → mc sees old size
-    //
-    // FIX: Make resize synchronous - compositor sends ACK, column-term waits for it
-    //
-    // This is NOT a unit test because it requires the actual compositor event loop.
-    // The fix is implemented in the IPC protocol to send an acknowledgement.
 }

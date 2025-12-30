@@ -6,16 +6,13 @@
 //!
 //! Commands are split into categories:
 //! - Shell builtins: run in current shell (cd, export, etc.)
-//! - TUI apps: run in current terminal at full height (vim, mc, fzf, top)
 //! - All other commands: run in a new column-term terminal
+//!
+//! TUI apps (vim, mc, etc.) are auto-detected via alternate screen mode
+//! and automatically resized to full viewport height.
 //!
 //! GUI apps automatically get an output terminal that appears below the
 //! window when stderr/stdout is produced.
-//!
-//! Configure in ~/.config/column-compositor/config.toml:
-//! ```toml
-//! tui_apps = ["vim", "nvim", "mc", "htop", "fzf", "less", "man"]
-//! ```
 //!
 //! # Usage
 //!
@@ -40,22 +37,17 @@
 //!     column-exec() {
 //!         local cmd="$BUFFER"
 //!         [[ -z "$cmd" ]] && return
-//!         
+//!
 //!         # Save to history
 //!         print -s "$cmd"
-//!         
+//!
 //!         BUFFER=""
 //!         column-term -c "$cmd"
 //!         local ret=$?
-//!         
+//!
 //!         if [[ $ret -eq 2 ]]; then
 //!             # Shell builtin - run in current shell
 //!             eval "$cmd"
-//!         elif [[ $ret -eq 3 ]]; then
-//!             # TUI app - resize to full height, run, resize back
-//!             column-term --resize full
-//!             eval "$cmd"
-//!             column-term --resize content
 //!         fi
 //!         zle reset-prompt
 //!     }
@@ -84,17 +76,6 @@
 //!             # Shell builtin (cd, export) - run in current shell
 //!             # Let fish execute normally (handles history auto)
 //!             commandline -f execute
-//!         else if test $ret -eq 3
-//!             # TUI app - run in current terminal
-//!             history append -- "$cmd"
-//!             commandline ""
-//!             
-//!             column-term --resize full
-//!             eval "$cmd"
-//!             sleep 0.05 # Allow TUI cleanup
-//!             column-term --resize content
-//!             
-//!             commandline -f repaint
 //!         else
 //!             # Standard command - spawned in new terminal
 //!             history append -- "$cmd"
@@ -111,7 +92,6 @@
 //! Exit codes:
 //! - 0: Command handled (spawned in terminal)
 //! - 2: Shell builtin - run in current shell via eval
-//! - 3: TUI app - resize terminal to full height, run via eval, resize back
 
 use std::env;
 use std::io::Write;
@@ -130,17 +110,12 @@ pub(crate) struct Config {
     /// List of shell builtins/commands that should run in the current shell
     #[serde(default = "Config::default_shell_commands")]
     shell_commands: Vec<String>,
-
-    /// List of TUI apps that should run in the current terminal (vim, mc, fzf, etc.)
-    #[serde(default)]
-    tui_apps: Vec<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             shell_commands: Self::default_shell_commands(),
-            tui_apps: Vec::new(),
         }
     }
 }
@@ -207,33 +182,10 @@ impl Config {
         let program = Self::program_name(command);
         self.shell_commands.iter().any(|cmd| cmd == program)
     }
-
-    /// Check if a command is a TUI app that should run in current terminal
-    ///
-    /// This checks ALL commands in a pipeline/chain, not just the first.
-    /// For example, "echo a | fzf" should detect fzf as a TUI app.
-    fn is_tui_app(&self, command: &str) -> bool {
-        // Split on pipe and command separators to get all commands
-        for segment in command.split(['|', ';', '&']) {
-            let segment = segment.trim();
-            // Skip empty segments and && continuation
-            if segment.is_empty() || segment == "&" {
-                continue;
-            }
-            let program = Self::program_name(segment);
-            if self.tui_apps.iter().any(|app| app == program) {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 /// Exit code indicating command should run in current shell
 const EXIT_SHELL_COMMAND: i32 = 2;
-
-/// Exit code indicating TUI app - shell should resize terminal, run, then resize back
-const EXIT_TUI_APP: i32 = 3;
 
 /// Check if debug mode is enabled via DEBUG_COLUMN_TERM environment variable
 fn debug_enabled() -> bool {
@@ -276,7 +228,7 @@ fn main() -> Result<()> {
     // Empty command = interactive shell, always use terminal
     if command.is_empty() {
         if debug { eprintln!("[column-term] empty command, spawning shell"); }
-        return spawn_in_terminal(&command, false);
+        return spawn_in_terminal(&command);
     }
 
     // Load config and check command type
@@ -286,16 +238,12 @@ fn main() -> Result<()> {
         if debug { eprintln!("[column-term] shell command, exit 2"); }
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
-    } else if config.is_tui_app(&command) {
-        if debug { eprintln!("[column-term] TUI app, exit 3"); }
-        // TUI app - shell should resize to full height, run command, resize back
-        std::process::exit(EXIT_TUI_APP);
-    } else {
-        if debug { eprintln!("[column-term] spawning in terminal"); }
-        // Regular command or GUI app - run in terminal
-        // (GUI apps will have their output terminal hidden until errors appear)
-        spawn_in_terminal(&command, false)
     }
+
+    // Regular command, GUI app, or TUI app - spawn in new terminal
+    // TUI apps are auto-detected via alternate screen mode and resized
+    if debug { eprintln!("[column-term] spawning in terminal"); }
+    spawn_in_terminal(&command)
 }
 
 /// Send a resize request to the compositor and wait for acknowledgement
@@ -345,9 +293,9 @@ fn send_resize_request(mode: &str) -> Result<()> {
 
 /// Spawn command in a new column-term terminal
 ///
-/// If is_tui is true, the terminal will be created at full viewport height
-/// for TUI applications like vim, mc, fzf, etc.
-fn spawn_in_terminal(command: &str, is_tui: bool) -> Result<()> {
+/// The terminal starts small and grows with content. TUI apps are
+/// auto-detected via alternate screen mode and resized to full viewport.
+fn spawn_in_terminal(command: &str) -> Result<()> {
     let debug = debug_enabled();
 
     // Get socket path from environment
@@ -371,7 +319,6 @@ fn spawn_in_terminal(command: &str, is_tui: bool) -> Result<()> {
         "command": command,
         "cwd": cwd,
         "env": env_vars,
-        "is_tui": is_tui,
     });
 
     if debug { eprintln!("[column-term] connecting to socket..."); }
