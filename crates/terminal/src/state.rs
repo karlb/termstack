@@ -16,7 +16,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::vte::ansi;
 
 use crate::pty::{Pty, PtyError};
-use crate::render::TerminalRenderer;
+use crate::render::{Theme, TerminalRenderer};
 use crate::sizing::{SizingAction, TerminalSizingState};
 
 use thiserror::Error;
@@ -115,6 +115,11 @@ pub struct Terminal {
 impl Terminal {
     /// Create a new terminal running an interactive shell
     pub fn new(cols: u16, rows: u16) -> Result<Self, TerminalError> {
+        Self::new_with_theme(cols, rows, Theme::default())
+    }
+
+    /// Create a new terminal running an interactive shell with theme
+    pub fn new_with_theme(cols: u16, rows: u16, theme: Theme) -> Result<Self, TerminalError> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
         // Use 1000 rows for PTY and grid to prevent internal scrolling
@@ -141,9 +146,9 @@ impl Terminal {
         // Create VTE parser
         let parser = ansi::Processor::new();
 
-        // Create renderer with font
+        // Create renderer with font and theme
         let font_config = crate::render::FontConfig::default_font();
-        let renderer = TerminalRenderer::with_font(font_config);
+        let renderer = TerminalRenderer::with_font_and_theme(font_config, theme);
 
         // Create sizing state with visual row count (will grow as content arrives)
         let sizing = TerminalSizingState::new(rows);
@@ -180,6 +185,19 @@ impl Terminal {
         working_dir: &Path,
         env: &HashMap<String, String>,
     ) -> Result<Self, TerminalError> {
+        Self::new_with_command_and_theme(cols, pty_rows, visual_rows, command, working_dir, env, Theme::default())
+    }
+
+    /// Create a new terminal running a specific command with theme
+    pub fn new_with_command_and_theme(
+        cols: u16,
+        pty_rows: u16,
+        visual_rows: u16,
+        command: &str,
+        working_dir: &Path,
+        env: &HashMap<String, String>,
+        theme: Theme,
+    ) -> Result<Self, TerminalError> {
         // Create PTY with large size (no scrolling)
         let pty = Pty::spawn_command(command, working_dir, env, cols, pty_rows)?;
 
@@ -200,9 +218,9 @@ impl Terminal {
         // Create VTE parser
         let parser = ansi::Processor::new();
 
-        // Create renderer with font
+        // Create renderer with font and theme
         let font_config = crate::render::FontConfig::default_font();
-        let renderer = TerminalRenderer::with_font(font_config);
+        let renderer = TerminalRenderer::with_font_and_theme(font_config, theme);
 
         // Create sizing state with VISUAL rows (triggers growth based on visual size)
         let sizing = TerminalSizingState::new(visual_rows);

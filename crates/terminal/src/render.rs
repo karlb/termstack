@@ -10,8 +10,47 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
-/// Selection highlight color (blue tint)
-const SELECTION_BG: u32 = 0xFF264F78;
+/// Color theme for the terminal
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl Theme {
+    /// Get selection background color for this theme
+    fn selection_bg(&self) -> u32 {
+        match self {
+            Theme::Dark => 0xFF264F78,  // Blue tint
+            Theme::Light => 0xFFADD6FF, // Light blue
+        }
+    }
+
+    /// Get cursor color for this theme
+    fn cursor_color(&self) -> u32 {
+        match self {
+            Theme::Dark => 0xFFCCCCCC,  // Light gray
+            Theme::Light => 0xFF1A1A1A, // Dark gray
+        }
+    }
+
+    /// Get background color for this theme
+    fn background(&self) -> u32 {
+        match self {
+            Theme::Dark => 0xFF1A1A1A,
+            Theme::Light => 0xFFFFFFFF,
+        }
+    }
+
+    /// Get foreground color for this theme
+    fn foreground(&self) -> u32 {
+        match self {
+            Theme::Dark => 0xFFCCCCCC,
+            Theme::Light => 0xFF1A1A1A,
+        }
+    }
+}
 
 /// Font configuration
 pub struct FontConfig {
@@ -109,6 +148,9 @@ pub struct TerminalRenderer {
     /// Cell dimensions
     cell_width: u32,
     cell_height: u32,
+
+    /// Color theme
+    theme: Theme,
 }
 
 struct GlyphData {
@@ -122,6 +164,11 @@ struct GlyphData {
 impl TerminalRenderer {
     /// Create a new renderer with default settings
     pub fn new() -> Self {
+        Self::with_theme(Theme::default())
+    }
+
+    /// Create a new renderer with theme
+    pub fn with_theme(theme: Theme) -> Self {
         Self {
             font: None,
             buffer: Vec::new(),
@@ -130,11 +177,17 @@ impl TerminalRenderer {
             glyph_cache: HashMap::new(),
             cell_width: 8,
             cell_height: 16,
+            theme,
         }
     }
 
     /// Create a new renderer with font
     pub fn with_font(font: FontConfig) -> Self {
+        Self::with_font_and_theme(font, Theme::default())
+    }
+
+    /// Create a new renderer with font and theme
+    pub fn with_font_and_theme(font: FontConfig, theme: Theme) -> Self {
         let cell_width = font.cell_width;
         let cell_height = font.cell_height;
         Self {
@@ -145,6 +198,7 @@ impl TerminalRenderer {
             glyph_cache: HashMap::new(),
             cell_width,
             cell_height,
+            theme,
         }
     }
 
@@ -236,7 +290,7 @@ impl TerminalRenderer {
     fn render_cell(&mut self, x: u32, y: u32, cell: &alacritty_terminal::term::cell::Cell, is_selected: bool) {
         // Background - use selection color if selected, otherwise cell's background
         let bg = if is_selected {
-            SELECTION_BG
+            self.theme.selection_bg()
         } else {
             self.color_to_argb(&cell.bg)
         };
@@ -251,9 +305,14 @@ impl TerminalRenderer {
         // Debug: log all rendered characters
         tracing::trace!("Rendering char: {:?} (U+{:04X}) at ({}, {})", c, c as u32, x, y);
 
-        // Foreground (glyph) - use white text on selection for better contrast
+        // Foreground (glyph) - use contrasting text on selection
         let fg = if is_selected {
-            0xFFFFFFFF // White text on selection
+            // Light theme: dark text on light blue selection
+            // Dark theme: white text on dark blue selection
+            match self.theme {
+                Theme::Dark => 0xFFFFFFFF,
+                Theme::Light => 0xFF000000,
+            }
         } else {
             self.color_to_argb(&cell.fg)
         };
@@ -261,7 +320,7 @@ impl TerminalRenderer {
     }
 
     fn render_cursor(&mut self, x: u32, y: u32) {
-        let cursor_color = 0xFFCCCCCC; // Light gray
+        let cursor_color = self.theme.cursor_color();
         // Draw block cursor
         self.fill_rect(x, y, self.cell_width, self.cell_height, cursor_color);
     }
@@ -374,7 +433,7 @@ impl TerminalRenderer {
     }
 
     fn named_color_to_argb(&self, color: NamedColor) -> u32 {
-        // Standard terminal colors
+        // Standard terminal colors (theme-dependent for foreground/background/cursor)
         match color {
             NamedColor::Black => 0xFF000000,
             NamedColor::Red => 0xFFCC0000,
@@ -392,10 +451,10 @@ impl TerminalRenderer {
             NamedColor::BrightMagenta => 0xFFFF00FF,
             NamedColor::BrightCyan => 0xFF00FFFF,
             NamedColor::BrightWhite => 0xFFFFFFFF,
-            NamedColor::Foreground => 0xFFCCCCCC,
-            NamedColor::Background => 0xFF1A1A1A,
-            NamedColor::Cursor => 0xFFCCCCCC,
-            _ => 0xFFCCCCCC,
+            NamedColor::Foreground => self.theme.foreground(),
+            NamedColor::Background => self.theme.background(),
+            NamedColor::Cursor => self.theme.cursor_color(),
+            _ => self.theme.foreground(),
         }
     }
 
@@ -454,8 +513,10 @@ impl Default for TerminalRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::Terminal;
+
+    /// Default theme's selection background color (for tests)
+    const TEST_SELECTION_BG: u32 = 0xFF264F78;
 
     /// Get the background color at a specific character position from Terminal's buffer
     fn get_bg_color_at(terminal: &Terminal, col: u32, row: u32) -> u32 {
@@ -489,14 +550,14 @@ mod tests {
         terminal.render(width, height, true);
         let selected_bg = get_bg_color_at(&terminal, 0, 0);
 
-        // Selected background should be different (SELECTION_BG)
+        // Selected background should be different (selection color)
         assert_ne!(
             unselected_bg, selected_bg,
             "selection background should differ from normal background"
         );
         assert_eq!(
-            selected_bg, SELECTION_BG,
-            "selected cell should use SELECTION_BG color"
+            selected_bg, TEST_SELECTION_BG,
+            "selected cell should use selection color"
         );
     }
 
@@ -518,7 +579,7 @@ mod tests {
         for col in 0..=2 {
             let bg = get_bg_color_at(&terminal, col, 0);
             assert_eq!(
-                bg, SELECTION_BG,
+                bg, TEST_SELECTION_BG,
                 "col {} should be selected",
                 col
             );
@@ -528,7 +589,7 @@ mod tests {
         for col in 3..10 {
             let bg = get_bg_color_at(&terminal, col, 0);
             assert_ne!(
-                bg, SELECTION_BG,
+                bg, TEST_SELECTION_BG,
                 "col {} should not be selected",
                 col
             );
@@ -553,7 +614,7 @@ mod tests {
         terminal.update_selection(4, 0);
         terminal.render(width, height, true);
         let selected_bg = get_bg_color_at(&terminal, 0, 0);
-        assert_eq!(selected_bg, SELECTION_BG);
+        assert_eq!(selected_bg, TEST_SELECTION_BG);
 
         // Clear selection
         terminal.clear_selection();

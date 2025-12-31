@@ -3,12 +3,52 @@
 //! Renders a title bar showing the command that spawned a GUI window.
 
 use std::collections::HashMap;
+use terminal::Theme;
 
 /// Title bar height in pixels
 pub const TITLE_BAR_HEIGHT: u32 = 24;
 
 /// Close button width in pixels (square button)
 pub const CLOSE_BUTTON_WIDTH: u32 = 24;
+
+/// Theme-specific colors for title bar
+struct TitleBarColors {
+    /// Background color (RGBA bytes)
+    bg_r: u8,
+    bg_g: u8,
+    bg_b: u8,
+    /// Foreground/text color (RGB bytes)
+    fg_r: u8,
+    fg_g: u8,
+    fg_b: u8,
+    /// Close button background (RGB bytes)
+    btn_bg_r: u8,
+    btn_bg_g: u8,
+    btn_bg_b: u8,
+    /// Close button text (RGB bytes)
+    btn_fg_r: u8,
+    btn_fg_g: u8,
+    btn_fg_b: u8,
+}
+
+impl TitleBarColors {
+    fn from_theme(theme: Theme) -> Self {
+        match theme {
+            Theme::Dark => Self {
+                bg_r: 0x33, bg_g: 0x33, bg_b: 0x33,     // #333333
+                fg_r: 0xCC, fg_g: 0xCC, fg_b: 0xCC,     // #CCCCCC
+                btn_bg_r: 0x44, btn_bg_g: 0x44, btn_bg_b: 0x44, // #444444
+                btn_fg_r: 0xFF, btn_fg_g: 0xFF, btn_fg_b: 0xFF, // White
+            },
+            Theme::Light => Self {
+                bg_r: 0xE0, bg_g: 0xE0, bg_b: 0xE0,     // #E0E0E0
+                fg_r: 0x1A, fg_g: 0x1A, fg_b: 0x1A,     // #1A1A1A
+                btn_bg_r: 0xD0, btn_bg_g: 0xD0, btn_bg_b: 0xD0, // #D0D0D0
+                btn_fg_r: 0x1A, btn_fg_g: 0x1A, btn_fg_b: 0x1A, // Dark
+            },
+        }
+    }
+}
 
 /// Title bar renderer
 pub struct TitleBarRenderer {
@@ -20,6 +60,9 @@ pub struct TitleBarRenderer {
 
     /// Glyph cache
     glyph_cache: HashMap<char, GlyphData>,
+
+    /// Color theme
+    theme: Theme,
 }
 
 struct GlyphData {
@@ -32,8 +75,8 @@ struct GlyphData {
 }
 
 impl TitleBarRenderer {
-    /// Create a new title bar renderer
-    pub fn new() -> Option<Self> {
+    /// Create a new title bar renderer with theme
+    pub fn new(theme: Theme) -> Option<Self> {
         // Try to load a font from common locations
         let font_paths = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -56,6 +99,7 @@ impl TitleBarRenderer {
                         font,
                         font_size: 14.0,
                         glyph_cache: HashMap::new(),
+                        theme,
                     });
                 }
             }
@@ -71,27 +115,23 @@ impl TitleBarRenderer {
     pub fn render(&mut self, text: &str, width: u32) -> (Vec<u8>, u32, u32) {
         let height = TITLE_BAR_HEIGHT;
         let mut buffer = vec![0u8; (width * height * 4) as usize];
+        let colors = TitleBarColors::from_theme(self.theme);
 
-        // Fill background (dark gray: #333333)
-        let bg_r = 0x33u8;
-        let bg_g = 0x33u8;
-        let bg_b = 0x33u8;
-        let bg_a = 0xFFu8;
-
+        // Fill background
         for y in 0..height {
             for x in 0..width {
                 let idx = ((y * width + x) * 4) as usize;
-                buffer[idx] = bg_b;     // B
-                buffer[idx + 1] = bg_g; // G
-                buffer[idx + 2] = bg_r; // R
-                buffer[idx + 3] = bg_a; // A
+                buffer[idx] = colors.bg_b;     // B
+                buffer[idx + 1] = colors.bg_g; // G
+                buffer[idx + 2] = colors.bg_r; // R
+                buffer[idx + 3] = 0xFF;        // A
             }
         }
 
-        // Render text (light gray: #CCCCCC)
-        let fg_r = 0xCCu8;
-        let fg_g = 0xCCu8;
-        let fg_b = 0xCCu8;
+        // Text colors from theme
+        let fg_r = colors.fg_r;
+        let fg_g = colors.fg_g;
+        let fg_b = colors.fg_b;
 
         let display_text = text.to_string();
 
@@ -166,26 +206,23 @@ impl TitleBarRenderer {
         (buffer, width, height)
     }
 
-    /// Render the close button (red background with white X)
+    /// Render the close button
     fn render_close_button(&mut self, buffer: &mut [u8], width: u32, height: u32) {
         let btn_x = width - CLOSE_BUTTON_WIDTH;
         let btn_width = CLOSE_BUTTON_WIDTH;
         let btn_height = height;
+        let colors = TitleBarColors::from_theme(self.theme);
 
-        // Button background (slightly lighter gray: #444444)
-        let btn_bg_r = 0x44u8;
-        let btn_bg_g = 0x44u8;
-        let btn_bg_b = 0x44u8;
-
+        // Button background from theme
         for y in 0..btn_height {
             for x in 0..btn_width {
                 let px = btn_x + x;
                 let idx = ((y * width + px) * 4) as usize;
                 if idx + 3 < buffer.len() {
-                    buffer[idx] = btn_bg_b;     // B
-                    buffer[idx + 1] = btn_bg_g; // G
-                    buffer[idx + 2] = btn_bg_r; // R
-                    buffer[idx + 3] = 0xFF;     // A
+                    buffer[idx] = colors.btn_bg_b;     // B
+                    buffer[idx + 1] = colors.btn_bg_g; // G
+                    buffer[idx + 2] = colors.btn_bg_r; // R
+                    buffer[idx + 3] = 0xFF;            // A
                 }
             }
         }
@@ -209,10 +246,10 @@ impl TitleBarRenderer {
         let baseline_y = (height as f32 * 0.75) as i32;
         let glyph_y = (baseline_y - glyph.height as i32 - glyph.y_offset).max(0) as u32;
 
-        // White text for the X
-        let fg_r = 0xFFu8;
-        let fg_g = 0xFFu8;
-        let fg_b = 0xFFu8;
+        // Text color from theme
+        let fg_r = colors.btn_fg_r;
+        let fg_g = colors.btn_fg_g;
+        let fg_b = colors.btn_fg_b;
 
         for gy in 0..glyph.height {
             let py = glyph_y + gy;
@@ -250,6 +287,6 @@ impl TitleBarRenderer {
 
 impl Default for TitleBarRenderer {
     fn default() -> Self {
-        Self::new().expect("Failed to create TitleBarRenderer - no font available")
+        Self::new(Theme::default()).expect("Failed to create TitleBarRenderer - no font available")
     }
 }

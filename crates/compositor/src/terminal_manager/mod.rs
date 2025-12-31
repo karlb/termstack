@@ -12,6 +12,7 @@ use smithay::backend::renderer::ImportMem;
 use smithay::utils::Size;
 
 use terminal::Terminal;
+use terminal::Theme;
 use terminal::sizing::SizingAction;
 
 use crate::coords::RenderY;
@@ -135,8 +136,8 @@ pub struct ManagedTerminal {
 
 impl ManagedTerminal {
     /// Create a new managed terminal
-    pub fn new(id: TerminalId, cols: u16, rows: u16, cell_width: u32, cell_height: u32) -> Result<Self, terminal::state::TerminalError> {
-        let terminal = Terminal::new(cols, rows)?;
+    pub fn new(id: TerminalId, cols: u16, rows: u16, cell_width: u32, cell_height: u32, theme: Theme) -> Result<Self, terminal::state::TerminalError> {
+        let terminal = Terminal::new_with_theme(cols, rows, theme)?;
 
         // Use shell name as title
         let title = std::env::var("SHELL")
@@ -179,8 +180,9 @@ impl ManagedTerminal {
         working_dir: &Path,
         env: &HashMap<String, String>,
         parent: Option<TerminalId>,
+        theme: Theme,
     ) -> Result<Self, terminal::state::TerminalError> {
-        let terminal = Terminal::new_with_command(cols, pty_rows, visual_rows, command, working_dir, env)?;
+        let terminal = Terminal::new_with_command_and_theme(cols, pty_rows, visual_rows, command, working_dir, env, theme)?;
 
         Ok(Self {
             terminal,
@@ -428,11 +430,14 @@ pub struct TerminalManager {
 
     /// Maximum terminal height in rows (capped at viewport)
     pub max_rows: u16,
+
+    /// Color theme for terminals
+    theme: Theme,
 }
 
 impl TerminalManager {
     /// Create a new terminal manager with output size
-    pub fn new_with_size(output_width: u32, output_height: u32) -> Self {
+    pub fn new_with_size(output_width: u32, output_height: u32, theme: Theme) -> Self {
         // Default cell dimensions (will be updated when font loads)
         let cell_width = 8u32;
         let cell_height = 17u32;  // Match fontdue's line height calculation
@@ -453,12 +458,13 @@ impl TerminalManager {
             default_cols,
             initial_rows,
             max_rows,
+            theme,
         }
     }
 
     /// Create a new terminal manager with default size
     pub fn new() -> Self {
-        Self::new_with_size(800, 600)
+        Self::new_with_size(800, 600, Theme::default())
     }
 
     /// Get the focused terminal mutably
@@ -537,6 +543,7 @@ impl TerminalManager {
             self.initial_rows,  // Start small, will grow with content
             self.cell_width,
             self.cell_height,
+            self.theme,
         )?;
 
         // Get actual cell dimensions from the font and update
@@ -593,6 +600,7 @@ impl TerminalManager {
             working_dir,
             env,
             parent,
+            self.theme,
         )?;
 
         // Get actual cell dimensions from the font and update

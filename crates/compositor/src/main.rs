@@ -7,7 +7,7 @@ use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
 use smithay::backend::winit::{self, WinitEvent};
-use smithay::reexports::winit::window::CursorIcon;
+use smithay::reexports::winit::window::{CursorIcon, WindowAttributes};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::desktop::utils::send_frames_surface_tree;
@@ -50,8 +50,13 @@ fn main() -> anyhow::Result<()> {
     // Create Wayland display
     let display: Display<ColumnCompositor> = Display::new()?;
 
-    // Initialize winit backend
-    let (mut backend, mut winit_event_loop) = winit::init::<GlesRenderer>()
+    // Initialize winit backend with custom window attributes
+    let window_title = match config.theme {
+        compositor::config::Theme::Light => "Column Compositor (Light)",
+        compositor::config::Theme::Dark => "Column Compositor (Dark)",
+    };
+    let window_attrs = WindowAttributes::default().with_title(window_title);
+    let (mut backend, mut winit_event_loop) = winit::init_from_attributes::<GlesRenderer>(window_attrs)
         .map_err(|e| anyhow::anyhow!("winit init error: {e:?}"))?;
 
     let mode = Mode {
@@ -187,14 +192,16 @@ fn main() -> anyhow::Result<()> {
         config.background_color[3],
     );
 
-    // Create terminal manager with output size
+    // Create terminal manager with output size and theme
+    let terminal_theme = config.theme.to_terminal_theme();
     let mut terminal_manager = TerminalManager::new_with_size(
         output_size.w as u32,
         output_size.h as u32,
+        terminal_theme,
     );
 
     // Create title bar renderer for external windows
-    let mut title_bar_renderer = TitleBarRenderer::new();
+    let mut title_bar_renderer = TitleBarRenderer::new(terminal_theme);
     if title_bar_renderer.is_none() {
         tracing::warn!("Title bar renderer unavailable - no font found");
     }

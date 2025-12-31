@@ -8,5 +8,6 @@ pub mod render;
 pub mod sizing;
 pub mod state;
 
+pub use render::Theme;
 pub use sizing::TerminalSizingState;
 pub use state::Terminal;
