@@ -2416,3 +2416,114 @@
             content_after
         );
     }
+
+    /// Test that cursor_line-based sizing produces no empty trailing rows.
+    ///
+    /// After `echo a`, visible content should be:
+    /// - Line with command (e.g., "$ echo a" or just output "a")
+    /// - New prompt line
+    /// No extra empty lines at the bottom.
+    #[test]
+    fn no_empty_trailing_row_after_echo() {
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+
+        let env = std::collections::HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let id = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
+
+        // Simulate shell output: prompt, command output, new prompt
+        {
+            let terminal = manager.get_mut(id).unwrap();
+            terminal.inject_bytes(b"$ echo a\n");  // Line 0: command
+            terminal.inject_bytes(b"a\n");          // Line 1: output
+            terminal.inject_bytes(b"$ ");           // Line 2: new prompt (cursor here)
+        }
+
+        let cursor_line = {
+            let terminal = manager.get(id).unwrap();
+            terminal.terminal.cursor_line()
+        };
+
+        eprintln!("cursor_line = {}", cursor_line);
+
+        // Test with OFFSET=0: num_rows = cursor_line
+        let visible_offset0 = {
+            let terminal = manager.get(id).unwrap();
+            terminal.terminal.visible_content(cursor_line as usize)
+        };
+        eprintln!("OFFSET=0 ({} rows):", visible_offset0.len());
+        for (i, line) in visible_offset0.iter().enumerate() {
+            eprintln!("  {}: {:?}", i, line);
+        }
+
+        // Test with OFFSET=1: num_rows = cursor_line + 1
+        let visible_offset1 = {
+            let terminal = manager.get(id).unwrap();
+            terminal.terminal.visible_content((cursor_line + 1) as usize)
+        };
+        eprintln!("OFFSET=1 ({} rows):", visible_offset1.len());
+        for (i, line) in visible_offset1.iter().enumerate() {
+            eprintln!("  {}: {:?}", i, line);
+        }
+
+        // With OFFSET=1, the last line should be the prompt (not empty)
+        // The question: is there an empty line BEFORE the prompt?
+        let has_empty_before_prompt = visible_offset1.len() >= 2
+            && visible_offset1[visible_offset1.len() - 2].trim().is_empty();
+
+        assert!(
+            !has_empty_before_prompt,
+            "should not have empty line before prompt in OFFSET=1 view"
+        );
+
+        // With OFFSET=0, we cut off the command line but should still have content
+        let last_line_offset0 = visible_offset0.last().expect("should have content");
+        assert!(
+            !last_line_offset0.trim().is_empty(),
+            "OFFSET=0: last visible line should not be empty, got {:?}",
+            last_line_offset0
+        );
+
+        // Now test WITHOUT the prompt - simulating the moment after command output
+        // but before shell prints new prompt
+        let id2 = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
+        {
+            let terminal = manager.get_mut(id2).unwrap();
+            terminal.inject_bytes(b"$ echo a\n");  // Line 0: command
+            terminal.inject_bytes(b"a\n");          // Line 1: output, cursor moves to line 2
+            // NO prompt yet - cursor is on empty line 2
+        }
+
+        let (cursor_no_prompt, last_content) = {
+            let terminal = manager.get(id2).unwrap();
+            (terminal.terminal.cursor_line(), terminal.terminal.last_content_line())
+        };
+
+        eprintln!("\nWithout prompt:");
+        eprintln!("  cursor_line = {}", cursor_no_prompt);
+        eprintln!("  last_content_line = {}", last_content);
+
+        // cursor is on line 2 (empty), but last_content_line should be line 1 (has "a")
+        assert_eq!(cursor_no_prompt, 2, "cursor should be on line 2");
+        assert_eq!(last_content, 1, "last content line should be line 1 (the 'a')");
+
+        // Using last_content_line + 1 for sizing: show 2 rows (lines 0 and 1)
+        let visible_fixed = {
+            let terminal = manager.get(id2).unwrap();
+            terminal.terminal.visible_content((last_content + 1) as usize)
+        };
+        eprintln!("Using last_content_line ({} rows):", visible_fixed.len());
+        for (i, line) in visible_fixed.iter().enumerate() {
+            eprintln!("  {}: {:?}", i, line);
+        }
+
+        // Last visible line should NOT be empty
+        let last_line = visible_fixed.last().expect("should have content");
+        assert!(
+            !last_line.trim().is_empty(),
+            "last visible line should not be empty with last_content_line sizing, got {:?}",
+            last_line
+        );
+    }

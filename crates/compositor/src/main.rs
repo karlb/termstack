@@ -30,10 +30,6 @@ use compositor::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 /// Minimum terminal height in rows.
 const MIN_TERMINAL_ROWS: u16 = 1;
 
-/// Extra rows to add beyond cursor position for content-based sizing.
-/// Accounts for: +1 for 0-indexed cursor line.
-const CURSOR_TO_CONTENT_OFFSET: u16 = 1;
-
 fn main() -> anyhow::Result<()> {
     // Initialize logging
     setup_logging();
@@ -975,11 +971,12 @@ fn handle_ipc_resize_request(
                 term.process();
             }
 
-            // Calculate content rows from cursor position
+            // Calculate content rows from last non-empty line
             if let Some(term) = terminal_manager.get(focused_id) {
-                let cursor_line = term.terminal.cursor_line();
-                let content_rows = (cursor_line + CURSOR_TO_CONTENT_OFFSET).max(MIN_TERMINAL_ROWS);
-                tracing::info!(id = focused_id.0, cursor_line, content_rows, "resize to content");
+                let last_line = term.terminal.last_content_line();
+                // last_line is 0-indexed, so +1 converts to row count
+                let content_rows = (last_line + 1).max(MIN_TERMINAL_ROWS);
+                tracing::info!(id = focused_id.0, last_line, content_rows, "resize to content");
                 content_rows
             } else {
                 MIN_TERMINAL_ROWS

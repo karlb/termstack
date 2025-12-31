@@ -277,28 +277,42 @@ impl Terminal {
                     // Check if in alternate screen AFTER processing
                     let is_alt = term.mode().contains(TermMode::ALT_SCREEN);
 
-                    // Use cursor position for both content tracking and growth decisions
-                    // This is more accurate than counting \n bytes, which can be emitted
-                    // during shell prompt redrawing without actual content growth
+                    // Use last non-empty line for growth decisions
+                    // This avoids showing empty rows when cursor is on an empty line
                     if !is_alt && !was_alt {
                         let cursor_line = term.grid().cursor.point.line.0 as u16;
                         let visual_rows = self.sizing.current_rows();
 
-                        // Update content_rows to cursor position + 1 (cursor is 0-indexed)
-                        // This tracks actual content extent, not newline count
-                        let content_line = (cursor_line + 1) as u32;
+                        // Find last non-empty line for content-based sizing
+                        let last_content = {
+                            let grid = term.grid();
+                            let mut last = 0u16;
+                            for line_idx in (0..=cursor_line).rev() {
+                                let line = &grid[alacritty_terminal::index::Line(line_idx as i32)];
+                                let has_content = line.into_iter().any(|cell| {
+                                    let c = cell.c;
+                                    c != ' ' && c != '\0'
+                                });
+                                if has_content {
+                                    last = line_idx;
+                                    break;
+                                }
+                            }
+                            last
+                        };
+
+                        // Update content_rows to last content line + 1 (0-indexed)
+                        let content_line = (last_content + 1) as u32;
                         if content_line > self.sizing.content_rows() {
-                            // Update sizing state with new content extent
                             while self.sizing.content_rows() < content_line {
                                 self.sizing.on_new_line();
                             }
                         }
 
-                        // Cursor is 0-indexed, so cursor_line >= visual_rows means we need more space
-                        // Compare against visual rows (terminal height), not PTY rows (1000)
-                        if cursor_line >= visual_rows {
-                            let target_rows = cursor_line + 1;
-                            tracing::info!(cursor_line, visual_rows, target_rows, "cursor exceeded visual size, requesting growth");
+                        // Request growth if content exceeds visual rows
+                        if last_content >= visual_rows {
+                            let target_rows = last_content + 1;
+                            tracing::info!(cursor_line, last_content, visual_rows, target_rows, "content exceeded visual size, requesting growth");
                             actions.push(SizingAction::RequestGrowth { target_rows });
                         }
                     } else if newlines > 0 && (is_alt || was_alt) {
@@ -453,6 +467,31 @@ impl Terminal {
         term.grid().cursor.point.line.0 as u16
     }
 
+    /// Get the last line with non-empty content (0-indexed).
+    /// This is useful for sizing: we want to show content up to the last
+    /// non-empty line, not necessarily where the cursor is.
+    /// Returns cursor_line if the cursor line has content.
+    pub fn last_content_line(&self) -> u16 {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let cursor_line = grid.cursor.point.line.0 as u16;
+
+        // Start from cursor line and work backwards to find last non-empty line
+        for line_idx in (0..=cursor_line).rev() {
+            let line = &grid[alacritty_terminal::index::Line(line_idx as i32)];
+            let has_content = line.into_iter().any(|cell| {
+                let c = cell.c;
+                c != ' ' && c != '\0'
+            });
+            if has_content {
+                return line_idx;
+            }
+        }
+
+        // All lines empty, return 0
+        0
+    }
+
     /// Get content row count
     pub fn content_rows(&self) -> u32 {
         self.sizing.content_rows()
@@ -502,19 +541,44 @@ impl Terminal {
 
     /// Get visible content as text lines based on cursor position
     ///
-    /// Returns the `num_rows` lines that would be visible if we render
-    /// with the cursor at the bottom of the viewport.
+    /// Returns the `num_rows` lines that would be visible if we render.
+    /// Shows from line 0 if content fits, otherwise shows ending at last content line.
     pub fn visible_content(&self, num_rows: usize) -> Vec<String> {
         let term = self.term.lock();
         let grid = term.grid();
         let cursor_line = term.grid().cursor.point.line.0 as usize;
 
-        // Calculate which lines should be visible
-        // At viewport_offset 0: cursor at bottom (show cursor_line - num_rows + 1 to cursor_line)
-        // At viewport_offset > 0: scrolled back, show older content
-        let start_line = cursor_line
-            .saturating_sub(num_rows - 1)
-            .saturating_sub(self.viewport_offset);
+        // Find last non-empty line for content-based positioning
+        let last_content = {
+            let mut last = 0;
+            for line_idx in (0..=cursor_line).rev() {
+                let line = &grid[alacritty_terminal::index::Line(line_idx as i32)];
+                let has_content = line.into_iter().any(|cell| {
+                    let c = cell.c;
+                    c != ' ' && c != '\0'
+                });
+                if has_content {
+                    last = line_idx;
+                    break;
+                }
+            }
+            last
+        };
+
+        // If content fits in viewport, show from line 0
+        // If content exceeds viewport, show ending at last content line
+        let start_line = if self.viewport_offset > 0 {
+            // User scrolled back
+            cursor_line
+                .saturating_sub(num_rows - 1)
+                .saturating_sub(self.viewport_offset)
+        } else if last_content < num_rows {
+            // Content fits - show from beginning
+            0
+        } else {
+            // Content exceeds viewport - show ending at last content
+            last_content.saturating_sub(num_rows - 1)
+        };
         let end_line = (start_line + num_rows).min(term.screen_lines());
 
         let mut lines = Vec::new();

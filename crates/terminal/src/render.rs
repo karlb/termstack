@@ -237,18 +237,43 @@ impl TerminalRenderer {
         let visible_rows = (height / self.cell_height).max(1);
         let cursor_line = content.cursor.point.line.0 as u32;
 
-        // Calculate first visible line based on viewport offset
-        // viewport_offset = 0: cursor at bottom (show cursor_line - visible_rows + 1 to cursor_line)
-        // viewport_offset > 0: scrolled back, show older content
-        let first_visible_line = cursor_line
-            .saturating_sub(visible_rows - 1)
-            .saturating_sub(viewport_offset as u32);
+        // Collect cells for two-pass processing (find last content line, then render)
+        let cells: Vec<_> = content.display_iter.collect();
+
+        // Find last non-empty line for content-based positioning
+        // This avoids showing empty trailing rows when cursor is on an empty line
+        let last_content_line = {
+            let mut last = 0u32;
+            for cell in &cells {
+                let line = cell.point.line.0 as u32;
+                let c = cell.c;
+                if c != ' ' && c != '\0' && line > last {
+                    last = line;
+                }
+            }
+            last
+        };
+
+        // If content fits in viewport, show from line 0
+        // If content exceeds viewport, show ending at last content line
+        let first_visible_line = if viewport_offset > 0 {
+            // User scrolled back
+            cursor_line
+                .saturating_sub(visible_rows - 1)
+                .saturating_sub(viewport_offset as u32)
+        } else if last_content_line < visible_rows {
+            // Content fits - show from beginning
+            0
+        } else {
+            // Content exceeds viewport - show ending at last content
+            last_content_line.saturating_sub(visible_rows - 1)
+        };
 
         // Get selection range for highlighting
         let selection = content.selection.as_ref();
 
         // Render each cell, offsetting by viewport position
-        for cell in content.display_iter {
+        for cell in cells {
             let col = cell.point.column.0 as u32;
             let line = cell.point.line.0 as u32;
 
