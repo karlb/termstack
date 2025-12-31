@@ -231,6 +231,7 @@ fn main() -> anyhow::Result<()> {
             }
             match event {
             WinitEvent::Resized { size, .. } => {
+                // Update Smithay output mode
                 output.change_current_state(
                     Some(Mode {
                         size,
@@ -240,23 +241,11 @@ fn main() -> anyhow::Result<()> {
                     None,
                     None,
                 );
-                compositor.output_size = Size::from((size.w, size.h));
-
-                // Update terminal manager dimensions
-                terminal_manager.update_output_size(size.w as u32, size.h as u32);
-
-                // Resize all existing terminals to new width
-                terminal_manager.resize_all_terminals(size.w as u32);
-
-                // Resize all external windows to new width
-                compositor.resize_all_external_windows(size.w);
-
-                compositor.recalculate_layout();
-
-                tracing::info!(
-                    width = size.w,
-                    height = size.h,
-                    "compositor window resized, content updated"
+                // Handle compositor-side resize
+                handle_compositor_resize(
+                    &mut compositor,
+                    &mut terminal_manager,
+                    Size::from((size.w, size.h)),
                 );
             }
             WinitEvent::Input(event) => compositor.process_input_event_with_terminals(event, &mut terminal_manager),
@@ -297,31 +286,8 @@ fn main() -> anyhow::Result<()> {
         // Handle key repeat for terminals
         handle_key_repeat(&mut compositor, &mut terminal_manager);
 
-        // Handle focus change requests
-        if compositor.focus_change_requested != 0 {
-            if compositor.focus_change_requested > 0 {
-                compositor.focus_next();
-            } else {
-                compositor.focus_prev();
-            }
-            compositor.focus_change_requested = 0;
-
-            // Scroll to show the newly focused cell
-            if let Some(focused_idx) = compositor.focused_index {
-                compositor.scroll_to_show_cell_bottom(focused_idx);
-            }
-        }
-
-        // Handle scroll requests
-        if compositor.scroll_requested != 0.0 {
-            let delta = compositor.scroll_requested;
-            compositor.scroll_requested = 0.0;
-            compositor.scroll(delta);
-            tracing::debug!(
-                new_offset = compositor.scroll_offset,
-                "scroll processed"
-            );
-        }
+        // Handle focus and scroll requests from input
+        handle_focus_and_scroll_requests(&mut compositor);
 
         // Process terminal PTY output and handle sizing actions
         process_terminal_output(&mut compositor, &mut terminal_manager);
@@ -395,30 +361,8 @@ fn main() -> anyhow::Result<()> {
                 physical_size.h,
             );
 
-            // Check if heights changed significantly and update cache
-            // We use the previous frame's layout heights for comparison
-            let current_heights: Vec<i32> = compositor.layout_nodes.iter().map(|n| n.height).collect();
-            let heights_changed = heights_changed_significantly(
-                &current_heights,
-                &actual_heights,
-                compositor.focused_index,
-            );
-
-            compositor.update_layout_heights(actual_heights);
-
-            // Adjust scroll if heights changed, but NOT during manual resize drag
-            // (user is intentionally changing heights, auto-scroll would be disruptive)
-            if heights_changed && compositor.resizing.is_none() {
-                if let Some(focused_idx) = compositor.focused_index {
-                    if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
-                        tracing::info!(
-                            focused_idx,
-                            new_scroll,
-                            "scroll adjusted due to actual height change"
-                        );
-                    }
-                }
-            }
+            // Check height changes and auto-scroll if needed
+            check_and_handle_height_changes(&mut compositor, actual_heights);
 
             // Begin actual rendering
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
@@ -719,6 +663,105 @@ fn handle_key_repeat(
     // Schedule next repeat
     let next = now + std::time::Duration::from_millis(compositor.repeat_interval_ms);
     compositor.key_repeat = Some((bytes_to_send, next));
+}
+
+/// Handle compositor window resize.
+///
+/// Updates all terminals and external windows to match the new size,
+/// and recalculates the layout.
+fn handle_compositor_resize(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+    new_size: Size<i32, Physical>,
+) {
+    compositor.output_size = new_size;
+
+    // Update terminal manager dimensions
+    terminal_manager.update_output_size(new_size.w as u32, new_size.h as u32);
+
+    // Resize all existing terminals to new width
+    terminal_manager.resize_all_terminals(new_size.w as u32);
+
+    // Resize all external windows to new width
+    compositor.resize_all_external_windows(new_size.w);
+
+    compositor.recalculate_layout();
+
+    tracing::info!(
+        width = new_size.w,
+        height = new_size.h,
+        "compositor window resized, content updated"
+    );
+}
+
+/// Handle focus change and scroll requests from input handlers.
+///
+/// This processes the `focus_change_requested` and `scroll_requested` fields
+/// set by the input handler, applying the changes to compositor state.
+fn handle_focus_and_scroll_requests(compositor: &mut ColumnCompositor) {
+    // Handle focus change requests
+    if compositor.focus_change_requested != 0 {
+        if compositor.focus_change_requested > 0 {
+            compositor.focus_next();
+        } else {
+            compositor.focus_prev();
+        }
+        compositor.focus_change_requested = 0;
+
+        // Scroll to show the newly focused cell
+        if let Some(focused_idx) = compositor.focused_index {
+            compositor.scroll_to_show_cell_bottom(focused_idx);
+        }
+    }
+
+    // Handle scroll requests
+    if compositor.scroll_requested != 0.0 {
+        let delta = compositor.scroll_requested;
+        compositor.scroll_requested = 0.0;
+        compositor.scroll(delta);
+        tracing::debug!(
+            new_offset = compositor.scroll_offset,
+            "scroll processed"
+        );
+    }
+}
+
+/// Check if heights changed significantly and auto-scroll if needed.
+///
+/// This updates the layout heights cache and adjusts scroll to keep the focused
+/// cell visible when content changes size. Skips auto-scroll during manual resize
+/// to avoid disrupting user's drag operation.
+fn check_and_handle_height_changes(
+    compositor: &mut ColumnCompositor,
+    actual_heights: Vec<i32>,
+) {
+    let current_heights: Vec<i32> = compositor
+        .layout_nodes
+        .iter()
+        .map(|n| n.height)
+        .collect();
+
+    let heights_changed = heights_changed_significantly(
+        &current_heights,
+        &actual_heights,
+        compositor.focused_index,
+    );
+
+    compositor.update_layout_heights(actual_heights);
+
+    // Adjust scroll if heights changed, but NOT during manual resize drag
+    // (user is intentionally changing heights, auto-scroll would be disruptive)
+    if heights_changed && compositor.resizing.is_none() {
+        if let Some(focused_idx) = compositor.focused_index {
+            if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                tracing::info!(
+                    focused_idx,
+                    new_scroll,
+                    "scroll adjusted due to actual height change"
+                );
+            }
+        }
+    }
 }
 
 /// Process a single spawn request, returning the new terminal ID if successful.
