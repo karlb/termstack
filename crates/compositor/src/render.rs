@@ -12,8 +12,8 @@ use crate::state::{ColumnCell, LayoutNode};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
-/// Focus indicator width in pixels
-const FOCUS_INDICATOR_WIDTH: i32 = 2;
+/// Focus indicator width in pixels (also used as left margin for content)
+pub const FOCUS_INDICATOR_WIDTH: i32 = 2;
 
 /// Draw focus indicator on left side of cell
 fn draw_focus_indicator(frame: &mut GlesFrame<'_, '_>, y: i32, height: i32) {
@@ -350,7 +350,7 @@ pub fn render_terminal(
 
         frame.render_texture_at(
             tex,
-            Point::from((0, title_bar_y)),
+            Point::from((FOCUS_INDICATOR_WIDTH, title_bar_y)),
             1,
             1.0,
             Transform::Flipped180,
@@ -363,7 +363,7 @@ pub fn render_terminal(
     // Render terminal content
     frame.render_texture_at(
         texture,
-        Point::from((0, y)),
+        Point::from((FOCUS_INDICATOR_WIDTH, y)),
         1,
         1.0,
         Transform::Flipped180,
@@ -397,7 +397,7 @@ pub fn render_external(
     if let Some(tex) = title_bar_texture {
         frame.render_texture_at(
             tex,
-            Point::from((0, title_bar_y)),
+            Point::from((FOCUS_INDICATOR_WIDTH, title_bar_y)),
             1,
             1.0,
             Transform::Flipped180,
@@ -413,7 +413,7 @@ pub fn render_external(
         let src = element.src();
 
         let dest = Rectangle::new(
-            Point::from((geo.loc.x, geo.loc.y + y)),
+            Point::from((geo.loc.x + FOCUS_INDICATOR_WIDTH, geo.loc.y + y)),
             geo.size,
         );
 

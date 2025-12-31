@@ -9,6 +9,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::coords::ScreenY;
+use crate::render::FOCUS_INDICATOR_WIDTH;
 use crate::state::{ColumnCell, ColumnCompositor, ResizeDrag, MIN_CELL_HEIGHT};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
@@ -40,9 +41,10 @@ fn render_to_grid_coords(
 ) -> (usize, usize) {
     // Convert render coords to terminal-local coords
     // Terminal has Y=0 at top, render has Y=0 at bottom
+    // Content is offset by FOCUS_INDICATOR_WIDTH from left edge
     let cell_render_end = cell_render_y + cell_height;
     let local_y = (cell_render_end - render_y).max(0.0);
-    let local_x = render_x.max(0.0);
+    let local_x = (render_x - FOCUS_INDICATOR_WIDTH as f64).max(0.0);
 
     // Convert to grid coordinates
     let col = (local_x / char_width as f64) as usize;
