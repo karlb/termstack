@@ -22,6 +22,7 @@ use compositor::render::{
     CellRenderData, prerender_terminals, prerender_title_bars,
     collect_cell_data, build_render_data, log_frame_state,
     heights_changed_significantly, render_terminal, render_external,
+    TitleBarCache,
 };
 use compositor::state::{ClientState, ColumnCell, ColumnCompositor};
 use compositor::terminal_manager::{TerminalId, TerminalManager};
@@ -201,6 +202,9 @@ fn main() -> anyhow::Result<()> {
         tracing::warn!("Title bar renderer unavailable - no font found");
     }
 
+    // Cache for title bar textures to avoid re-rendering every frame
+    let mut title_bar_cache: TitleBarCache = TitleBarCache::new();
+
     // Spawn initial terminal
     match terminal_manager.spawn() {
         Ok(id) => {
@@ -332,6 +336,7 @@ fn main() -> anyhow::Result<()> {
                 &terminal_manager,
                 renderer,
                 physical_size.w,
+                &mut title_bar_cache,
             );
 
             // Collect actual heights and external window elements

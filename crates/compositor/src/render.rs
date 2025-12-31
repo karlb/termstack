@@ -2,6 +2,8 @@
 //!
 //! Extracted from main.rs to reduce complexity of the main render loop.
 
+use std::collections::HashMap;
+
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Element, RenderElement};
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
@@ -11,6 +13,9 @@ use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 use crate::state::{ColumnCell, LayoutNode};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
+
+/// Cache for title bar textures, keyed by (title, width)
+pub type TitleBarCache = HashMap<(String, u32), GlesTexture>;
 
 /// Focus indicator width in pixels (also used as left margin for content)
 pub const FOCUS_INDICATOR_WIDTH: i32 = 2;
@@ -65,19 +70,23 @@ pub fn prerender_terminals(
 }
 
 /// Pre-render title bar textures for all cells with SSD
-pub fn prerender_title_bars(
+///
+/// Uses a cache to avoid re-rendering title bars that haven't changed.
+/// Returns references to cached textures.
+pub fn prerender_title_bars<'a>(
     layout_nodes: &[LayoutNode],
     title_bar_renderer: &mut Option<TitleBarRenderer>,
     terminal_manager: &TerminalManager,
     renderer: &mut GlesRenderer,
     width: i32,
-) -> Vec<Option<GlesTexture>> {
-    let mut textures = Vec::new();
+    cache: &'a mut TitleBarCache,
+) -> Vec<Option<&'a GlesTexture>> {
+    // First pass: collect keys and render any missing textures
+    let mut keys: Vec<Option<(String, u32)>> = Vec::new();
 
     for node in layout_nodes.iter() {
         match &node.cell {
             ColumnCell::Terminal(id) => {
-                // Render title bar for terminal (if enabled)
                 let show_title_bar = terminal_manager.get(*id)
                     .map(|t| t.show_title_bar)
                     .unwrap_or(false);
@@ -86,41 +95,54 @@ pub fn prerender_title_bars(
                         let title = terminal_manager.get(*id)
                             .map(|t| t.title.as_str())
                             .unwrap_or("Terminal");
-                        let (pixels, tb_width, tb_height) = tb_renderer.render(title, width as u32);
-                        let tex = renderer.import_memory(
-                            &pixels,
-                            smithay::backend::allocator::Fourcc::Argb8888,
-                            (tb_width as i32, tb_height as i32).into(),
-                            false,
-                        ).ok();
-                        textures.push(tex);
+                        let key = (title.to_string(), width as u32);
+                        if !cache.contains_key(&key) {
+                            let (pixels, tb_width, tb_height) = tb_renderer.render(title, width as u32);
+                            if let Ok(tex) = renderer.import_memory(
+                                &pixels,
+                                smithay::backend::allocator::Fourcc::Argb8888,
+                                (tb_width as i32, tb_height as i32).into(),
+                                false,
+                            ) {
+                                cache.insert(key.clone(), tex);
+                            }
+                        }
+                        keys.push(Some(key));
                     } else {
-                        textures.push(None);
+                        keys.push(None);
                     }
                 } else {
-                    textures.push(None);
+                    keys.push(None);
                 }
             }
             ColumnCell::External(entry) => {
                 if entry.uses_csd {
-                    textures.push(None);
+                    keys.push(None);
                 } else if let Some(ref mut tb_renderer) = title_bar_renderer {
-                    let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, width as u32);
-                    let tex = renderer.import_memory(
-                        &pixels,
-                        smithay::backend::allocator::Fourcc::Argb8888,
-                        (tb_width as i32, tb_height as i32).into(),
-                        false,
-                    ).ok();
-                    textures.push(tex);
+                    let key = (entry.command.clone(), width as u32);
+                    if !cache.contains_key(&key) {
+                        let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, width as u32);
+                        if let Ok(tex) = renderer.import_memory(
+                            &pixels,
+                            smithay::backend::allocator::Fourcc::Argb8888,
+                            (tb_width as i32, tb_height as i32).into(),
+                            false,
+                        ) {
+                            cache.insert(key.clone(), tex);
+                        }
+                    }
+                    keys.push(Some(key));
                 } else {
-                    textures.push(None);
+                    keys.push(None);
                 }
             }
         }
     }
 
-    textures
+    // Second pass: look up references from cache
+    keys.into_iter()
+        .map(|key| key.and_then(|k| cache.get(&k)))
+        .collect()
 }
 
 /// Collect actual heights for all cells and render external window elements
@@ -197,7 +219,7 @@ pub fn build_render_data<'a>(
     layout_nodes: &[LayoutNode],
     heights: &[i32],
     external_elements: &mut [Vec<WaylandSurfaceRenderElement<GlesRenderer>>],
-    title_bar_textures: &'a [Option<GlesTexture>],
+    title_bar_textures: &[Option<&'a GlesTexture>],
     scroll_offset: f64,
     screen_height: i32,
     terminal_manager: &TerminalManager,
@@ -223,7 +245,7 @@ pub fn build_render_data<'a>(
                         "terminal render state"
                     );
                 }
-                let title_bar_texture = title_bar_textures.get(cell_idx).and_then(|t| t.as_ref());
+                let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
                 render_data.push(CellRenderData::Terminal {
                     id: *id,
                     y: render_y,
@@ -233,7 +255,7 @@ pub fn build_render_data<'a>(
             }
             ColumnCell::External(_entry) => {
                 let elements = std::mem::take(&mut external_elements[cell_idx]);
-                let title_bar_texture = title_bar_textures.get(cell_idx).and_then(|t| t.as_ref());
+                let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
                 render_data.push(CellRenderData::External {
                     y: render_y,
                     height,

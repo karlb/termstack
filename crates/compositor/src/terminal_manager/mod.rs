@@ -216,11 +216,9 @@ impl ManagedTerminal {
     /// Process PTY output and mark dirty if needed
     pub fn process(&mut self) -> (Vec<SizingAction>, usize) {
         let (actions, bytes_read) = self.terminal.process_pty_with_count();
-        // Always mark dirty - we'll check in render if there's actually new content
-        // The terminal may have received output even without sizing actions
-        let was_dirty = self.dirty;
-        self.dirty = true;
-        if !was_dirty {
+        // Only mark dirty when there's actual output to render
+        if bytes_read > 0 && !self.dirty {
+            self.dirty = true;
             tracing::trace!(id = self.id.0, "terminal marked dirty");
         }
 
