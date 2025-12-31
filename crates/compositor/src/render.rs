@@ -140,7 +140,7 @@ pub fn collect_cell_data(
             ColumnCell::Terminal(id) => {
                 let (content_height, show_title_bar) = terminal_manager.get(*id)
                     .map(|t| {
-                        let h = if t.hidden {
+                        let h = if !t.is_visible() {
                             0
                         } else if let Some(tex) = t.get_texture() {
                             tex.size().h
@@ -215,7 +215,7 @@ pub fn build_render_data<'a>(
                     let has_texture = term.get_texture().is_some();
                     tracing::debug!(
                         id = id.0,
-                        hidden = term.hidden,
+                        visible = term.is_visible(),
                         height,
                         render_y,
                         has_texture,
@@ -266,11 +266,11 @@ pub fn log_frame_state(
     let cell_info: Vec<String> = layout_nodes.iter().enumerate().map(|(i, node)| {
         match &node.cell {
             ColumnCell::Terminal(id) => {
-                let hidden = terminal_manager.get(*id).map(|t| t.hidden).unwrap_or(false);
+                let visible = terminal_manager.get(*id).map(|t| t.is_visible()).unwrap_or(true);
                 format!("[{}]Term({})h={}{}",
                     i, id.0,
                     node.height,
-                    if hidden { " HIDDEN" } else { "" })
+                    if !visible { " HIDDEN" } else { "" })
             }
             ColumnCell::External(e) => {
                 format!("[{}]Ext h={}", i, e.state.current_height())
@@ -333,7 +333,7 @@ pub fn render_terminal(
 ) {
     let Some(terminal) = terminal_manager.get(id) else { return };
 
-    if terminal.hidden {
+    if !terminal.is_visible() {
         return;
     }
 

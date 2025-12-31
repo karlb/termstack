@@ -579,7 +579,7 @@ fn calculate_cell_heights(
         match &node.cell {
             ColumnCell::Terminal(tid) => {
                 // Hidden terminals always get 0 height
-                if terminal_manager.get(*tid).map(|t| t.hidden).unwrap_or(false) {
+                if terminal_manager.get(*tid).map(|t| !t.is_visible()).unwrap_or(false) {
                     return 0;
                 }
                 // Use cached height if available
@@ -1030,7 +1030,7 @@ fn handle_output_terminal_cleanup(
 
     for term_id in cleanup_ids {
         let has_had_output = terminal_manager.get(term_id)
-            .map(|t| t.has_had_output)
+            .map(|t| t.has_had_output())
             .unwrap_or(false);
 
         if has_had_output {

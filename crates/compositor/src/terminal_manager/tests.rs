@@ -186,8 +186,8 @@
         let initial_rows = manager.initial_rows;
         let expected_height = initial_rows as u32 * cell_height;
 
-        eprintln!("terminal.height={}, expected={}, hidden={}",
-                  terminal.height, expected_height, terminal.hidden);
+        eprintln!("terminal.height={}, expected={}, visible={}",
+                  terminal.height, expected_height, terminal.is_visible());
 
         // The height property should be small initially
         assert_eq!(
@@ -198,7 +198,7 @@
 
         // Command terminals start hidden (become visible when output arrives)
         assert!(
-            terminal.hidden,
+            !terminal.is_visible(),
             "command terminal should start hidden"
         );
     }
@@ -2269,10 +2269,10 @@
         assert!(result.is_ok(), "spawn_command should succeed");
         let child_id = result.unwrap();
 
-        // Parent should NOT be hidden for non-TUI commands (GUI apps open in separate windows)
+        // Parent should remain visible for non-TUI commands (GUI apps open in separate windows)
         assert!(
-            !manager.get(parent_id).unwrap().hidden,
-            "parent should NOT be hidden for non-TUI commands"
+            manager.get(parent_id).unwrap().is_visible(),
+            "parent should remain visible for non-TUI commands"
         );
 
         // Wait for command to exit
@@ -2295,23 +2295,23 @@
             "focus should return to parent"
         );
 
-        // Parent should still not be hidden
+        // Parent should still be visible
         assert!(
-            !manager.get(parent_id).unwrap().hidden,
+            manager.get(parent_id).unwrap().is_visible(),
             "parent should remain visible"
         );
 
-        // Child should NOT be hidden because it had content (error output)
+        // Child should be visible because it had content (error output)
         let child = manager.get(child_id).expect("child should still exist");
         let content_rows = child.content_rows();
 
         eprintln!("Child content_rows after cleanup: {}", content_rows);
 
-        // The key assertion: child should NOT be hidden because it had stderr output
+        // The key assertion: child should be visible because it had stderr output
         // The bug was that cleanup would hide it before reading PTY
         assert!(
-            !child.hidden,
-            "child with stderr output should NOT be hidden (content_rows={})",
+            child.is_visible(),
+            "child with stderr output should be visible (content_rows={})",
             content_rows
         );
 
@@ -2396,7 +2396,7 @@
         let child = manager.get(child_id).expect("child should still exist");
         let content_after = child.content_rows();
         eprintln!("Content rows AFTER cleanup: {}", content_after);
-        eprintln!("Child hidden: {}", child.hidden);
+        eprintln!("Child visible: {}", child.is_visible());
 
         // content_rows should be > 1:
         // - 1 from initial state
@@ -2409,10 +2409,10 @@
             content_after
         );
 
-        // Child should NOT be hidden because content_rows > 1
+        // Child should be visible because content_rows > 1
         assert!(
-            !child.hidden,
-            "child with content should NOT be hidden (content_rows={})",
+            child.is_visible(),
+            "child with content should be visible (content_rows={})",
             content_after
         );
     }

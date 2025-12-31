@@ -20,6 +20,72 @@ use crate::coords::RenderY;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TerminalId(pub u32);
 
+/// Terminal visibility state machine.
+///
+/// Replaces the old `hidden` + `has_had_output` boolean pair with an explicit
+/// state machine. This makes the visibility rules clear and documents all
+/// valid transitions.
+///
+/// # State Transitions
+///
+/// ```text
+/// Shell: new() ──────────────────────────> AlwaysVisible
+///
+/// Command: new_with_command() ──────────> WaitingForOutput
+///                                               │
+///                     ┌─────────────────────────┼─────────────────────────┐
+///                     │                         │                         │
+///                 (output)               (alt-screen)                  (exit)
+///                     │                         │                         │
+///                     v                         v                         v
+///                 HasOutput               HasOutput                 ExitedEmpty
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibilityState {
+    /// Shell terminal - always visible from creation
+    AlwaysVisible,
+
+    /// Command terminal waiting for first output before becoming visible
+    WaitingForOutput,
+
+    /// Command terminal that has produced output - visible forever
+    HasOutput,
+
+    /// Command terminal that exited without ever producing output
+    ExitedEmpty,
+}
+
+impl VisibilityState {
+    /// Returns whether the terminal should be rendered
+    pub fn is_visible(&self) -> bool {
+        matches!(self, Self::AlwaysVisible | Self::HasOutput)
+    }
+
+    /// Transition when first output arrives
+    pub fn on_output(self) -> Self {
+        match self {
+            Self::WaitingForOutput => Self::HasOutput,
+            other => other,
+        }
+    }
+
+    /// Transition when entering alternate screen (TUI apps like fzf)
+    pub fn on_alt_screen_enter(self) -> Self {
+        match self {
+            Self::WaitingForOutput => Self::HasOutput,
+            other => other,
+        }
+    }
+
+    /// Transition when process exits
+    pub fn on_exit(self) -> Self {
+        match self {
+            Self::WaitingForOutput => Self::ExitedEmpty,
+            other => other,
+        }
+    }
+}
+
 /// A managed internal terminal
 pub struct ManagedTerminal {
     /// The terminal instance
@@ -52,13 +118,8 @@ pub struct ManagedTerminal {
     /// Whether the process has exited (for hiding cursor)
     exited: bool,
 
-    /// Whether this terminal is temporarily hidden
-    /// (e.g., parent hidden while child command runs)
-    pub hidden: bool,
-
-    /// Whether this terminal has ever had output
-    /// Once true, the terminal stays visible forever
-    pub has_had_output: bool,
+    /// Visibility state machine - the source of truth for visibility
+    pub visibility: VisibilityState,
 
     /// Parent terminal that spawned this one (if any)
     /// When this terminal exits, the parent is unhidden
@@ -94,8 +155,7 @@ impl ManagedTerminal {
             dirty: true,
             keep_open: false,
             exited: false,
-            hidden: false,
-            has_had_output: true, // Shell terminals start visible
+            visibility: VisibilityState::AlwaysVisible,
             parent: None,
             prev_alt_screen: false,
             manually_sized: false,
@@ -133,12 +193,22 @@ impl ManagedTerminal {
             dirty: true,
             keep_open: true, // Command terminals stay open after exit
             exited: false,
-            hidden: true, // Start invisible until output
-            has_had_output: false, // Will become true on first output
+            visibility: VisibilityState::WaitingForOutput,
             parent,
             prev_alt_screen: false,
             manually_sized: false,
         })
+    }
+
+    /// Returns whether this terminal should be visible (rendered)
+    pub fn is_visible(&self) -> bool {
+        self.visibility.is_visible()
+    }
+
+    /// Returns whether this terminal has ever produced output.
+    /// Once true, stays true forever.
+    pub fn has_had_output(&self) -> bool {
+        matches!(self.visibility, VisibilityState::AlwaysVisible | VisibilityState::HasOutput)
     }
 
     /// Process PTY output and mark dirty if needed
@@ -152,10 +222,9 @@ impl ManagedTerminal {
             tracing::trace!(id = self.id.0, "terminal marked dirty");
         }
 
-        // If terminal has output for the first time, make it visible permanently
-        if !self.has_had_output && self.content_rows() > 0 {
-            self.has_had_output = true;
-            self.hidden = false;
+        // If terminal has output for the first time, transition visibility state
+        if self.visibility == VisibilityState::WaitingForOutput && self.content_rows() > 0 {
+            self.visibility = self.visibility.on_output();
             tracing::info!(id = self.id.0, "terminal has output, now permanently visible");
         }
 
@@ -193,8 +262,8 @@ impl ManagedTerminal {
 
         if transitioned_to_alt {
             // Make visible when entering alternate screen (TUI apps like fzf)
-            if self.hidden {
-                self.hidden = false;
+            if self.visibility == VisibilityState::WaitingForOutput {
+                self.visibility = self.visibility.on_alt_screen_enter();
                 tracing::info!(
                     id = self.id.0,
                     "terminal entered alternate screen, now visible"
@@ -398,10 +467,10 @@ impl TerminalManager {
         self.terminals.get_mut(&id)
     }
 
-    /// Calculate total height of visible (non-hidden) terminals
+    /// Calculate total height of visible terminals
     pub fn total_height(&self) -> i32 {
         self.terminals.values()
-            .filter(|t| !t.hidden)
+            .filter(|t| t.is_visible())
             .map(|t| t.height as i32)
             .sum()
     }
@@ -551,7 +620,7 @@ impl TerminalManager {
 
         // Debug: show which terminals are hidden/visible
         for (tid, term) in &self.terminals {
-            tracing::info!(tid = tid.0, hidden = term.hidden, height = term.height, "terminal state after spawn");
+            tracing::info!(tid = tid.0, visible = term.is_visible(), height = term.height, "terminal state after spawn");
         }
 
         Ok(id)
@@ -579,10 +648,10 @@ impl TerminalManager {
         ids
     }
 
-    /// Get visible (non-hidden) terminal IDs in order
+    /// Get visible terminal IDs in order
     pub fn visible_ids(&self) -> Vec<TerminalId> {
         let mut ids: Vec<_> = self.terminals.iter()
-            .filter(|(_, term)| !term.hidden)
+            .filter(|(_, term)| term.is_visible())
             .map(|(id, _)| *id)
             .collect();
         ids.sort_by_key(|id| id.0);
@@ -596,7 +665,7 @@ impl TerminalManager {
 
     /// Number of visible terminals
     pub fn visible_count(&self) -> usize {
-        self.terminals.values().filter(|t| !t.hidden).count()
+        self.terminals.values().filter(|t| t.is_visible()).count()
     }
 
     /// Process all terminal PTY output
@@ -646,8 +715,8 @@ impl TerminalManager {
 
         // Check each terminal for exit status
         let mut dead = Vec::new();
-        let mut parents_to_unhide = Vec::new();
-        let mut terminals_to_hide = Vec::new();
+        let mut parents_to_focus = Vec::new();
+        let mut terminals_to_transition = Vec::new();
         let mut focus_changed_to = None;
 
         for id in ids {
@@ -663,17 +732,18 @@ impl TerminalManager {
                         // This ensures we capture any output that was written before exit
                         term.process();
 
-                        // First time detecting exit - handle parent unhiding
+                        // First time detecting exit - handle parent focus
                         if let Some(parent_id) = term.parent {
-                            parents_to_unhide.push(parent_id);
+                            parents_to_focus.push(parent_id);
                             focus_changed_to = Some(parent_id);
-                            tracing::info!(child = id.0, parent = parent_id.0, "command exited, will unhide parent");
+                            tracing::info!(child = id.0, parent = parent_id.0, "command exited, focusing parent");
 
-                            // Only hide if terminal has never had output
-                            // Once a terminal has had output, it stays visible forever
-                            if !term.has_had_output {
-                                terminals_to_hide.push(id);
-                                tracing::info!(id = id.0, "hiding command terminal (never had output)");
+                            // Transition visibility state on exit
+                            // WaitingForOutput -> ExitedEmpty (hidden)
+                            // HasOutput -> HasOutput (stays visible)
+                            if term.visibility == VisibilityState::WaitingForOutput {
+                                terminals_to_transition.push(id);
+                                tracing::info!(id = id.0, "command terminal exited without output");
                             }
                         }
                     }
@@ -685,20 +755,15 @@ impl TerminalManager {
             }
         }
 
-        // Unhide parent terminals
-        for parent_id in parents_to_unhide {
-            if let Some(parent) = self.terminals.get_mut(&parent_id) {
-                parent.hidden = false;
-                tracing::info!(id = parent_id.0, "unhiding parent terminal");
-            }
-            // Focus the parent
+        // Focus parent terminals
+        for parent_id in parents_to_focus {
             self.focused = Some(parent_id);
         }
 
-        // Hide empty command terminals
-        for id in terminals_to_hide {
+        // Transition visibility for exited terminals
+        for id in terminals_to_transition {
             if let Some(term) = self.terminals.get_mut(&id) {
-                term.hidden = true;
+                term.visibility = term.visibility.on_exit();
             }
         }
 
