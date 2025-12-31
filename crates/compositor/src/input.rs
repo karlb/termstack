@@ -173,7 +173,7 @@ impl ColumnCompositor {
             return;
         }
 
-        tracing::info!(?keycode, ?key_state, "processing keyboard event for terminal");
+        tracing::debug!(?keycode, ?key_state, "processing keyboard event for terminal");
 
         // Process through keyboard for modifier tracking
         let result = keyboard.input::<(bool, Option<Vec<u8>>), _>(
@@ -184,7 +184,7 @@ impl ColumnCompositor {
             time,
             |state, modifiers, keysym| {
                 let sym = keysym.modified_sym();
-                tracing::info!(?sym, ?modifiers, "keysym processed");
+                tracing::debug!(?sym, ?modifiers, "keysym processed");
 
                 // Handle compositor keybindings
                 if state.handle_compositor_binding_with_terminals(modifiers, sym, key_state)
@@ -194,7 +194,7 @@ impl ColumnCompositor {
                 } else if key_state == KeyState::Pressed {
                     // Convert keysym to bytes for terminal
                     let bytes = keysym_to_bytes(sym, modifiers);
-                    tracing::info!(?bytes, "converted to bytes");
+                    tracing::debug!(?bytes, "converted to bytes");
                     if !bytes.is_empty() {
                         FilterResult::Intercept((false, Some(bytes)))
                     } else {
@@ -206,7 +206,7 @@ impl ColumnCompositor {
             },
         );
 
-        tracing::info!(?result, "keyboard.input result");
+        tracing::debug!(?result, "keyboard.input result");
 
         // Handle key release - stop repeat
         if key_state == KeyState::Released {
@@ -220,12 +220,12 @@ impl ColumnCompositor {
                 if !handled {
                     let focused_id = terminals.focused;
                     let term_count = terminals.count();
-                    tracing::info!(focused = ?focused_id, term_count, ?bytes, "forwarding input to terminal");
+                    tracing::debug!(focused = ?focused_id, term_count, ?bytes, "forwarding input to terminal");
                     if let Some(terminal) = terminals.get_focused_mut() {
                         if let Err(e) = terminal.write(&bytes) {
                             tracing::error!(?e, "failed to write to terminal");
                         } else {
-                            tracing::info!("write succeeded");
+                            tracing::debug!("write succeeded");
                             // Set up key repeat for this key
                             let repeat_time = std::time::Instant::now()
                                 + std::time::Duration::from_millis(self.repeat_delay_ms);

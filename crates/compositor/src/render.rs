@@ -289,7 +289,7 @@ pub fn log_frame_state(
         }
     }).collect();
 
-    tracing::info!(
+    tracing::debug!(
         scroll = scroll_offset,
         focused = ?focused_index,
         screen_h = screen_height,
