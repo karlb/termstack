@@ -28,12 +28,11 @@ use compositor::terminal_manager::{TerminalId, TerminalManager};
 use compositor::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
 /// Minimum terminal height in rows.
-/// Prevents terminals from becoming too small to be usable.
-const MIN_TERMINAL_ROWS: u16 = 3;
+const MIN_TERMINAL_ROWS: u16 = 1;
 
 /// Extra rows to add beyond cursor position for content-based sizing.
-/// Accounts for: +1 for 0-indexed cursor line, +1 for shell prompt.
-const CURSOR_TO_CONTENT_OFFSET: u16 = 2;
+/// Accounts for: +1 for 0-indexed cursor line.
+const CURSOR_TO_CONTENT_OFFSET: u16 = 1;
 
 fn main() -> anyhow::Result<()> {
     // Initialize logging

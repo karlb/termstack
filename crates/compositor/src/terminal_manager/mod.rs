@@ -446,8 +446,8 @@ impl TerminalManager {
         let default_cols = (output_width / cell_width).max(1) as u16;
         // Max rows based on viewport height
         let max_rows = (output_height / cell_height).max(1) as u16;
-        // Start with small height (enough for prompt + a line or two)
-        let initial_rows = 3;
+        // Start with minimal height (content-aware sizing will grow as needed)
+        let initial_rows = 1;
 
         Self {
             terminals: HashMap::new(),
