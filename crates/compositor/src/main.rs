@@ -4,20 +4,25 @@
 //! with windows dynamically sizing based on their content.
 
 use std::os::unix::net::UnixListener;
+use std::sync::mpsc;
 use std::time::Duration;
+use std::collections::HashSet;
 
-use smithay::backend::winit::{self, WinitEvent};
-use smithay::reexports::winit::window::{CursorIcon, WindowAttributes};
+use smithay::backend::allocator::dmabuf::DmabufAllocator;
+use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::input::InputEvent;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::element::{Element, Kind, RenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::{Color32F, Frame, Renderer, Bind};
+use smithay::backend::x11::{X11Backend, X11Event, X11Input, WindowBuilder};
 use smithay::desktop::PopupKind;
-use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::desktop::PopupManager;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::utils::Point;
+use smithay::utils::{DeviceFd, Point};
 use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
@@ -52,27 +57,71 @@ fn main() -> anyhow::Result<()> {
     // Create Wayland display
     let display: Display<ColumnCompositor> = Display::new()?;
 
-    // Initialize winit backend with custom window attributes
+    // Initialize X11 backend
     let window_title = match config.theme {
         compositor::config::Theme::Light => "Column Compositor (Light)",
         compositor::config::Theme::Dark => "Column Compositor (Dark)",
     };
-    let window_attrs = WindowAttributes::default().with_title(window_title);
-    let (mut backend, mut winit_event_loop) = winit::init_from_attributes::<GlesRenderer>(window_attrs)
-        .map_err(|e| anyhow::anyhow!("winit init error: {e:?}"))?;
 
+    let x11_backend = X11Backend::new()
+        .map_err(|e| anyhow::anyhow!("X11 backend init error: {e:?}"))?;
+    let x11_handle = x11_backend.handle();
+
+    // Create window
+    let x11_window = WindowBuilder::new()
+        .title(window_title)
+        .size((1280u16, 800u16).into())
+        .build(&x11_handle)
+        .map_err(|e| anyhow::anyhow!("X11 window creation error: {e:?}"))?;
+
+    // Get DRM node for GPU rendering
+    let (_drm_node, fd) = x11_handle.drm_node()
+        .map_err(|e| anyhow::anyhow!("Failed to get DRM node: {e:?}"))?;
+
+    // Create GBM device for buffer allocation
+    let gbm_device = GbmDevice::new(DeviceFd::from(fd))
+        .map_err(|e| anyhow::anyhow!("Failed to create GBM device: {e:?}"))?;
+
+    // Create EGL display and context for OpenGL rendering
+    let egl_display = unsafe { EGLDisplay::new(gbm_device.clone()) }
+        .map_err(|e| anyhow::anyhow!("Failed to create EGL display: {e:?}"))?;
+    let egl_context = EGLContext::new(&egl_display)
+        .map_err(|e| anyhow::anyhow!("Failed to create EGL context: {e:?}"))?;
+
+    // Get supported modifiers for buffer allocation
+    let modifiers: HashSet<_> = egl_context
+        .dmabuf_render_formats()
+        .iter()
+        .map(|format| format.modifier)
+        .collect();
+
+    // Create X11 surface for presenting buffers
+    let mut x11_surface = x11_handle.create_surface(
+        &x11_window,
+        DmabufAllocator(GbmAllocator::new(gbm_device, GbmBufferFlags::RENDERING)),
+        modifiers.into_iter(),
+    ).map_err(|e| anyhow::anyhow!("Failed to create X11 surface: {e:?}"))?;
+
+    // Create GLES renderer from EGL context
+    let mut renderer = unsafe { GlesRenderer::new(egl_context) }
+        .map_err(|e| anyhow::anyhow!("Failed to create GLES renderer: {e:?}"))?;
+
+    // Map the window to make it visible
+    x11_window.map();
+
+    let initial_size = x11_window.size();
     let mode = Mode {
-        size: backend.window_size(),
+        size: (initial_size.w as i32, initial_size.h as i32).into(),
         refresh: 60_000,
     };
 
     let output = Output::new(
-        "winit".to_string(),
+        "x11".to_string(),
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
             make: "Smithay".to_string(),
-            model: "Winit".to_string(),
+            model: "X11".to_string(),
         },
     );
     output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
@@ -80,6 +129,9 @@ fn main() -> anyhow::Result<()> {
 
     // Convert logical to physical size
     let output_size: Size<i32, Physical> = Size::from((mode.size.w, mode.size.h));
+
+    // Track current window size for resize events
+    let mut current_size = initial_size;
 
     // Create compositor state (keep display separate for dispatching)
     let (mut compositor, mut display) = ColumnCompositor::new(
@@ -189,6 +241,36 @@ fn main() -> anyhow::Result<()> {
         },
     ).expect("failed to insert IPC socket source");
 
+    // Create channel for X11 input events
+    // The X11 backend callback will send events, main loop will receive them
+    let (x11_event_tx, x11_event_rx) = mpsc::channel::<InputEvent<X11Input>>();
+
+    // Insert X11 backend into event loop
+    event_loop.handle().insert_source(x11_backend, move |event, _, state| {
+        match event {
+            X11Event::Input { event: input_event, .. } => {
+                // Send input events through channel to be processed in main loop
+                // where we have access to terminal_manager
+                let _ = x11_event_tx.send(input_event);
+            }
+            X11Event::Resized { new_size, .. } => {
+                state.x11_resize_pending = Some((new_size.w, new_size.h));
+            }
+            X11Event::CloseRequested { .. } => {
+                state.running = false;
+            }
+            X11Event::Focus { focused, .. } => {
+                tracing::info!("X11 window focus changed: {}", focused);
+            }
+            X11Event::Refresh { .. } => {
+                // Window needs redraw - will happen in main loop anyway
+            }
+            X11Event::PresentCompleted { .. } => {
+                // Buffer presentation complete - ready for next frame
+            }
+        }
+    }).expect("failed to insert X11 backend source");
+
     tracing::info!("entering main loop");
 
     let bg_color = Color32F::new(
@@ -239,44 +321,37 @@ fn main() -> anyhow::Result<()> {
         // This ensures Space.element_under works correctly for click detection
         compositor.recalculate_layout();
 
-        // Dispatch winit events
-        let _ = winit_event_loop.dispatch_new_events(|event| {
-            match event {
-            WinitEvent::Resized { size, .. } => {
-                // Update Smithay output mode
-                output.change_current_state(
-                    Some(Mode {
-                        size,
-                        refresh: 60_000,
-                    }),
-                    None,
-                    None,
-                    None,
-                );
-                // Handle compositor-side resize
-                handle_compositor_resize(
-                    &mut compositor,
-                    &mut terminal_manager,
-                    Size::from((size.w, size.h)),
-                );
-            }
-            WinitEvent::Input(event) => compositor.process_input_event_with_terminals(event, &mut terminal_manager),
-            WinitEvent::Focus(focused) => {
-                tracing::info!("window focus changed: {}", focused);
-            }
-            WinitEvent::Redraw => {}
-            WinitEvent::CloseRequested => {
-                compositor.running = false;
-            }
-        }});
+        // Process X11 input events from channel
+        while let Ok(input_event) = x11_event_rx.try_recv() {
+            compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
+        }
 
-        // Update cursor based on whether we're over a resize handle
-        let cursor = if compositor.cursor_on_resize_handle {
-            CursorIcon::NsResize
-        } else {
-            CursorIcon::Default
-        };
-        backend.window().set_cursor(cursor);
+        // Handle X11 resize events
+        if let Some((new_w, new_h)) = compositor.x11_resize_pending.take() {
+            let new_size: Size<i32, Physical> = (new_w as i32, new_h as i32).into();
+            // Update Smithay output mode
+            output.change_current_state(
+                Some(Mode {
+                    size: new_size,
+                    refresh: 60_000,
+                }),
+                None,
+                None,
+                None,
+            );
+            // Handle compositor-side resize
+            handle_compositor_resize(
+                &mut compositor,
+                &mut terminal_manager,
+                Size::from((new_size.w, new_size.h)),
+            );
+            current_size = (new_w, new_h).into();
+        }
+
+        // TODO: X11 backend cursor icon support
+        // The X11 Window has set_cursor_visible() but not set_cursor_icon()
+        // For now, cursor icon switching is disabled
+        let _ = compositor.cursor_on_resize_handle; // suppress unused warning
 
         if !compositor.running {
             break;
@@ -318,32 +393,45 @@ fn main() -> anyhow::Result<()> {
             break;
         }
 
-        // Get window size before binding
-        let size = backend.window_size();
-        let physical_size: Size<i32, Physical> = Size::from((size.w, size.h));
+        // Get window size for rendering
+        let physical_size: Size<i32, Physical> = Size::from((current_size.w as i32, current_size.h as i32));
 
         #[allow(deprecated)]
         let damage: Rectangle<i32, Physical> = Rectangle::from_loc_and_size(
             (0, 0),
-            (size.w, size.h),
+            (current_size.w as i32, current_size.h as i32),
         );
 
-        // Render frame - bind returns (&mut Renderer, Framebuffer)
+        // Get buffer from X11 surface for rendering
+        let (mut buffer, _buffer_age) = match x11_surface.buffer() {
+            Ok(buf) => buf,
+            Err(e) => {
+                tracing::warn!("Failed to get X11 surface buffer: {:?}", e);
+                continue;
+            }
+        };
+
+        // Render frame - bind the buffer to the renderer
         {
-            let (renderer, mut framebuffer) = backend.bind()
-                .map_err(|e| anyhow::anyhow!("bind error: {e:?}"))?;
+            let mut framebuffer = match renderer.bind(&mut buffer) {
+                Ok(fb) => fb,
+                Err(e) => {
+                    tracing::warn!("Failed to bind buffer: {:?}", e);
+                    continue;
+                }
+            };
 
             let scale = Scale::from(1.0);
 
             // Pre-render all terminal textures
-            prerender_terminals(&mut terminal_manager, renderer);
+            prerender_terminals(&mut terminal_manager, &mut renderer);
 
             // Pre-render title bar textures for all cells with SSD
             let title_bar_textures = prerender_title_bars(
                 &compositor.layout_nodes,
                 &mut title_bar_renderer,
                 &terminal_manager,
-                renderer,
+                &mut renderer,
                 physical_size.w,
                 &mut title_bar_cache,
             );
@@ -352,7 +440,7 @@ fn main() -> anyhow::Result<()> {
             let (actual_heights, mut external_elements) = collect_cell_data(
                 &compositor.layout_nodes,
                 &terminal_manager,
-                renderer,
+                &mut renderer,
                 scale,
             );
 
@@ -416,7 +504,7 @@ fn main() -> anyhow::Result<()> {
 
                                 let popup_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                                     render_elements_from_surface_tree(
-                                        renderer,
+                                        &mut renderer,
                                         wl_surface,
                                         Point::from((0i32, 0i32)),
                                         scale,
@@ -434,7 +522,8 @@ fn main() -> anyhow::Result<()> {
             }
 
             // Begin actual rendering
-            let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
+            // X11 backend needs Flipped180 because OpenGL Y=0 is at bottom but X11 Y=0 is at top
+            let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Flipped180)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;
 
             frame.clear(bg_color, &[damage])
@@ -507,7 +596,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        backend.submit(Some(&[damage]))?;
+        // Submit the rendered buffer to X11
+        if let Err(e) = x11_surface.submit() {
+            tracing::warn!("Failed to submit X11 surface: {:?}", e);
+        }
 
         // Send frame callbacks to all toplevel surfaces and their popups
         for surface in compositor.xdg_shell_state.toplevel_surfaces() {
@@ -535,15 +627,12 @@ fn main() -> anyhow::Result<()> {
         // Flush clients
         compositor.display_handle.flush_clients()?;
 
-        // Dispatch calloop events with timeout
-        // Note: This may return early if Wayland clients are active
+        // Dispatch calloop events
+        // With X11 backend, calloop properly handles all events including X11 input
+        // Use 16ms timeout for ~60fps frame rate
         event_loop
-            .dispatch(Some(Duration::from_millis(1)), &mut compositor)
+            .dispatch(Some(Duration::from_millis(16)), &mut compositor)
             .map_err(|e| anyhow::anyhow!("event loop error: {e}"))?;
-
-        // Frame pacing: ensure we don't spin faster than 60fps
-        // This is critical to allow Winit to receive X11 events
-        std::thread::sleep(Duration::from_millis(16));
     }
 
     tracing::info!("compositor shutting down");

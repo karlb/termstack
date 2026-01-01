@@ -13,7 +13,7 @@ use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::output::OutputHandler;
-use smithay::desktop::{PopupKind, PopupManager, PopupPointerGrab, Space, Window};
+use smithay::desktop::{PopupKind, PopupKeyboardGrab, PopupManager, PopupPointerGrab, Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
@@ -175,6 +175,10 @@ pub struct ColumnCompositor {
     /// Whether the cursor should show a resize icon
     /// Set by input handling when pointer is over a resize handle
     pub cursor_on_resize_handle: bool,
+
+    /// Pending X11 resize event (new width, height)
+    /// Set by X11 backend callback, processed in main loop
+    pub x11_resize_pending: Option<(u16, u16)>,
 }
 
 /// A node in the column layout containing the cell and its cached height.
@@ -330,6 +334,7 @@ impl ColumnCompositor {
             repeat_interval_ms: 30,  // ~33 keys per second
             pointer_position: Point::from((0.0, 0.0)),
             cursor_on_resize_handle: false,
+            x11_resize_pending: None,
         };
 
         (compositor, display)
@@ -1024,9 +1029,6 @@ impl XdgShellHandler for ColumnCompositor {
         // IMPORTANT: We do NOT dismiss popups when grab fails!
         // Calling send_popup_done() would tell GTK the popup is dismissed,
         // but the popup surface remains visible, causing state mismatch and freezes.
-        //
-        // Instead, we only set up a POINTER grab if successful, not keyboard grab.
-        // If grab fails, popup stays visible without click-outside-dismiss.
 
         tracing::debug!("grab(): XDG popup grab requested");
 
@@ -1057,15 +1059,20 @@ impl XdgShellHandler for ColumnCompositor {
             serial,
         ) {
             Ok(grab) => {
-                tracing::warn!("grab(): popup grab ACCEPTED, setting pointer grab only");
-                // Only set pointer grab - keyboard should continue going to parent
-                let pointer_grab = PopupPointerGrab::new(&grab);
+                tracing::info!("grab(): popup grab ACCEPTED, setting pointer and keyboard grabs");
 
+                // Set pointer grab for click-outside-dismiss
+                let pointer_grab = PopupPointerGrab::new(&grab);
                 if let Some(pointer) = self.seat.get_pointer() {
                     pointer.set_grab(self, pointer_grab, serial, smithay::input::pointer::Focus::Keep);
                 }
-                // NOTE: We intentionally do NOT set a keyboard grab here.
-                // Keyboard focus stays on the parent window (search bar).
+
+                // Set keyboard grab - this keeps keyboard focus on the popup hierarchy
+                // and properly forwards events. Required for GTK popups to work correctly.
+                let keyboard_grab = PopupKeyboardGrab::new(&grab);
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.set_grab(self, keyboard_grab, serial);
+                }
             }
             Err(e) => {
                 // Grab failed - this commonly happens if popup was already committed.
