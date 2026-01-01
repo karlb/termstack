@@ -967,6 +967,27 @@ impl CompositorHandler for ColumnCompositor {
         on_commit_buffer_handler::<Self>(surface);
         // Update popup manager state (moves unmapped popups to mapped when committed)
         self.popup_manager.commit(surface);
+
+        // Following Anvil's pattern: send initial configure for popups during commit
+        // This is the correct time to send it, not in new_popup
+        if let Some(popup) = self.popup_manager.find_popup(surface) {
+            if let PopupKind::Xdg(ref xdg_popup) = popup {
+                if !xdg_popup.is_initial_configure_sent() {
+                    // Send the initial configure event
+                    // NOTE: This should never fail as the initial configure is always allowed
+                    if let Err(e) = xdg_popup.send_configure() {
+                        tracing::warn!(?e, "failed to send initial popup configure");
+                    } else {
+                        tracing::info!(
+                            surface_id = ?surface.id(),
+                            "popup initial configure sent"
+                        );
+                    }
+                }
+            }
+            return; // Popup handled, don't process as toplevel
+        }
+
         // Handle toplevel commits
         self.handle_commit(surface);
     }
@@ -1001,25 +1022,45 @@ impl XdgShellHandler for ColumnCompositor {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
-        // Configure popup with the requested geometry from positioner
+        // Following Anvil's pattern: just set geometry and track the popup
+        // Initial configure is sent during commit, not here
         let geo = positioner.get_geometry();
-        tracing::debug!(?geo, "new_popup: XDG popup created");
+
+        // Log parent surface information for debugging
+        let parent_surface = surface.get_parent_surface();
+        let parent_id = parent_surface.as_ref().map(|s| format!("{:?}", s.id()));
+        let popup_id = format!("{:?}", surface.wl_surface().id());
+
+        tracing::info!(
+            ?geo,
+            ?popup_id,
+            ?parent_id,
+            "new_popup: XDG popup created (configure will be sent on commit)"
+        );
 
         surface.with_pending_state(|state| {
             state.geometry = geo;
         });
-        surface.send_configure().ok();
+        // NOTE: Do NOT send_configure here - Anvil sends it during commit
+        // when is_initial_configure_sent() returns false
 
         // Track the popup so it can be rendered and receive input
         if let Err(e) = self.popup_manager.track_popup(PopupKind::Xdg(surface)) {
             tracing::warn!(?e, "failed to track popup");
         } else {
-            tracing::warn!("XDG popup created and tracked successfully");
+            tracing::info!("XDG popup tracked successfully");
         }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.remove_window(surface.wl_surface());
+    }
+
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        // Log popup destruction for debugging
+        let popup_id = format!("{:?}", surface.wl_surface().id());
+        tracing::info!(?popup_id, "popup_destroyed: XDG popup destroyed");
+        // PopupManager cleanup() called every frame will handle internal state
     }
 
     fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, serial: smithay::utils::Serial) {
@@ -1134,8 +1175,26 @@ impl XdgShellHandler for ColumnCompositor {
         }
     }
 
-    fn reposition_request(&mut self, _surface: PopupSurface, _positioner: PositionerState, _token: u32) {
-        // Repositioning not yet supported
+    fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
+        // GTK may request popup repositioning (e.g., when popup would go off-screen)
+        // We must respond with send_repositioned() or GTK may hang
+        let new_geo = positioner.get_geometry();
+        tracing::info!(
+            ?token,
+            ?new_geo,
+            "reposition_request: updating popup position"
+        );
+
+        // Update popup geometry
+        surface.with_pending_state(|state| {
+            state.geometry = new_geo;
+        });
+
+        // Send repositioned event to client
+        surface.send_repositioned(token);
+
+        // Send configure to apply the new geometry
+        surface.send_configure().ok();
     }
 }
 

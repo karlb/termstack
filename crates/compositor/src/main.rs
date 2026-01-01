@@ -24,7 +24,7 @@ use smithay::desktop::PopupManager;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::{DeviceFd, Point};
 use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
-use smithay::reexports::wayland_server::Display;
+use smithay::reexports::wayland_server::{Display, Resource};
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
@@ -475,6 +475,7 @@ fn main() -> anyhow::Result<()> {
             // where popup_x/popup_top is where the popup content should appear in render coords
             let mut popup_render_data: Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = Vec::new();
 
+            let mut rendered_popup_count = 0;
             for (cell_idx, data) in render_data.iter().enumerate() {
                 if let CellRenderData::External { y, .. } = data {
                     if let Some(node) = compositor.layout_nodes.get(cell_idx) {
@@ -514,13 +515,27 @@ fn main() -> anyhow::Result<()> {
                                         Kind::Unspecified,
                                     );
 
+                                rendered_popup_count += 1;
                                 if !popup_elements.is_empty() {
                                     popup_render_data.push((popup_x, popup_top, geo_offset_x, geo_offset_y, popup_elements));
+                                } else {
+                                    tracing::debug!(
+                                        surface_id = ?popup_surface.wl_surface().id(),
+                                        "popup has no render elements"
+                                    );
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            if rendered_popup_count > 0 {
+                tracing::debug!(
+                    rendered_popup_count,
+                    render_data_count = popup_render_data.len(),
+                    "popups found in render phase"
+                );
             }
 
             // Begin actual rendering
@@ -604,26 +619,38 @@ fn main() -> anyhow::Result<()> {
         }
 
         // Send frame callbacks to all toplevel surfaces and their popups
+        let toplevel_count = compositor.xdg_shell_state.toplevel_surfaces().len();
+        let mut total_popup_count = 0;
+        let mut frame_callback_popup_ids: Vec<_> = Vec::new();
         for surface in compositor.xdg_shell_state.toplevel_surfaces() {
             send_frames_surface_tree(
                 surface.wl_surface(),
                 &output,
                 Duration::ZERO,
-                None,
+                Some(Duration::ZERO),  // Also use throttle for toplevels
                 |_, _| Some(output.clone()),
             );
 
             // Send frame callbacks to popups for this toplevel
+            // Use Some(Duration::ZERO) throttle to always send callbacks when overdue.
+            // With None, callbacks only sent when on_primary_scanout_output matches,
+            // but popup surfaces may not have output_update called on them.
             let popups: Vec<_> = PopupManager::popups_for_surface(surface.wl_surface()).collect();
+            let popup_count = popups.len();
+            total_popup_count += popup_count;
             for (popup, _) in popups {
+                frame_callback_popup_ids.push(format!("{:?}", popup.wl_surface().id()));
                 send_frames_surface_tree(
                     popup.wl_surface(),
                     &output,
                     Duration::ZERO,
-                    None,
+                    Some(Duration::ZERO),
                     |_, _| Some(output.clone()),
                 );
             }
+        }
+        if total_popup_count > 0 {
+            tracing::debug!(toplevel_count, total_popup_count, "frame callbacks sent to toplevels and popups");
         }
 
         // Flush clients
