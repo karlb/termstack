@@ -138,6 +138,7 @@ fn main() -> anyhow::Result<()> {
         display,
         event_loop.handle(),
         output_size,
+        config.csd_apps.clone(),
     );
 
     // Add output to compositor

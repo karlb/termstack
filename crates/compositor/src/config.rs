@@ -56,6 +56,10 @@ pub struct Config {
 
     /// Keyboard configuration
     pub keyboard: KeyboardConfig,
+
+    /// App IDs that use client-side decorations (skip compositor title bar)
+    /// Supports prefix matching with "*" (e.g., "org.gnome.*")
+    pub csd_apps: Vec<String>,
 }
 
 impl Default for Config {
@@ -70,6 +74,7 @@ impl Default for Config {
             scroll_speed: 1.0,
             auto_scroll: true,
             keyboard: KeyboardConfig::default(),
+            csd_apps: Vec::new(),
         }
     }
 }
@@ -126,7 +131,7 @@ impl Config {
                             // Apply theme-based background if not explicitly set
                             // (check if it's still the dark default when theme is light)
                             config.apply_theme_defaults();
-                            tracing::info!(?path, ?config.theme, "loaded configuration");
+                            tracing::info!(?path, ?config.theme, csd_apps = ?config.csd_apps, "loaded configuration");
                             return config;
                         }
                         Err(e) => {
@@ -152,6 +157,18 @@ impl Config {
         if self.background_color == dark_bg && self.theme == Theme::Light {
             self.background_color = self.theme.background_color();
         }
+    }
+
+    /// Check if an app_id matches the CSD apps patterns
+    /// Supports exact match and prefix match with "*" suffix (e.g., "org.gnome.*")
+    pub fn is_csd_app(&self, app_id: &str) -> bool {
+        self.csd_apps.iter().any(|pattern| {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                app_id.starts_with(prefix)
+            } else {
+                app_id == pattern
+            }
+        })
     }
 }
 

@@ -195,6 +195,9 @@ pub struct ColumnCompositor {
     /// Pending X11 resize event (new width, height)
     /// Set by X11 backend callback, processed in main loop
     pub x11_resize_pending: Option<(u16, u16)>,
+
+    /// App IDs that use client-side decorations (from config)
+    pub csd_apps: Vec<String>,
 }
 
 /// A node in the column layout containing the cell and its cached height.
@@ -298,6 +301,7 @@ impl ColumnCompositor {
         display: Display<Self>,
         loop_handle: LoopHandle<'static, Self>,
         output_size: Size<i32, Physical>,
+        csd_apps: Vec<String>,
     ) -> (Self, Display<Self>) {
         let display_handle = display.handle();
 
@@ -359,9 +363,21 @@ impl ColumnCompositor {
             pointer_position: Point::from((0.0, 0.0)),
             cursor_on_resize_handle: false,
             x11_resize_pending: None,
+            csd_apps,
         };
 
         (compositor, display)
+    }
+
+    /// Check if an app_id matches the CSD apps patterns from config
+    fn is_csd_app(&self, app_id: &str) -> bool {
+        self.csd_apps.iter().any(|pattern| {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                app_id.starts_with(prefix)
+            } else {
+                app_id == pattern
+            }
+        })
     }
 
     /// Recalculate layout after any change
@@ -682,6 +698,34 @@ impl ColumnCompositor {
             return;
         };
 
+        // Check if this is a CSD app (before getting mutable borrow)
+        let should_mark_csd = {
+            let Some(node) = self.layout_nodes.get(index) else {
+                return;
+            };
+            let ColumnCell::External(entry) = &node.cell else {
+                return;
+            };
+
+            if !entry.uses_csd {
+                let app_id = with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .and_then(|data| data.lock().ok())
+                        .and_then(|attrs| attrs.app_id.clone())
+                });
+
+                if let Some(ref id) = app_id {
+                    self.is_csd_app(id)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
         let Some(node) = self.layout_nodes.get_mut(index) else {
             return;
         };
@@ -689,27 +733,9 @@ impl ColumnCompositor {
             return;
         };
 
-        // Detect CSD apps by app_id (GTK4 apps don't use xdg-decoration protocol)
-        if !entry.uses_csd {
-            let app_id = with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<XdgToplevelSurfaceData>()
-                    .and_then(|data| data.lock().ok())
-                    .and_then(|attrs| attrs.app_id.clone())
-            });
-
-            if let Some(id) = app_id {
-                let is_csd_app = id.starts_with("org.gnome.")
-                    || id.starts_with("org.gtk.")
-                    || id == "org.pwmt.zathura"
-                    || id == "zathura";
-
-                if is_csd_app {
-                    entry.uses_csd = true;
-                    tracing::info!(app_id = %id, "detected CSD app by app_id");
-                }
-            }
+        if should_mark_csd {
+            entry.uses_csd = true;
+            tracing::debug!(command = %entry.command, "marked window as CSD from config");
         }
 
         // Get the committed size
@@ -1385,31 +1411,15 @@ impl XdgDecorationHandler for ColumnCompositor {
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
-        // Get app_id to check if this app respects SSD
-        let app_id = with_states(toplevel.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|data| data.lock().ok())
-                .and_then(|attrs| attrs.app_id.clone())
-        });
-
-        // Apps known to ignore SSD preference and always draw their own decorations
-        let csd_stubborn = app_id.as_ref().map(|id| {
-            id.starts_with("org.gnome.") ||  // GTK/GNOME apps with header bars
-            id.starts_with("org.gtk.") ||
-            id == "org.pwmt.zathura" ||      // zathura
-            id == "zathura"
-        }).unwrap_or(false);
+        let uses_csd = matches!(mode, DecorationMode::ClientSide);
 
         let surface = toplevel.wl_surface();
         for node in &mut self.layout_nodes {
             if let ColumnCell::External(entry) = &mut node.cell {
                 if entry.toplevel.wl_surface() == surface {
-                    entry.uses_csd = csd_stubborn;
+                    entry.uses_csd = uses_csd;
                     tracing::info!(
                         requested = ?mode,
-                        app_id = ?app_id,
                         uses_csd = entry.uses_csd,
                         command = %entry.command,
                         "decoration mode negotiated"
@@ -1419,14 +1429,9 @@ impl XdgDecorationHandler for ColumnCompositor {
             }
         }
 
-        // Tell stubborn apps to use CSD, others to use SSD
-        let response_mode = if csd_stubborn {
-            DecorationMode::ClientSide
-        } else {
-            DecorationMode::ServerSide
-        };
+        // Honor client's request
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(response_mode);
+            state.decoration_mode = Some(mode);
         });
         toplevel.send_configure();
     }
