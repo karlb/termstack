@@ -145,20 +145,27 @@ impl ColumnCompositor {
         let keyboard = self.seat.get_keyboard().unwrap();
 
         // If an external Wayland window has focus, forward events via Wayland protocol
-        if self.is_external_focused() {
-            // Check if keyboard has a grab active (e.g., popup grab)
-            let has_grab = keyboard.is_grabbed();
-            let focus_id = keyboard.current_focus().map(|f| format!("{:?}", f.id()));
-            tracing::info!(
+        // Note: When a popup grab is active, events are routed through PopupKeyboardGrab
+        if self.is_external_focused() || keyboard.is_grabbed() {
+            // Check keyboard grab state
+            let has_keyboard_grab = keyboard.is_grabbed();
+            let has_pointer_grab = self.seat.get_pointer().map(|p| p.is_grabbed()).unwrap_or(false);
+            let focus_surface = keyboard.current_focus();
+            let focus_id = focus_surface.as_ref().map(|f| format!("{:?}", f.id()));
+            let focus_alive = focus_surface.as_ref().map(|f| f.is_alive()).unwrap_or(false);
+
+            tracing::debug!(
                 ?keycode,
                 ?key_state,
-                has_grab,
+                has_keyboard_grab,
+                has_pointer_grab,
                 ?focus_id,
-                "keyboard event for external window"
+                focus_alive,
+                "keyboard event for external window/popup"
             );
 
-            // Still check for compositor bindings first
-            let _binding_handled = keyboard.input::<bool, _>(
+            // Process through keyboard - grab will route events appropriately
+            let input_result = keyboard.input::<bool, _>(
                 self,
                 keycode,
                 key_state,
@@ -169,11 +176,16 @@ impl ColumnCompositor {
                     if state.handle_compositor_binding_with_terminals(modifiers, sym, key_state) {
                         FilterResult::Intercept(true)
                     } else {
-                        // Forward to the focused Wayland surface
-                        tracing::info!(?keysym, "forwarding key to external window");
+                        // Forward to the focused Wayland surface (or popup via grab)
+                        tracing::debug!(?keysym, "forwarding key via keyboard.input()");
                         FilterResult::Forward
                     }
                 },
+            );
+
+            tracing::debug!(
+                ?input_result,
+                "keyboard.input() completed"
             );
 
             return;

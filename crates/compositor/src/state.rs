@@ -13,7 +13,7 @@ use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::output::OutputHandler;
-use smithay::desktop::{PopupKind, PopupManager, PopupPointerGrab, Space, Window};
+use smithay::desktop::{PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
@@ -1030,7 +1030,12 @@ impl XdgShellHandler for ColumnCompositor {
         // Calling send_popup_done() would tell GTK the popup is dismissed,
         // but the popup surface remains visible, causing state mismatch and freezes.
 
-        tracing::debug!("grab(): XDG popup grab requested");
+        let popup_geo = surface.with_pending_state(|state| state.geometry);
+        tracing::info!(
+            ?popup_geo,
+            parent_exists = surface.get_parent_surface().is_some(),
+            "grab(): XDG popup grab requested"
+        );
 
         // Find the root toplevel surface for this popup
         if surface.get_parent_surface().is_none() {
@@ -1040,9 +1045,17 @@ impl XdgShellHandler for ColumnCompositor {
         }
 
         // Find the keyboard focus surface (the toplevel window)
-        let keyboard_focus = self.seat.get_keyboard().and_then(|kbd| {
+        let keyboard = self.seat.get_keyboard();
+        let keyboard_focus = keyboard.as_ref().and_then(|kbd| {
             kbd.current_focus().clone()
         });
+        let keyboard_grabbed = keyboard.as_ref().map(|kbd| kbd.is_grabbed()).unwrap_or(false);
+
+        tracing::info!(
+            keyboard_focus_id = ?keyboard_focus.as_ref().map(|f| f.id()),
+            keyboard_grabbed,
+            "grab(): current keyboard state"
+        );
 
         let Some(focus) = keyboard_focus else {
             tracing::warn!("grab(): no keyboard focus - ignoring grab request");
@@ -1053,25 +1066,64 @@ impl XdgShellHandler for ColumnCompositor {
         // Try to set up the popup grab
         let popup_kind = PopupKind::Xdg(surface.clone());
         match self.popup_manager.grab_popup::<Self>(
-            focus,
+            focus.clone(),
             popup_kind,
             &self.seat,
             serial,
         ) {
             Ok(grab) => {
-                tracing::info!("grab(): popup grab ACCEPTED, setting pointer grab only");
+                tracing::info!(
+                    focus_id = ?focus.id(),
+                    "grab(): popup grab ACCEPTED"
+                );
 
-                // Set pointer grab for click-outside-dismiss
-                let pointer_grab = PopupPointerGrab::new(&grab);
-                if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.set_grab(self, pointer_grab, serial, smithay::input::pointer::Focus::Keep);
+                // Following the Anvil example pattern: set both keyboard and pointer grabs
+                // This is the standard way to handle popup grabs in Smithay
+
+                // Set up keyboard grab
+                // First check if there's an existing grab that conflicts
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    if keyboard.is_grabbed()
+                        && !(keyboard.has_grab(serial)
+                            || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+                    {
+                        tracing::warn!("grab(): conflicting keyboard grab, ungrabbing popup");
+                        grab.ungrab(PopupUngrabStrategy::All);
+                        return;
+                    }
+
+                    // Set keyboard focus to the current popup in the grab stack
+                    // PopupKeyboardGrab will route events appropriately
+                    if let Some(current) = grab.current_grab() {
+                        keyboard.set_focus(self, Some(current), serial);
+                    }
+                    keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+                    tracing::info!("grab(): keyboard grab set successfully");
                 }
 
-                // NOTE: We intentionally do NOT set a keyboard grab here.
-                // For autocomplete popups (like GTK search), keyboard focus should stay
-                // on the parent window (search bar), not move to the popup.
-                // PopupKeyboardGrab would redirect keyboard events to the popup,
-                // which doesn't handle keyboard input - it just shows suggestions.
+                // Set up pointer grab
+                if let Some(pointer) = self.seat.get_pointer() {
+                    if pointer.is_grabbed()
+                        && !(pointer.has_grab(serial)
+                            || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
+                    {
+                        tracing::warn!("grab(): conflicting pointer grab, ungrabbing popup");
+                        grab.ungrab(PopupUngrabStrategy::All);
+                        return;
+                    }
+                    pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, smithay::input::pointer::Focus::Keep);
+                    tracing::info!("grab(): pointer grab set successfully");
+                }
+
+                // Log final state
+                if let Some(kbd) = self.seat.get_keyboard() {
+                    let focus_after = kbd.current_focus();
+                    tracing::info!(
+                        focus_after_id = ?focus_after.map(|f| f.id()),
+                        keyboard_grabbed_after = kbd.is_grabbed(),
+                        "grab(): final keyboard state after grab setup"
+                    );
+                }
             }
             Err(e) => {
                 // Grab failed - this commonly happens if popup was already committed.
