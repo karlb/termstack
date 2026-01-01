@@ -8,10 +8,12 @@ use smithay::delegate_data_device;
 use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
+use smithay::delegate_text_input_manager;
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
+use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::output::OutputHandler;
-use smithay::desktop::{Space, Window};
+use smithay::desktop::{PopupKind, PopupManager, PopupPointerGrab, Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
@@ -34,8 +36,10 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
     XdgShellState, XdgToplevelSurfaceData,
 };
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 
 use std::os::unix::net::UnixStream;
 
@@ -74,9 +78,13 @@ pub struct ColumnCompositor {
     pub shm_state: ShmState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
+    pub text_input_state: TextInputManagerState,
 
     /// Desktop space for managing external windows
     pub space: Space<Window>,
+
+    /// Popup manager for tracking XDG popups
+    pub popup_manager: PopupManager,
 
     /// All cells in column order (terminals and external windows unified)
     pub layout_nodes: Vec<LayoutNode>,
@@ -275,6 +283,7 @@ impl ColumnCompositor {
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let text_input_state = TextInputManagerState::new::<Self>(&display_handle);
 
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
 
@@ -291,7 +300,9 @@ impl ColumnCompositor {
             shm_state,
             seat_state,
             data_device_state,
+            text_input_state,
             space: Space::default(),
+            popup_manager: PopupManager::default(),
             layout_nodes: Vec::new(),
             scroll_offset: 0.0,
             focused_index: None,
@@ -419,6 +430,9 @@ impl ColumnCompositor {
         self.new_external_window_index = Some(insert_index);
 
         self.recalculate_layout();
+
+        // Activate the new window (required for GTK animations to work)
+        self.activate_toplevel(insert_index);
 
         tracing::info!(
             cell_count = self.layout_nodes.len(),
@@ -594,6 +608,29 @@ impl ColumnCompositor {
             return;
         };
 
+        // Detect CSD apps by app_id (GTK4 apps don't use xdg-decoration protocol)
+        if !entry.uses_csd {
+            let app_id = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|data| data.lock().ok())
+                    .and_then(|attrs| attrs.app_id.clone())
+            });
+
+            if let Some(id) = app_id {
+                let is_csd_app = id.starts_with("org.gnome.")
+                    || id.starts_with("org.gtk.")
+                    || id == "org.pwmt.zathura"
+                    || id == "zathura";
+
+                if is_csd_app {
+                    entry.uses_csd = true;
+                    tracing::info!(app_id = %id, "detected CSD app by app_id");
+                }
+            }
+        }
+
         // Get the committed size
         let committed_size = with_states(surface, |states| {
             states
@@ -675,6 +712,37 @@ impl ColumnCompositor {
             if current + 1 < self.layout_nodes.len() {
                 self.focused_index = Some(current + 1);
                 self.ensure_focused_visible();
+            }
+        }
+    }
+
+    /// Set the activated state on a toplevel window at the given index.
+    /// Also clears the activated state from all other toplevels.
+    /// This is required for GTK apps to run animations and handle input properly.
+    pub fn activate_toplevel(&mut self, index: usize) {
+        for (i, node) in self.layout_nodes.iter().enumerate() {
+            if let ColumnCell::External(entry) = &node.cell {
+                let should_activate = i == index;
+                entry.toplevel.with_pending_state(|state| {
+                    if should_activate {
+                        state.states.set(ToplevelState::Activated);
+                    } else {
+                        state.states.unset(ToplevelState::Activated);
+                    }
+                });
+                entry.toplevel.send_pending_configure();
+            }
+        }
+    }
+
+    /// Deactivate all toplevel windows (e.g., when focusing a terminal)
+    pub fn deactivate_all_toplevels(&mut self) {
+        for node in &self.layout_nodes {
+            if let ColumnCell::External(entry) = &node.cell {
+                entry.toplevel.with_pending_state(|state| {
+                    state.states.unset(ToplevelState::Activated);
+                });
+                entry.toplevel.send_pending_configure();
             }
         }
     }
@@ -892,6 +960,8 @@ impl CompositorHandler for ColumnCompositor {
     fn commit(&mut self, surface: &WlSurface) {
         // Process buffer for desktop rendering abstractions
         on_commit_buffer_handler::<Self>(surface);
+        // Update popup manager state (moves unmapped popups to mapped when committed)
+        self.popup_manager.commit(surface);
         // Handle toplevel commits
         self.handle_commit(surface);
     }
@@ -925,16 +995,85 @@ impl XdgShellHandler for ColumnCompositor {
         self.add_window(surface);
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        // Popups not yet supported
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        // Configure popup with the requested geometry from positioner
+        let geo = positioner.get_geometry();
+        tracing::debug!(?geo, "new_popup: XDG popup created");
+
+        surface.with_pending_state(|state| {
+            state.geometry = geo;
+        });
+        surface.send_configure().ok();
+
+        // Track the popup so it can be rendered and receive input
+        if let Err(e) = self.popup_manager.track_popup(PopupKind::Xdg(surface)) {
+            tracing::warn!(?e, "failed to track popup");
+        } else {
+            tracing::warn!("XDG popup created and tracked successfully");
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.remove_window(surface.wl_surface());
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: smithay::utils::Serial) {
-        // Popup grabs not yet supported
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, serial: smithay::utils::Serial) {
+        // Popup grabs are used for click-outside-to-dismiss behavior.
+        // GTK4 requests grabs for autocomplete popups.
+        //
+        // IMPORTANT: We do NOT dismiss popups when grab fails!
+        // Calling send_popup_done() would tell GTK the popup is dismissed,
+        // but the popup surface remains visible, causing state mismatch and freezes.
+        //
+        // Instead, we only set up a POINTER grab if successful, not keyboard grab.
+        // If grab fails, popup stays visible without click-outside-dismiss.
+
+        tracing::debug!("grab(): XDG popup grab requested");
+
+        // Find the root toplevel surface for this popup
+        if surface.get_parent_surface().is_none() {
+            tracing::warn!("grab(): popup has no parent - ignoring grab request");
+            // Do NOT call send_popup_done() - just ignore the grab
+            return;
+        }
+
+        // Find the keyboard focus surface (the toplevel window)
+        let keyboard_focus = self.seat.get_keyboard().and_then(|kbd| {
+            kbd.current_focus().clone()
+        });
+
+        let Some(focus) = keyboard_focus else {
+            tracing::warn!("grab(): no keyboard focus - ignoring grab request");
+            // Do NOT call send_popup_done() - just ignore the grab
+            return;
+        };
+
+        // Try to set up the popup grab
+        let popup_kind = PopupKind::Xdg(surface.clone());
+        match self.popup_manager.grab_popup::<Self>(
+            focus,
+            popup_kind,
+            &self.seat,
+            serial,
+        ) {
+            Ok(grab) => {
+                tracing::warn!("grab(): popup grab ACCEPTED, setting pointer grab only");
+                // Only set pointer grab - keyboard should continue going to parent
+                let pointer_grab = PopupPointerGrab::new(&grab);
+
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.set_grab(self, pointer_grab, serial, smithay::input::pointer::Focus::Keep);
+                }
+                // NOTE: We intentionally do NOT set a keyboard grab here.
+                // Keyboard focus stays on the parent window (search bar).
+            }
+            Err(e) => {
+                // Grab failed - this commonly happens if popup was already committed.
+                // Do NOT call send_popup_done() - that would cause state mismatch.
+                // Popup remains visible, just without click-outside-dismiss.
+                tracing::warn!(?e, "grab(): popup grab denied, popup remains visible without grab");
+            }
+        }
     }
 
     fn reposition_request(&mut self, _surface: PopupSurface, _positioner: PositionerState, _token: u32) {
@@ -951,8 +1090,17 @@ impl SeatHandler for ColumnCompositor {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&Self::KeyboardFocus>) {
-        // Focus change handling
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&Self::KeyboardFocus>) {
+        tracing::debug!(
+            focused = focused.map(|f| format!("{:?}", f.id())).unwrap_or_else(|| "None".to_string()),
+            "focus_changed: keyboard focus changed"
+        );
+
+        // Update text input focus to match keyboard focus
+        let text_input = seat.text_input();
+        text_input.leave();
+        text_input.set_focus(focused.cloned());
+        text_input.enter();
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {
@@ -1071,6 +1219,7 @@ delegate_xdg_decoration!(ColumnCompositor);
 delegate_seat!(ColumnCompositor);
 delegate_data_device!(ColumnCompositor);
 delegate_output!(ColumnCompositor);
+delegate_text_input_manager!(ColumnCompositor);
 
 #[cfg(test)]
 mod tests {

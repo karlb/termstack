@@ -48,6 +48,9 @@ pub struct TestCompositor {
     /// Mock window data for testing
     windows: Vec<MockWindow>,
 
+    /// Mock popups for testing
+    popups: Vec<MockPopup>,
+
     /// Scroll offset
     scroll_offset: f64,
 
@@ -76,6 +79,19 @@ struct MockWindow {
     elements: Vec<(i32, i32)>,
 }
 
+/// Mock popup for testing popup behavior
+#[derive(Debug, Clone)]
+pub struct MockPopup {
+    /// Parent window index
+    pub parent_index: usize,
+    /// Offset from parent window (x, y)
+    pub offset: (i32, i32),
+    /// Size (width, height)
+    pub size: (i32, i32),
+    /// Whether this popup has an active grab
+    pub has_grab: bool,
+}
+
 /// Represents a rendered element's final screen position
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderedElement {
@@ -91,6 +107,7 @@ impl TestCompositor {
         Self {
             output_size: (width, height),
             windows: Vec::new(),
+            popups: Vec::new(),
             scroll_offset: 0.0,
             focused_index: None,
             terminal_total_height: 0,
@@ -568,5 +585,74 @@ impl TestCompositor {
     /// Get current pointer location as a tuple (x, y) in render coordinates
     pub fn pointer_location_tuple(&self) -> (f64, f64) {
         (self.pointer_location.x, self.pointer_location.y.value())
+    }
+
+    // ===== Popup Methods =====
+
+    /// Add a popup attached to a parent window
+    ///
+    /// Returns the popup index for later reference.
+    pub fn add_popup(&mut self, parent_index: usize, offset: (i32, i32), size: (i32, i32)) -> usize {
+        let id = self.popups.len();
+        self.popups.push(MockPopup {
+            parent_index,
+            offset,
+            size,
+            has_grab: false,
+        });
+        id
+    }
+
+    /// Remove a popup by index
+    pub fn remove_popup(&mut self, popup_id: usize) {
+        if popup_id < self.popups.len() {
+            self.popups.remove(popup_id);
+        }
+    }
+
+    /// Set grab state for a popup
+    pub fn set_popup_grab(&mut self, popup_id: usize, has_grab: bool) {
+        if let Some(popup) = self.popups.get_mut(popup_id) {
+            popup.has_grab = has_grab;
+        }
+    }
+
+    /// Get popup's screen position considering parent window position and scroll
+    ///
+    /// Returns (x, y) in screen coordinates, or None if parent doesn't exist.
+    pub fn popup_screen_position(&self, popup_id: usize) -> Option<(i32, i32)> {
+        let popup = self.popups.get(popup_id)?;
+        let render_positions = self.render_positions();
+        let (parent_y, _) = render_positions.get(popup.parent_index)?;
+
+        // Popup position is parent position + offset
+        // Note: popup offset Y is relative to parent's top (in content coords)
+        Some((popup.offset.0, parent_y + popup.offset.1))
+    }
+
+    /// Find popup at a screen position (considering popups render on top)
+    ///
+    /// Returns popup index if found.
+    pub fn popup_at(&self, x: i32, y: i32) -> Option<usize> {
+        // Check popups in reverse order (last added = on top)
+        for (i, popup) in self.popups.iter().enumerate().rev() {
+            if let Some((px, py)) = self.popup_screen_position(i) {
+                if x >= px && x < px + popup.size.0 &&
+                   y >= py && y < py + popup.size.1 {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get all popups
+    pub fn popups(&self) -> &[MockPopup] {
+        &self.popups
+    }
+
+    /// Check if any popup has an active grab
+    pub fn has_popup_grab(&self) -> bool {
+        self.popups.iter().any(|p| p.has_grab)
     }
 }

@@ -9,9 +9,15 @@ use std::time::Duration;
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::reexports::winit::window::{CursorIcon, WindowAttributes};
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+use smithay::backend::renderer::element::{Element, Kind, RenderElement};
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::desktop::PopupKind;
 use smithay::backend::renderer::{Color32F, Frame, Renderer};
 use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::desktop::PopupManager;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::utils::Point;
 use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
@@ -112,6 +118,10 @@ fn main() -> anyhow::Result<()> {
     // Force GTK and Qt apps to use Wayland backend (otherwise they may use X11/Xwayland)
     std::env::set_var("GDK_BACKEND", "wayland");
     std::env::set_var("QT_QPA_PLATFORM", "wayland");
+
+    // Unset DISPLAY to prevent any X11 fallback behavior in GTK/Qt
+    // This ensures apps are pure Wayland clients
+    std::env::remove_var("DISPLAY");
 
     // Insert socket source into event loop for new client connections
     event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
@@ -231,10 +241,6 @@ fn main() -> anyhow::Result<()> {
 
         // Dispatch winit events
         let _ = winit_event_loop.dispatch_new_events(|event| {
-            tracing::debug!("winit event: {:?}", std::mem::discriminant(&event));
-            if let WinitEvent::Input(input_event) = &event {
-                tracing::debug!("winit input event: {:?}", std::mem::discriminant(input_event));
-            }
             match event {
             WinitEvent::Resized { size, .. } => {
                 // Update Smithay output mode
@@ -275,6 +281,9 @@ fn main() -> anyhow::Result<()> {
         if !compositor.running {
             break;
         }
+
+        // Cleanup popup internal resources
+        compositor.popup_manager.cleanup();
 
         // Dispatch Wayland client requests
         display.dispatch_clients(&mut compositor)
@@ -371,6 +380,59 @@ fn main() -> anyhow::Result<()> {
             // Check height changes and auto-scroll if needed
             check_and_handle_height_changes(&mut compositor, actual_heights);
 
+            // Collect popup elements BEFORE starting the frame (need renderer access)
+            // Store: (popup_x, popup_top, geo_offset_x, geo_offset_y, elements)
+            // where popup_x/popup_top is where the popup content should appear in render coords
+            let mut popup_render_data: Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = Vec::new();
+
+            for (cell_idx, data) in render_data.iter().enumerate() {
+                if let CellRenderData::External { y, .. } = data {
+                    if let Some(node) = compositor.layout_nodes.get(cell_idx) {
+                        if let ColumnCell::External(entry) = &node.cell {
+                            for (popup_kind, popup_offset) in PopupManager::popups_for_surface(entry.toplevel.wl_surface()) {
+                                let popup_surface = match &popup_kind {
+                                    PopupKind::Xdg(xdg_popup) => xdg_popup,
+                                    _ => continue,
+                                };
+
+                                let wl_surface = popup_surface.wl_surface();
+                                let popup_geo = popup_surface.with_pending_state(|state| state.geometry);
+
+                                // SIMPLIFIED: Just use popup_offset directly relative to window position
+                                // Window render Y = y (bottom of window in render coords)
+                                // Window top in render coords = y + height
+                                // Title bar offset for SSD windows
+                                let title_bar_offset = if entry.uses_csd { 0 } else { TITLE_BAR_HEIGHT as i32 };
+                                let client_area_top = *y + node.height - title_bar_offset;
+
+                                // Simple positioning: popup at offset from client area top-left
+                                let popup_x = popup_offset.x + compositor::render::FOCUS_INDICATOR_WIDTH;
+                                // In render coords, going down means subtracting Y
+                                let popup_top = client_area_top - popup_offset.y;
+
+                                // Popup geometry offset (shadow margins)
+                                let geo_offset_x = popup_geo.loc.x;
+                                let geo_offset_y = popup_geo.loc.y;
+
+                                let popup_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                                    render_elements_from_surface_tree(
+                                        renderer,
+                                        wl_surface,
+                                        Point::from((0i32, 0i32)),
+                                        scale,
+                                        1.0,
+                                        Kind::Unspecified,
+                                    );
+
+                                if !popup_elements.is_empty() {
+                                    popup_render_data.push((popup_x, popup_top, geo_offset_x, geo_offset_y, popup_elements));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Begin actual rendering
             let mut frame = renderer.render(&mut framebuffer, physical_size, Transform::Normal)
                 .map_err(|e| anyhow::anyhow!("render error: {e:?}"))?;
@@ -411,11 +473,43 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+
+            // Render popups on top of all cells (using pre-collected elements)
+            // popup_render_data contains (popup_x, popup_top, geo_offset_x, geo_offset_y, elements)
+            for (popup_x, popup_top, geo_offset_x, geo_offset_y, popup_elements) in popup_render_data {
+                for element in popup_elements.iter() {
+                    let geo = element.geometry(scale);
+                    let src = element.src();
+                    let surface_height = geo.size.h;
+
+                    // Calculate surface position
+                    // popup_x/popup_top is where the popup content should appear
+                    // geo_offset is where content starts within the surface (for shadows)
+                    let surface_x = popup_x - geo_offset_x;
+                    // popup_top is content top in render coords
+                    // surface_top = popup_top + geo_offset_y (add shadow at top)
+                    // surface_bottom = surface_top - surface_height
+                    let surface_y = popup_top + geo_offset_y - surface_height;
+
+                    let dest = Rectangle::new(
+                        Point::from((geo.loc.x + surface_x, geo.loc.y + surface_y)),
+                        geo.size,
+                    );
+
+                    // Flip source for OpenGL Y coordinates
+                    let flipped_src = Rectangle::new(
+                        Point::from((src.loc.x, src.loc.y + src.size.h)),
+                        Size::from((src.size.w, -src.size.h)),
+                    );
+
+                    element.draw(&mut frame, flipped_src, dest, &[damage], &[]).ok();
+                }
+            }
         }
 
         backend.submit(Some(&[damage]))?;
 
-        // Send frame callbacks to all toplevel surfaces
+        // Send frame callbacks to all toplevel surfaces and their popups
         for surface in compositor.xdg_shell_state.toplevel_surfaces() {
             send_frames_surface_tree(
                 surface.wl_surface(),
@@ -424,15 +518,32 @@ fn main() -> anyhow::Result<()> {
                 None,
                 |_, _| Some(output.clone()),
             );
+
+            // Send frame callbacks to popups for this toplevel
+            let popups: Vec<_> = PopupManager::popups_for_surface(surface.wl_surface()).collect();
+            for (popup, _) in popups {
+                send_frames_surface_tree(
+                    popup.wl_surface(),
+                    &output,
+                    Duration::ZERO,
+                    None,
+                    |_, _| Some(output.clone()),
+                );
+            }
         }
 
         // Flush clients
         compositor.display_handle.flush_clients()?;
 
-        // Dispatch calloop events
+        // Dispatch calloop events with timeout
+        // Note: This may return early if Wayland clients are active
         event_loop
-            .dispatch(Some(Duration::from_millis(16)), &mut compositor)
+            .dispatch(Some(Duration::from_millis(1)), &mut compositor)
             .map_err(|e| anyhow::anyhow!("event loop error: {e}"))?;
+
+        // Frame pacing: ensure we don't spin faster than 60fps
+        // This is critical to allow Winit to receive X11 events
+        std::thread::sleep(Duration::from_millis(16));
     }
 
     tracing::info!("compositor shutting down");

@@ -120,9 +120,7 @@ impl ColumnCompositor {
         terminals: &mut TerminalManager,
     ) {
         match event {
-            InputEvent::Keyboard { event } => {
-                self.handle_keyboard_event(event, Some(terminals));
-            }
+            InputEvent::Keyboard { event } => self.handle_keyboard_event(event, Some(terminals)),
             InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
             InputEvent::PointerMotionAbsolute { event } => {
                 self.handle_pointer_motion_absolute(event, terminals)
@@ -143,14 +141,12 @@ impl ColumnCompositor {
         let keycode = event.key_code();
         let key_state = event.state();
 
-        tracing::debug!(?keycode, ?key_state, "keyboard event received");
-
         let keyboard = self.seat.get_keyboard().unwrap();
 
         // If an external Wayland window has focus, forward events via Wayland protocol
         if self.is_external_focused() {
             // Still check for compositor bindings first
-            let binding_handled = keyboard.input::<bool, _>(
+            let _binding_handled = keyboard.input::<bool, _>(
                 self,
                 keycode,
                 key_state,
@@ -167,9 +163,6 @@ impl ColumnCompositor {
                 },
             );
 
-            if binding_handled == Some(true) {
-                tracing::info!("compositor binding handled (external window focused)");
-            }
             return;
         }
 
@@ -725,6 +718,8 @@ impl ColumnCompositor {
                         if let Some(keyboard) = self.seat.get_keyboard() {
                             keyboard.set_focus(self, surface, serial);
                         }
+                        // Set XDG toplevel activated state (required for GTK animations)
+                        self.activate_toplevel(index);
                     } else if let Some(id) = terminal_id {
                         // Check if click is on close button in title bar (for terminals with title bars)
                         let on_close_button = if has_ssd && button == BTN_LEFT {
@@ -771,6 +766,8 @@ impl ColumnCompositor {
                         if let Some(keyboard) = self.seat.get_keyboard() {
                             keyboard.set_focus(self, None, serial);
                         }
+                        // Deactivate all external windows when focusing terminal
+                        self.deactivate_all_toplevels();
 
                         // Start selection on left button press
                         if button == BTN_LEFT {
@@ -897,7 +894,66 @@ impl ColumnCompositor {
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> {
-        // Find which cell is under the point (only external windows have surfaces)
+        // First check all popups (they're on top of windows)
+        // We need to check popups for ALL external windows, not just the one under the point
+        for (idx, node) in self.layout_nodes.iter().enumerate() {
+            if let crate::state::ColumnCell::External(entry) = &node.cell {
+                // Calculate window position
+                let output_height = self.output_size.h as f64;
+                let mut content_y = -self.scroll_offset;
+                for (i, n) in self.layout_nodes.iter().enumerate() {
+                    if i == idx {
+                        break;
+                    }
+                    content_y += n.height as f64;
+                }
+                let window_render_top = output_height - content_y;
+
+                // Check popups for this window
+                for (popup_kind, popup_offset) in smithay::desktop::PopupManager::popups_for_surface(entry.toplevel.wl_surface()) {
+                    let popup_surface = match &popup_kind {
+                        smithay::desktop::PopupKind::Xdg(xdg_popup) => xdg_popup,
+                        _ => continue,
+                    };
+
+                    let popup_geo = popup_surface.with_pending_state(|state| state.geometry);
+
+                    // Calculate popup position in render coords
+                    // Popup offset is relative to the client area
+                    // For CSD apps, client area is the whole window
+                    // For SSD apps, client area is below our title bar
+                    let popup_render_x = (popup_offset.x + FOCUS_INDICATOR_WIDTH) as f64;
+                    let title_bar_offset = if entry.uses_csd { 0.0 } else { TITLE_BAR_HEIGHT as f64 };
+                    let client_area_top = window_render_top - title_bar_offset;
+                    let popup_render_y = client_area_top - popup_offset.y as f64 - popup_geo.size.h as f64;
+                    let popup_w = popup_geo.size.w as f64;
+                    let popup_h = popup_geo.size.h as f64;
+
+                    // Check if point is inside popup
+                    if point.x >= popup_render_x && point.x < popup_render_x + popup_w
+                        && point.y >= popup_render_y && point.y < popup_render_y + popup_h
+                    {
+                        // Point is on popup - return popup surface
+                        let local_x = point.x - popup_render_x;
+                        let local_y = (popup_render_y + popup_h) - point.y; // Flip Y for client coords
+
+                        tracing::debug!(
+                            popup_offset = ?popup_offset,
+                            popup_geo = ?popup_geo,
+                            local = ?(local_x, local_y),
+                            "surface_under: hit popup"
+                        );
+
+                        let wl_surface = popup_surface.wl_surface().clone();
+                        // Return popup position in screen coords
+                        let screen_popup_y = output_height - (popup_render_y + popup_h);
+                        return Some((wl_surface, Point::from((popup_render_x, screen_popup_y))));
+                    }
+                }
+            }
+        }
+
+        // No popup hit, check main window
         let index = self.window_at(point)?;
 
         let crate::state::ColumnCell::External(entry) = &self.layout_nodes[index].cell else {
