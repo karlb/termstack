@@ -13,7 +13,7 @@ use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::output::OutputHandler;
-use smithay::desktop::{PopupKind, PopupKeyboardGrab, PopupManager, PopupPointerGrab, Space, Window};
+use smithay::desktop::{PopupKind, PopupManager, PopupPointerGrab, Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
@@ -1059,7 +1059,7 @@ impl XdgShellHandler for ColumnCompositor {
             serial,
         ) {
             Ok(grab) => {
-                tracing::info!("grab(): popup grab ACCEPTED, setting pointer and keyboard grabs");
+                tracing::info!("grab(): popup grab ACCEPTED, setting pointer grab only");
 
                 // Set pointer grab for click-outside-dismiss
                 let pointer_grab = PopupPointerGrab::new(&grab);
@@ -1067,12 +1067,11 @@ impl XdgShellHandler for ColumnCompositor {
                     pointer.set_grab(self, pointer_grab, serial, smithay::input::pointer::Focus::Keep);
                 }
 
-                // Set keyboard grab - this keeps keyboard focus on the popup hierarchy
-                // and properly forwards events. Required for GTK popups to work correctly.
-                let keyboard_grab = PopupKeyboardGrab::new(&grab);
-                if let Some(keyboard) = self.seat.get_keyboard() {
-                    keyboard.set_grab(self, keyboard_grab, serial);
-                }
+                // NOTE: We intentionally do NOT set a keyboard grab here.
+                // For autocomplete popups (like GTK search), keyboard focus should stay
+                // on the parent window (search bar), not move to the popup.
+                // PopupKeyboardGrab would redirect keyboard events to the popup,
+                // which doesn't handle keyboard input - it just shows suggestions.
             }
             Err(e) => {
                 // Grab failed - this commonly happens if popup was already committed.

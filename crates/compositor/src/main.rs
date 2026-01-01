@@ -249,6 +249,8 @@ fn main() -> anyhow::Result<()> {
     event_loop.handle().insert_source(x11_backend, move |event, _, state| {
         match event {
             X11Event::Input { event: input_event, .. } => {
+                // Log that we received an X11 input event (helps debug freezes)
+                tracing::debug!("X11 input event received");
                 // Send input events through channel to be processed in main loop
                 // where we have access to terminal_manager
                 let _ = x11_event_tx.send(input_event);

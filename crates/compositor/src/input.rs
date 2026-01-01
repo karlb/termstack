@@ -6,6 +6,7 @@ use smithay::backend::input::{
 };
 use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::coords::ScreenY;
@@ -145,6 +146,17 @@ impl ColumnCompositor {
 
         // If an external Wayland window has focus, forward events via Wayland protocol
         if self.is_external_focused() {
+            // Check if keyboard has a grab active (e.g., popup grab)
+            let has_grab = keyboard.is_grabbed();
+            let focus_id = keyboard.current_focus().map(|f| format!("{:?}", f.id()));
+            tracing::info!(
+                ?keycode,
+                ?key_state,
+                has_grab,
+                ?focus_id,
+                "keyboard event for external window"
+            );
+
             // Still check for compositor bindings first
             let _binding_handled = keyboard.input::<bool, _>(
                 self,
@@ -158,6 +170,7 @@ impl ColumnCompositor {
                         FilterResult::Intercept(true)
                     } else {
                         // Forward to the focused Wayland surface
+                        tracing::info!(?keysym, "forwarding key to external window");
                         FilterResult::Forward
                     }
                 },
