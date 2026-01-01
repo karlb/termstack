@@ -253,10 +253,54 @@ fn main() -> Result<()> {
         eprintln!("[column-term] COLUMN_COMPOSITOR_SOCKET={:?}", env::var("COLUMN_COMPOSITOR_SOCKET"));
     }
 
+    // Handle --status flag for diagnostics
+    if args.len() >= 2 && args[1] == "--status" {
+        let socket = env::var("COLUMN_COMPOSITOR_SOCKET");
+        let shell = env::var("SHELL").unwrap_or_else(|_| "(not set)".to_string());
+
+        println!("column-term status:");
+        println!("  COLUMN_COMPOSITOR_SOCKET: {}", match &socket {
+            Ok(path) => format!("{} (exists: {})", path, std::path::Path::new(path).exists()),
+            Err(_) => "NOT SET - shell integration will not activate".to_string(),
+        });
+        println!("  SHELL: {}", shell);
+        println!();
+
+        if socket.is_ok() {
+            println!("Shell integration should be active.");
+            println!("If 'gui' command is not found, make sure to source the integration script:");
+            println!("  fish: source scripts/integration.fish");
+            println!("  zsh:  source scripts/integration.zsh");
+        } else {
+            println!("You are NOT inside column-compositor.");
+            println!("Start the compositor first, then the shell integration will activate.");
+        }
+        return Ok(());
+    }
+
     // Handle --resize flag first (before any command parsing)
     if args.len() >= 2 && args[1] == "--resize" {
         let mode = args.get(2).map(|s| s.as_str()).unwrap_or("full");
         return send_resize_request(mode);
+    }
+
+    // Handle 'gui' subcommand for launching GUI apps with foreground/background mode
+    // Usage: column-term gui <command>
+    // Background mode: COLUMN_GUI_BACKGROUND=1 column-term gui <command>
+    if debug {
+        eprintln!("[column-term] checking gui subcommand: args.len()={}, args[1]={:?}", args.len(), args.get(1));
+    }
+    if args.len() >= 2 && args[1] == "gui" {
+        if args.len() < 3 {
+            bail!("usage: column-term gui <command>");
+        }
+        let command = args[2..].join(" ");
+        // Background mode is set by shell integration when user adds & suffix
+        let foreground = env::var("COLUMN_GUI_BACKGROUND").is_err();
+        if debug {
+            eprintln!("[column-term] gui spawn: command={:?} foreground={}", command, foreground);
+        }
+        return spawn_gui_app(&command, foreground);
     }
 
     // If we're running inside a TUI terminal (like mc's subshell), don't intercept.
@@ -391,6 +435,54 @@ fn spawn_in_terminal(command: &str) -> Result<()> {
         print!("\x1b[A\x1b[2K");
         std::io::stdout().flush().ok();
     }
+
+    Ok(())
+}
+
+/// Spawn a GUI app with foreground/background mode
+///
+/// In foreground mode, the launching terminal is hidden until the GUI app exits.
+/// In background mode, the launching terminal stays visible and usable.
+fn spawn_gui_app(command: &str, foreground: bool) -> Result<()> {
+    let debug = debug_enabled();
+
+    // Get socket path from environment
+    let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")
+        .context("COLUMN_COMPOSITOR_SOCKET not set - are you running inside column-compositor?")?;
+    if debug { eprintln!("[column-term] socket path: {}", socket_path); }
+
+    // Collect current environment
+    let env_vars: std::collections::HashMap<String, String> = env::vars().collect();
+
+    // Get current working directory
+    let cwd = env::current_dir()
+        .context("failed to get current directory")?
+        .to_string_lossy()
+        .to_string();
+    if debug { eprintln!("[column-term] cwd: {}", cwd); }
+
+    // Build JSON message for gui_spawn
+    let msg = serde_json::json!({
+        "type": "gui_spawn",
+        "command": command,
+        "cwd": cwd,
+        "env": env_vars,
+        "foreground": foreground,
+    });
+
+    if debug { eprintln!("[column-term] connecting to socket for GUI spawn..."); }
+    // Connect to compositor and send message
+    let mut stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("failed to connect to {}", socket_path))?;
+    if debug { eprintln!("[column-term] connected, sending gui_spawn message..."); }
+
+    writeln!(stream, "{}", msg).context("failed to send message")?;
+    stream.flush().context("failed to flush message")?;
+    if debug { eprintln!("[column-term] gui_spawn message sent successfully"); }
+
+    // Clear the command line from the invoking terminal
+    print!("\x1b[A\x1b[2K");
+    std::io::stdout().flush().ok();
 
     Ok(())
 }

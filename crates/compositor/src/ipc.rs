@@ -56,6 +56,19 @@ pub enum IpcMessage {
         /// Environment variables to inherit
         env: HashMap<String, String>,
     },
+    /// Spawn a GUI app with foreground/background mode
+    #[serde(rename = "gui_spawn")]
+    GuiSpawn {
+        /// Command to execute (the GUI app)
+        command: String,
+        /// Working directory for the command
+        cwd: String,
+        /// Environment variables to inherit
+        env: HashMap<String, String>,
+        /// True = foreground mode (hide launching terminal)
+        /// False = background mode (keep launching terminal visible)
+        foreground: bool,
+    },
     /// Resize the focused terminal
     #[serde(rename = "resize")]
     Resize {
@@ -69,6 +82,8 @@ pub enum IpcMessage {
 pub enum IpcRequest {
     /// Spawn a new terminal
     Spawn(SpawnRequest),
+    /// Spawn a GUI app
+    GuiSpawn(GuiSpawnRequest),
     /// Resize the focused terminal
     Resize(ResizeMode),
 }
@@ -82,6 +97,20 @@ pub struct SpawnRequest {
     pub cwd: PathBuf,
     /// Environment variables
     pub env: HashMap<String, String>,
+}
+
+/// GUI spawn request ready for processing by the compositor
+#[derive(Debug)]
+pub struct GuiSpawnRequest {
+    /// Command to execute (the GUI app)
+    pub command: String,
+    /// Working directory
+    pub cwd: PathBuf,
+    /// Environment variables
+    pub env: HashMap<String, String>,
+    /// True = foreground mode (hide launching terminal)
+    /// False = background mode (keep launching terminal visible)
+    pub foreground: bool,
 }
 
 /// Read a request from a Unix stream
@@ -138,6 +167,15 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
                 command,
                 cwd: PathBuf::from(cwd),
                 env,
+            }), stream))
+        }
+        IpcMessage::GuiSpawn { command, cwd, env, foreground } => {
+            tracing::info!(command = %command, cwd = %cwd, foreground, "gui spawn request received");
+            Ok((IpcRequest::GuiSpawn(GuiSpawnRequest {
+                command,
+                cwd: PathBuf::from(cwd),
+                env,
+                foreground,
             }), stream))
         }
         IpcMessage::Resize { mode } => {

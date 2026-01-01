@@ -43,7 +43,8 @@ use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 
 use std::os::unix::net::UnixStream;
 
-use crate::ipc::{ResizeMode, SpawnRequest};
+use std::collections::HashMap;
+use crate::ipc::{GuiSpawnRequest, ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
@@ -126,6 +127,9 @@ pub struct ColumnCompositor {
     /// Index of newly added external window (for scroll-to-show)
     pub new_external_window_index: Option<usize>,
 
+    /// Whether the new external window needs keyboard focus (for foreground GUI)
+    pub new_window_needs_keyboard_focus: bool,
+
     /// Index and new height of resized external window (for scroll adjustment)
     pub external_window_resized: Option<(usize, i32)>,
 
@@ -136,6 +140,18 @@ pub struct ColumnCompositor {
     /// Pending command string for the next external window's title bar
     /// Set when spawning a GUI app command, consumed by add_window()
     pub pending_window_command: Option<String>,
+
+    /// Pending GUI spawn requests from IPC
+    pub pending_gui_spawn_requests: Vec<GuiSpawnRequest>,
+
+    /// Whether the next window should be treated as a foreground GUI
+    /// Set when processing a gui_spawn request, consumed by add_window()
+    pub pending_gui_foreground: bool,
+
+    /// Maps output_terminal_id -> (launching_terminal_id, window_was_linked)
+    /// For restoring launcher when GUI exits. The bool tracks whether a window
+    /// was ever linked to this output terminal.
+    pub foreground_gui_sessions: HashMap<TerminalId, (TerminalId, bool)>,
 
     /// Output terminals from closed windows that need cleanup
     /// Processed in main loop - if terminal has no content, remove it; otherwise keep visible
@@ -230,6 +246,10 @@ pub struct WindowEntry {
 
     /// Whether window uses client-side decorations (skip our title bar if true)
     pub uses_csd: bool,
+
+    /// Whether this window was launched in foreground mode
+    /// (launching terminal is hidden and should be restored when this window closes)
+    pub is_foreground_gui: bool,
 }
 
 /// Explicit window state machine - prevents implicit state bugs from v1
@@ -320,9 +340,13 @@ impl ColumnCompositor {
             pending_spawn_requests: Vec::new(),
             pending_resize_request: None,
             new_external_window_index: None,
+            new_window_needs_keyboard_focus: false,
             external_window_resized: None,
             pending_window_output_terminal: None,
             pending_window_command: None,
+            pending_gui_spawn_requests: Vec::new(),
+            pending_gui_foreground: false,
+            foreground_gui_sessions: HashMap::new(),
             pending_output_terminal_cleanup: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
             pending_paste: false,
@@ -395,6 +419,18 @@ impl ColumnCompositor {
         // Consume pending command for title bar (if any)
         let command = self.pending_window_command.take().unwrap_or_default();
 
+        // Consume pending foreground GUI flag
+        let is_foreground_gui = std::mem::take(&mut self.pending_gui_foreground);
+
+        // Mark that this output terminal is now linked to a window
+        // (for foreground GUI fallback trigger - we only restore launcher on process exit
+        // if no window was ever linked)
+        if let Some(term_id) = output_terminal {
+            if let Some((_, window_linked)) = self.foreground_gui_sessions.get_mut(&term_id) {
+                *window_linked = true;
+            }
+        }
+
         // Default initial height (will be resized based on content)
         let initial_height = 200u32;
 
@@ -407,32 +443,63 @@ impl ColumnCompositor {
             output_terminal,
             command: command.clone(),
             uses_csd: false, // Will be set by XdgDecorationHandler if client requests CSD
+            is_foreground_gui,
         };
 
         // Keep the output terminal in the layout - its title bar shows the command
         // that launched this window, which is useful context for the user.
         // (Previously we removed it and only promoted back if it had output,
         // but now that we have title bars, the terminal is valuable even without output.)
-        if let Some(term_id) = output_terminal {
-            tracing::info!(
-                terminal_id = term_id.0,
-                "output terminal kept in cells (title bar shows command)"
-            );
-        }
 
-        // Insert AT focused index (appears above/before it on screen since lower index = higher Y)
-        let insert_index = self.focused_index.unwrap_or(self.layout_nodes.len());
+        // For GUI spawns with an output terminal, insert at the output terminal's position
+        // (pushing it down). This gives the order: GUI, Output, Launcher.
+        // For regular windows, insert at focused position.
+        let insert_index = if let Some(term_id) = output_terminal {
+            // Find the output terminal's position and insert there
+            let output_pos = self.layout_nodes.iter().position(|node| {
+                matches!(node.cell, ColumnCell::Terminal(id) if id == term_id)
+            });
+            if let Some(pos) = output_pos {
+                tracing::info!(
+                    terminal_id = term_id.0,
+                    output_pos = pos,
+                    "inserting GUI window at output terminal position"
+                );
+                pos
+            } else {
+                tracing::warn!(
+                    terminal_id = term_id.0,
+                    "output terminal not found in layout, using focused index"
+                );
+                self.focused_index.unwrap_or(self.layout_nodes.len())
+            }
+        } else {
+            self.focused_index.unwrap_or(self.layout_nodes.len())
+        };
+
         self.layout_nodes.insert(insert_index, LayoutNode {
             cell: ColumnCell::External(entry),
             height: initial_height as i32,
         });
 
-        // Keep focus on the previously focused cell (which moved down by 1)
-        // If nothing was focused, focus the new cell
-        self.focused_index = Some(self.focused_index.map(|idx| idx + 1).unwrap_or(insert_index));
+        // For foreground GUI windows, focus the new window
+        // For other windows (background GUI or regular), keep focus on previously focused cell
+        if is_foreground_gui {
+            self.focused_index = Some(insert_index);
+            tracing::info!(insert_index, "focused foreground GUI window");
+        } else {
+            // Keep focus on the previously focused cell
+            // Account for the insertion shifting cells down
+            if let Some(idx) = self.focused_index {
+                if idx >= insert_index {
+                    self.focused_index = Some(idx + 1);
+                }
+            }
+        }
 
-        // Signal main loop to scroll to show this new window
+        // Signal main loop to scroll to show this new window and set keyboard focus if needed
         self.new_external_window_index = Some(insert_index);
+        self.new_window_needs_keyboard_focus = is_foreground_gui;
 
         self.recalculate_layout();
 
@@ -477,21 +544,22 @@ impl ColumnCompositor {
 
     /// Remove an external window by its surface
     /// If the window had an output terminal, it's added to pending_output_terminal_cleanup
-    pub fn remove_window(&mut self, surface: &WlSurface) {
+    pub fn remove_window(&mut self, surface: &WlSurface) -> Option<TerminalId> {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
             matches!(&node.cell, ColumnCell::External(entry) if entry.toplevel.wl_surface() == surface)
         }) {
-            let output_terminal = if let ColumnCell::External(entry) = &self.layout_nodes.remove(index).cell {
+            let (output_terminal, is_foreground_gui) = if let ColumnCell::External(entry) = &self.layout_nodes.remove(index).cell {
                 self.space.unmap_elem(&entry.window);
-                entry.output_terminal
+                (entry.output_terminal, entry.is_foreground_gui)
             } else {
-                None
+                (None, false)
             };
 
             // Queue output terminal for cleanup in main loop
             if let Some(term_id) = output_terminal {
                 tracing::info!(
                     terminal_id = term_id.0,
+                    is_foreground_gui,
                     "window closed, queuing output terminal for cleanup"
                 );
                 self.pending_output_terminal_cleanup.push(term_id);
@@ -505,9 +573,17 @@ impl ColumnCompositor {
                 cell_count = self.layout_nodes.len(),
                 focused = ?self.focused_index,
                 has_output_terminal = output_terminal.is_some(),
+                is_foreground_gui,
                 "external window removed"
             );
+
+            // If this was a foreground GUI, return the output terminal ID
+            // so the caller can restore the launching terminal
+            if is_foreground_gui {
+                return output_terminal;
+            }
         }
+        None
     }
 
     /// Remove a terminal by its ID

@@ -31,6 +31,16 @@ pub struct TerminalId(pub u32);
 ///
 /// ```text
 /// Shell: new() ──────────────────────────> AlwaysVisible
+///                                               │
+///                                        (gui foreground)
+///                                               │
+///                                               v
+///                                    HiddenForForegroundGui
+///                                               │
+///                                          (gui exit)
+///                                               │
+///                                               v
+///                                         AlwaysVisible
 ///
 /// Command: new_with_command() ──────────> WaitingForOutput
 ///                                               │
@@ -54,6 +64,9 @@ pub enum VisibilityState {
 
     /// Command terminal that exited without ever producing output
     ExitedEmpty,
+
+    /// Launching terminal hidden while a foreground GUI app is running
+    HiddenForForegroundGui,
 }
 
 impl VisibilityState {
@@ -82,6 +95,14 @@ impl VisibilityState {
     pub fn on_exit(self) -> Self {
         match self {
             Self::WaitingForOutput => Self::ExitedEmpty,
+            other => other,
+        }
+    }
+
+    /// Transition when a foreground GUI app exits - restore visibility
+    pub fn on_gui_exit(self) -> Self {
+        match self {
+            Self::HiddenForForegroundGui => Self::AlwaysVisible,
             other => other,
         }
     }

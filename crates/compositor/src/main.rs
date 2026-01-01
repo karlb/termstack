@@ -193,7 +193,11 @@ fn main() -> anyhow::Result<()> {
     // Set environment variable for child processes
     std::env::set_var("COLUMN_COMPOSITOR_SOCKET", &ipc_socket_path);
 
-    tracing::info!(path = ?ipc_socket_path, "IPC socket created");
+    tracing::info!(
+        path = ?ipc_socket_path,
+        env_set = ?std::env::var("COLUMN_COMPOSITOR_SOCKET"),
+        "IPC socket created, COLUMN_COMPOSITOR_SOCKET env var set"
+    );
 
     // Insert IPC socket source into event loop
     event_loop.handle().insert_source(
@@ -208,9 +212,35 @@ fn main() -> anyhow::Result<()> {
                             Ok((request, stream)) => {
                                 match request {
                                     compositor::ipc::IpcRequest::Spawn(spawn_req) => {
-                                        tracing::info!(command = %spawn_req.command, "IPC spawn request queued");
-                                        state.pending_spawn_requests.push(spawn_req);
+                                        // Detect if this is a gui command that slipped through the fish integration
+                                        if spawn_req.command.starts_with("gui ") || spawn_req.command == "gui" {
+                                            tracing::warn!(
+                                                command = %spawn_req.command,
+                                                "Ignoring 'gui' command via regular spawn - use 'gui' function from shell integration"
+                                            );
+                                            // Don't spawn - this would cause an infinite loop
+                                            // The gui function should handle this via gui_spawn IPC instead
+                                        } else {
+                                            tracing::info!(command = %spawn_req.command, "IPC spawn request queued");
+                                            state.pending_spawn_requests.push(spawn_req);
+                                        }
                                         // Spawn doesn't need ACK - it's fire-and-forget
+                                    }
+                                    compositor::ipc::IpcRequest::GuiSpawn(gui_req) => {
+                                        tracing::info!(
+                                            command = %gui_req.command,
+                                            foreground = gui_req.foreground,
+                                            "IPC GUI spawn request received"
+                                        );
+                                        // Safety: prevent gui command from recursively spawning
+                                        if gui_req.command.starts_with("gui ") || gui_req.command == "gui" {
+                                            tracing::warn!(
+                                                command = %gui_req.command,
+                                                "Ignoring recursive gui spawn - command starts with 'gui'"
+                                            );
+                                        } else {
+                                            state.pending_gui_spawn_requests.push(gui_req);
+                                        }
                                     }
                                     compositor::ipc::IpcRequest::Resize(mode) => {
                                         tracing::info!(?mode, "IPC resize request queued");
@@ -371,6 +401,9 @@ fn main() -> anyhow::Result<()> {
 
         // Handle command spawn requests from IPC (column-term)
         handle_ipc_spawn_requests(&mut compositor, &mut terminal_manager);
+
+        // Handle GUI spawn requests from IPC (column-term gui)
+        handle_gui_spawn_requests(&mut compositor, &mut terminal_manager);
 
         // Handle resize requests from IPC (column-term --resize)
         handle_ipc_resize_request(&mut compositor, &mut terminal_manager);
@@ -702,14 +735,31 @@ fn setup_logging() {
 /// are added or resized.
 fn handle_external_window_events(compositor: &mut ColumnCompositor) {
     // Handle new external window - heights are already managed in add_window,
-    // just need to scroll
+    // just need to scroll and set keyboard focus if needed
     if let Some(window_idx) = compositor.new_external_window_index.take() {
+        let needs_keyboard_focus = std::mem::take(&mut compositor.new_window_needs_keyboard_focus);
+
         tracing::info!(
             window_idx,
             cells_count = compositor.layout_nodes.len(),
             focused_index = ?compositor.focused_index,
+            needs_keyboard_focus,
             "handling new external window"
         );
+
+        // If this is a foreground GUI window, give it keyboard focus
+        if needs_keyboard_focus {
+            if let Some(node) = compositor.layout_nodes.get(window_idx) {
+                if let compositor::state::ColumnCell::External(entry) = &node.cell {
+                    let surface = entry.toplevel.wl_surface().clone();
+                    if let Some(keyboard) = compositor.seat.get_keyboard() {
+                        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                        keyboard.set_focus(compositor, Some(surface), serial);
+                        tracing::info!(window_idx, "set keyboard focus to foreground GUI window");
+                    }
+                }
+            }
+        }
 
         // Scroll to show the focused cell
         if let Some(focused_idx) = compositor.focused_index {
@@ -867,6 +917,99 @@ fn handle_ipc_spawn_requests(
                         "spawned command terminal, scrolling to show"
                     );
                 }
+            }
+        }
+    }
+}
+
+/// Handle GUI spawn requests from IPC (column-term gui).
+///
+/// Spawns GUI app commands with foreground/background mode support.
+/// In foreground mode, the launching terminal is hidden until the GUI exits.
+fn handle_gui_spawn_requests(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
+    use compositor::terminal_manager::VisibilityState;
+
+    while let Some(request) = compositor.pending_gui_spawn_requests.pop() {
+        // Get the launching terminal (currently focused)
+        let launching_terminal = terminal_manager.focused;
+
+        // Modify environment for GUI apps
+        let mut env = request.env.clone();
+        if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
+            env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
+        }
+        if let Ok(gdk_backend) = std::env::var("GDK_BACKEND") {
+            env.insert("GDK_BACKEND".to_string(), gdk_backend);
+        }
+        if let Ok(qt_platform) = std::env::var("QT_QPA_PLATFORM") {
+            env.insert("QT_QPA_PLATFORM".to_string(), qt_platform);
+        }
+        if let Ok(shell) = std::env::var("SHELL") {
+            env.insert("SHELL".to_string(), shell);
+        }
+
+        // Create output terminal with WaitingForOutput visibility
+        let parent = launching_terminal;
+        match terminal_manager.spawn_command(&request.command, &request.cwd, &env, parent) {
+            Ok(output_terminal_id) => {
+                tracing::info!(
+                    output_terminal_id = output_terminal_id.0,
+                    launching_terminal = ?launching_terminal,
+                    foreground = request.foreground,
+                    command = %request.command,
+                    "spawned GUI command terminal"
+                );
+
+                // Add output terminal to layout
+                compositor.add_terminal(output_terminal_id);
+
+                // Set up for window linking
+                compositor.pending_window_output_terminal = Some(output_terminal_id);
+                compositor.pending_window_command = Some(request.command.clone());
+                compositor.pending_gui_foreground = request.foreground;
+
+                // If foreground mode, hide launching terminal and track the session
+                if request.foreground {
+                    if let Some(launcher_id) = launching_terminal {
+                        if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
+                            launcher.visibility = VisibilityState::HiddenForForegroundGui;
+                            tracing::info!(
+                                launcher_id = launcher_id.0,
+                                "hid launching terminal for foreground GUI"
+                            );
+                        }
+
+                        // Track the session: output_terminal_id -> (launcher_id, window_was_linked=false)
+                        compositor.foreground_gui_sessions.insert(
+                            output_terminal_id,
+                            (launcher_id, false),
+                        );
+                    }
+                }
+
+                // Update cell heights
+                let new_heights = calculate_cell_heights(compositor, terminal_manager);
+                compositor.update_layout_heights(new_heights);
+
+                // spawn_command auto-focuses the new terminal, but for GUI spawns we want different behavior:
+                // - Foreground mode: GUI window will get focus when created (in add_window)
+                // - Background mode: focus stays on launcher terminal
+                //
+                // In both cases, restore focus to the launcher terminal now.
+                // For foreground mode, add_window will focus the GUI window when it's created.
+                if let Some(launcher_id) = launching_terminal {
+                    terminal_manager.focused = Some(launcher_id);
+                    tracing::debug!(
+                        launcher_id = launcher_id.0,
+                        "restored terminal focus to launcher after gui_spawn"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(command = %request.command, "failed to spawn GUI command: {}", e);
             }
         }
     }
@@ -1309,6 +1452,7 @@ fn promote_output_terminals(
 /// Handle cleanup of output terminals from closed windows.
 ///
 /// Terminals that have had output stay visible. Terminals that never had output are removed.
+/// For foreground GUI sessions, restores the launching terminal's visibility.
 fn handle_output_terminal_cleanup(
     compositor: &mut ColumnCompositor,
     terminal_manager: &mut TerminalManager,
@@ -1319,6 +1463,29 @@ fn handle_output_terminal_cleanup(
         let has_had_output = terminal_manager.get(term_id)
             .map(|t| t.has_had_output())
             .unwrap_or(false);
+
+        // Check if this was a foreground GUI session and restore the launcher
+        if let Some((launcher_id, _window_was_linked)) = compositor.foreground_gui_sessions.remove(&term_id) {
+            if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
+                launcher.visibility = launcher.visibility.on_gui_exit();
+                tracing::info!(
+                    launcher_id = launcher_id.0,
+                    output_terminal_id = term_id.0,
+                    "restored launching terminal visibility after foreground GUI closed"
+                );
+            }
+
+            // Focus the restored launcher
+            if let Some(idx) = find_terminal_cell_index(compositor, launcher_id) {
+                compositor.focused_index = Some(idx);
+                terminal_manager.focused = Some(launcher_id);
+                tracing::info!(
+                    launcher_id = launcher_id.0,
+                    index = idx,
+                    "focused restored launcher after foreground GUI closed"
+                );
+            }
+        }
 
         if has_had_output {
             // Terminal has had output - keep it visible
@@ -1351,6 +1518,34 @@ fn cleanup_and_sync_focus(
 
     // Remove dead terminals from compositor
     for dead_id in &dead {
+        // Fallback trigger: If this was an output terminal for a foreground GUI
+        // that never opened a window, restore the launcher
+        if let Some((launcher_id, window_was_linked)) = compositor.foreground_gui_sessions.remove(dead_id) {
+            if !window_was_linked {
+                // No window was ever linked - this is the fallback case
+                // (e.g., GUI command failed before opening a window)
+                if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
+                    launcher.visibility = launcher.visibility.on_gui_exit();
+                    tracing::info!(
+                        launcher_id = launcher_id.0,
+                        output_terminal_id = dead_id.0,
+                        "fallback: restored launcher after output terminal exited without window"
+                    );
+                }
+
+                // Focus the restored launcher
+                if let Some(idx) = find_terminal_cell_index(compositor, launcher_id) {
+                    compositor.focused_index = Some(idx);
+                    terminal_manager.focused = Some(launcher_id);
+                    tracing::info!(
+                        launcher_id = launcher_id.0,
+                        index = idx,
+                        "focused restored launcher after fallback"
+                    );
+                }
+            }
+        }
+
         compositor.remove_terminal(*dead_id);
         tracing::info!(id = dead_id.0, "removed dead terminal from cells");
     }

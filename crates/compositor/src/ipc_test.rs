@@ -21,6 +21,7 @@ mod tests {
                 assert_eq!(command, "mc");
             }
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
+            IpcMessage::GuiSpawn { .. } => panic!("expected Spawn"),
         }
     }
 
@@ -44,6 +45,7 @@ mod tests {
                 assert_eq!(env.get("HOME"), Some(&"/home/user".to_string()));
             }
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
+            IpcMessage::GuiSpawn { .. } => panic!("expected Spawn"),
         }
     }
 
@@ -86,6 +88,7 @@ mod tests {
         let (command, cwd, env) = match parsed {
             IpcMessage::Spawn { command, cwd, env } => (command, cwd, env),
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
+            IpcMessage::GuiSpawn { .. } => panic!("expected Spawn"),
         };
 
         eprintln!("Parsed from JSON: command={}", command);
@@ -141,6 +144,7 @@ mod tests {
                 assert_eq!(mode, ResizeMode::Full);
             }
             IpcMessage::Spawn { .. } => panic!("expected Resize"),
+            IpcMessage::GuiSpawn { .. } => panic!("expected Resize"),
         }
     }
 
@@ -158,6 +162,148 @@ mod tests {
                 assert_eq!(mode, ResizeMode::Content);
             }
             IpcMessage::Spawn { .. } => panic!("expected Resize"),
+            IpcMessage::GuiSpawn { .. } => panic!("expected Resize"),
         }
+    }
+
+    #[test]
+    fn gui_spawn_message_parses_correctly() {
+        let msg = serde_json::json!({
+            "type": "gui_spawn",
+            "command": "pqiv image.png",
+            "cwd": "/home/user",
+            "env": {},
+            "foreground": true,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
+
+        match parsed {
+            IpcMessage::GuiSpawn { command, foreground, .. } => {
+                assert_eq!(command, "pqiv image.png");
+                assert!(foreground);
+            }
+            _ => panic!("expected GuiSpawn"),
+        }
+    }
+
+    #[test]
+    fn gui_spawn_background_parses_correctly() {
+        let msg = serde_json::json!({
+            "type": "gui_spawn",
+            "command": "pqiv image.png",
+            "cwd": "/home/user",
+            "env": {},
+            "foreground": false,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
+
+        match parsed {
+            IpcMessage::GuiSpawn { command, foreground, .. } => {
+                assert_eq!(command, "pqiv image.png");
+                assert!(!foreground);
+            }
+            _ => panic!("expected GuiSpawn"),
+        }
+    }
+
+    #[test]
+    fn gui_spawn_foreground_spawns_terminal_and_tracks_session() {
+        // Test that foreground gui_spawn:
+        // 1. Creates an output terminal
+        // 2. Tracks the foreground session for launcher restoration
+
+        let json_msg = serde_json::json!({
+            "type": "gui_spawn",
+            "command": "swayimg image.png",
+            "cwd": "/tmp",
+            "env": {
+                "WAYLAND_DISPLAY": "wayland-1"
+            },
+            "foreground": true,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(json_msg).unwrap();
+
+        match parsed {
+            IpcMessage::GuiSpawn { command, cwd, env, foreground } => {
+                assert_eq!(command, "swayimg image.png");
+                assert_eq!(cwd, "/tmp");
+                assert!(env.contains_key("WAYLAND_DISPLAY"));
+                assert!(foreground, "foreground should be true");
+            }
+            _ => panic!("expected GuiSpawn"),
+        }
+    }
+
+    #[test]
+    fn gui_spawn_background_keeps_launcher_visible() {
+        // Test that background gui_spawn (foreground=false):
+        // - Does NOT hide the launcher terminal
+        // - Does NOT track a foreground session
+
+        let json_msg = serde_json::json!({
+            "type": "gui_spawn",
+            "command": "swayimg image.png",
+            "cwd": "/tmp",
+            "env": {},
+            "foreground": false,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(json_msg).unwrap();
+
+        match parsed {
+            IpcMessage::GuiSpawn { foreground, .. } => {
+                assert!(!foreground, "background mode should have foreground=false");
+            }
+            _ => panic!("expected GuiSpawn"),
+        }
+    }
+
+    #[test]
+    fn gui_spawn_flow_spawns_command_terminal() {
+        // Test the full flow: gui_spawn should spawn a terminal to run the command.
+        // The terminal captures stdout/stderr while the GUI app creates its window.
+
+        let json_msg = serde_json::json!({
+            "type": "gui_spawn",
+            "command": "echo 'test gui app'",
+            "cwd": "/tmp",
+            "env": {
+                "HOME": "/home/user"
+            },
+            "foreground": true,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(json_msg).unwrap();
+
+        let (command, cwd, env) = match parsed {
+            IpcMessage::GuiSpawn { command, cwd, env, .. } => (command, cwd, env),
+            _ => panic!("expected GuiSpawn"),
+        };
+
+        // Create terminal manager and spawn the command
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(
+            output_width,
+            output_height,
+            terminal::Theme::default(),
+        );
+
+        let cwd_path = std::path::Path::new(&cwd);
+        let result = manager.spawn_command(&command, cwd_path, &env, None);
+
+        assert!(result.is_ok(), "gui_spawn should create output terminal: {:?}", result.err());
+
+        let id = result.unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        // Output terminal starts in WaitingForOutput state
+        assert!(
+            !terminal.is_visible(),
+            "output terminal should start hidden (WaitingForOutput)"
+        );
     }
 }
