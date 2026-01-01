@@ -1071,7 +1071,7 @@ impl XdgShellHandler for ColumnCompositor {
             &self.seat,
             serial,
         ) {
-            Ok(grab) => {
+            Ok(mut grab) => {
                 tracing::info!(
                     focus_id = ?focus.id(),
                     "grab(): popup grab ACCEPTED"
