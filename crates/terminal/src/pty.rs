@@ -14,6 +14,13 @@ use rustix::termios::{tcsetwinsize, Winsize};
 
 use thiserror::Error;
 
+/// Extract the basename of a shell path (e.g., "/usr/bin/fish" -> "fish")
+fn shell_basename(shell: &str) -> Option<&str> {
+    std::path::Path::new(shell)
+        .file_name()
+        .and_then(|s| s.to_str())
+}
+
 #[derive(Error, Debug)]
 pub enum PtyError {
     #[error("failed to open PTY: {0}")]
@@ -104,11 +111,18 @@ impl Pty {
 
         // Spawn shell as login shell (-l) so it loads rc files (history setup, etc.)
         // Also set TERM so shell knows it's in a terminal
+        let mut cmd = Command::new(shell);
+        cmd.arg("-l").env("TERM", "xterm-256color");
+
+        // Inject integration script for fish
+        // The script self-guards with COLUMN_COMPOSITOR_SOCKET check
+        if shell_basename(shell) == Some("fish") {
+            cmd.arg("-C")
+                .arg(include_str!("../../../scripts/integration.fish"));
+        }
+
         let child = unsafe {
-            Command::new(shell)
-                .arg("-l")
-                .env("TERM", "xterm-256color")
-                .stdin(Stdio::from_raw_fd(slave_fd))
+            cmd.stdin(Stdio::from_raw_fd(slave_fd))
                 .stdout(Stdio::from_raw_fd(slave_fd_out))
                 .stderr(Stdio::from_raw_fd(slave_fd_err))
                 .pre_exec(move || {
