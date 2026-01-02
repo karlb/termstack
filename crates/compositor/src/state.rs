@@ -370,6 +370,42 @@ pub enum ColumnCell {
     External(Box<WindowEntry>),
 }
 
+impl ColumnCell {
+    /// Get the terminal ID if this is a Terminal cell
+    pub fn terminal_id(&self) -> Option<TerminalId> {
+        match self {
+            Self::Terminal(id) => Some(*id),
+            Self::External(_) => None,
+        }
+    }
+
+    /// Check if this is a Terminal cell
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Terminal(_))
+    }
+
+    /// Check if this is an External cell
+    pub fn is_external(&self) -> bool {
+        matches!(self, Self::External(_))
+    }
+
+    /// Get a reference to the WindowEntry if this is an External cell
+    pub fn external_entry(&self) -> Option<&WindowEntry> {
+        match self {
+            Self::External(entry) => Some(entry),
+            Self::Terminal(_) => None,
+        }
+    }
+
+    /// Get a mutable reference to the WindowEntry if this is an External cell
+    pub fn external_entry_mut(&mut self) -> Option<&mut WindowEntry> {
+        match self {
+            Self::External(entry) => Some(entry),
+            Self::Terminal(_) => None,
+        }
+    }
+}
+
 impl ColumnCompositor {
     /// Create a new compositor state
     /// Returns (compositor, display) - display must be kept alive for dispatching
