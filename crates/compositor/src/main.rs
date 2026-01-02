@@ -838,18 +838,26 @@ fn handle_external_window_events(compositor: &mut ColumnCompositor) {
             "handling external window resize"
         );
 
+        // Check if focused cell bottom is visible before resize
+        let should_autoscroll = if let Some(focused_idx) = compositor.focused_index() {
+            focused_idx >= resized_idx && is_cell_bottom_visible(compositor, focused_idx)
+        } else {
+            false
+        };
+
         if let Some(node) = compositor.layout_nodes.get_mut(resized_idx) {
             node.height = new_height;
         }
 
-        if let Some(focused_idx) = compositor.focused_index() {
-            if focused_idx >= resized_idx {
+        // Only autoscroll if focused cell is at/below resized window AND bottom was visible
+        if should_autoscroll {
+            if let Some(focused_idx) = compositor.focused_index() {
                 if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                     tracing::info!(
                         resized_idx,
                         focused_idx,
                         new_scroll,
-                        "scrolled to show focused cell after external window resize"
+                        "scrolled to show focused cell after external window resize (bottom was visible)"
                     );
                 }
             }
@@ -1171,6 +1179,36 @@ fn handle_focus_and_scroll_requests(compositor: &mut ColumnCompositor) {
     }
 }
 
+/// Check if the bottom of a cell is currently visible in the viewport.
+///
+/// Returns true if the cell's bottom edge is currently visible (on-screen),
+/// false if the user has scrolled up past it.
+///
+/// This is used to prevent autoscroll when the user intentionally scrolls up
+/// to view earlier content while new content continues to flow in.
+fn is_cell_bottom_visible(compositor: &ColumnCompositor, cell_idx: usize) -> bool {
+    let cell_top_y: i32 = compositor
+        .layout_nodes
+        .iter()
+        .take(cell_idx)
+        .map(|n| n.height)
+        .sum();
+    let cell_height = compositor
+        .layout_nodes
+        .get(cell_idx)
+        .map(|n| n.height)
+        .unwrap_or(0);
+    let cell_bottom_y = cell_top_y + cell_height;
+    let viewport_height = compositor.output_size.h;
+
+    // Calculate minimum scroll needed to show cell bottom
+    let min_scroll_for_bottom = (cell_bottom_y - viewport_height).max(0) as f64;
+
+    // Cell bottom is visible if current scroll >= minimum needed
+    // (allowing small epsilon for floating point comparison)
+    compositor.scroll_offset >= (min_scroll_for_bottom - 1.0)
+}
+
 /// Check if heights changed significantly and auto-scroll if needed.
 ///
 /// This updates the layout heights cache and adjusts scroll to keep the focused
@@ -1192,17 +1230,29 @@ fn check_and_handle_height_changes(
         compositor.focused_index(),
     );
 
+    // Before updating heights, check if focused cell bottom is visible
+    // This prevents autoscroll when user has scrolled up to view earlier content
+    let should_autoscroll = if heights_changed && compositor.resizing.is_none() {
+        if let Some(focused_idx) = compositor.focused_index() {
+            is_cell_bottom_visible(compositor, focused_idx)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     compositor.update_layout_heights(actual_heights);
 
-    // Adjust scroll if heights changed, but NOT during manual resize drag
-    // (user is intentionally changing heights, auto-scroll would be disruptive)
-    if heights_changed && compositor.resizing.is_none() {
+    // Adjust scroll if heights changed AND focused cell bottom was visible
+    // This allows users to scroll up while content continues to flow in
+    if should_autoscroll {
         if let Some(focused_idx) = compositor.focused_index() {
             if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                 tracing::info!(
                     focused_idx,
                     new_scroll,
-                    "scroll adjusted due to actual height change"
+                    "scroll adjusted due to actual height change (bottom was visible)"
                 );
             }
         }
@@ -1309,15 +1359,34 @@ fn process_terminal_output(
             tracing::info!(id = id.0, target_rows, "processing growth request");
             terminal_manager.grow_terminal(id, target_rows);
 
-            // If focused terminal grew, update cache and scroll
+            // If focused terminal grew, update cache and scroll (if bottom was visible)
             if terminal_manager.focused == Some(id) {
                 if let Some(idx) = find_terminal_cell_index(compositor, id) {
+                    // Check if bottom was visible before resize
+                    let was_bottom_visible = is_cell_bottom_visible(compositor, idx);
+
                     if let Some(term) = terminal_manager.get(id) {
                         if let Some(node) = compositor.layout_nodes.get_mut(idx) {
                             node.height = term.height as i32;
                         }
                     }
-                    compositor.scroll_to_show_cell_bottom(idx);
+
+                    // Only autoscroll if bottom was already visible
+                    // This allows users to scroll up while content flows in
+                    if was_bottom_visible {
+                        compositor.scroll_to_show_cell_bottom(idx);
+                        tracing::debug!(
+                            id = id.0,
+                            idx,
+                            "autoscrolled after terminal growth (bottom was visible)"
+                        );
+                    } else {
+                        tracing::debug!(
+                            id = id.0,
+                            idx,
+                            "skipped autoscroll after terminal growth (bottom not visible)"
+                        );
+                    }
                 }
             }
         }
