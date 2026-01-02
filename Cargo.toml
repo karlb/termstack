@@ -29,6 +29,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "xwayland",
     "wayland_frontend",
 ] }
+x11rb = { version = "0.13", features = ["cursor", "resource_manager"] }
 smithay-drm-extras = "0.1"
 
 # Terminal

@@ -29,6 +29,7 @@ use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
 use compositor::config::Config;
+use compositor::cursor::CursorManager;
 use compositor::render::{
     CellRenderData, prerender_terminals, prerender_title_bars,
     collect_cell_data, build_render_data, log_frame_state,
@@ -111,6 +112,19 @@ fn main() -> anyhow::Result<()> {
 
     // Map the window to make it visible
     x11_window.map();
+
+    // Create cursor manager for resize cursor feedback
+    let mut cursor_manager = match CursorManager::new(
+        x11_handle.connection(),
+        x11_handle.screen(),
+        x11_window.id(),
+    ) {
+        Ok(cm) => Some(cm),
+        Err(e) => {
+            tracing::warn!(?e, "failed to create cursor manager, cursor changes disabled");
+            None
+        }
+    };
 
     let initial_size = x11_window.size();
     let mode = Mode {
@@ -401,10 +415,10 @@ fn main() -> anyhow::Result<()> {
             current_size = (new_w, new_h).into();
         }
 
-        // TODO: X11 backend cursor icon support
-        // The X11 Window has set_cursor_visible() but not set_cursor_icon()
-        // For now, cursor icon switching is disabled
-        let _ = compositor.cursor_on_resize_handle; // suppress unused warning
+        // Update cursor icon based on whether pointer is on a resize handle
+        if let Some(ref mut cm) = cursor_manager {
+            cm.set_resize_cursor(compositor.cursor_on_resize_handle);
+        }
 
         if !compositor.running {
             break;

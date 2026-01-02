@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod coords;
+pub mod cursor;
 pub mod input;
 pub mod ipc;
 pub mod layout;
