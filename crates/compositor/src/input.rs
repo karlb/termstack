@@ -612,6 +612,12 @@ impl ColumnCompositor {
         let button = event.button_code();
         let state = event.state();
 
+        // Track button press/release for stale drag detection
+        match state {
+            ButtonState::Pressed => self.pointer_buttons_pressed = self.pointer_buttons_pressed.saturating_add(1),
+            ButtonState::Released => self.pointer_buttons_pressed = self.pointer_buttons_pressed.saturating_sub(1),
+        }
+
         let pointer = self.seat.get_pointer().unwrap();
 
         // Handle left mouse button release

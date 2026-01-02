@@ -353,6 +353,10 @@ fn main() -> anyhow::Result<()> {
 
     // Main event loop
     while compositor.running {
+        // Clear stale drag state if no pointer buttons are pressed
+        // This handles lost release events when window loses focus mid-drag
+        compositor.clear_stale_drag_state(compositor.pointer_buttons_pressed > 0);
+
         // Handle external window insert/resize events
         handle_external_window_events(&mut compositor);
 

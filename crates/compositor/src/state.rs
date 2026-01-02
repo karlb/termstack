@@ -192,6 +192,10 @@ pub struct ColumnCompositor {
     /// Set by input handling when pointer is over a resize handle
     pub cursor_on_resize_handle: bool,
 
+    /// Number of pointer buttons currently pressed
+    /// Used to detect and clear stale drag state when focus is lost
+    pub pointer_buttons_pressed: u32,
+
     /// Pending X11 resize event (new width, height)
     /// Set by X11 backend callback, processed in main loop
     pub x11_resize_pending: Option<(u16, u16)>,
@@ -362,6 +366,7 @@ impl ColumnCompositor {
             repeat_interval_ms: 30,  // ~33 keys per second
             pointer_position: Point::from((0.0, 0.0)),
             cursor_on_resize_handle: false,
+            pointer_buttons_pressed: 0,
             x11_resize_pending: None,
             csd_apps,
         };
@@ -801,6 +806,25 @@ impl ColumnCompositor {
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = self.max_scroll();
         self.recalculate_layout();
+    }
+
+    /// Clear stale drag state if no pointer buttons are pressed.
+    ///
+    /// This handles the case where a pointer release event is lost (e.g., window
+    /// loses focus mid-drag). Without this cleanup, selecting/resizing state
+    /// would remain stuck forever.
+    pub fn clear_stale_drag_state(&mut self, any_button_pressed: bool) {
+        if !any_button_pressed {
+            if self.selecting.is_some() {
+                tracing::debug!("clearing stale selection state");
+                self.selecting = None;
+            }
+            if self.resizing.is_some() {
+                tracing::debug!("clearing stale resize state");
+                self.resizing = None;
+                self.cursor_on_resize_handle = false;
+            }
+        }
     }
 
     /// Focus previous cell
