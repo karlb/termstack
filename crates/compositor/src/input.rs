@@ -60,13 +60,13 @@ fn render_to_grid_coords(
 /// which should be stored in `compositor.selecting` for drag tracking.
 fn start_terminal_selection(
     compositor: &ColumnCompositor,
-    terminals: &TerminalManager,
+    terminals: &mut TerminalManager,
     terminal_id: TerminalId,
     cell_index: usize,
     render_x: f64,
     render_y: f64,
 ) -> Option<(TerminalId, i32, i32)> {
-    let managed = terminals.get(terminal_id)?;
+    let managed = terminals.get_mut(terminal_id)?;
     let (cell_render_y, cell_height) = compositor.get_cell_render_position(cell_index);
 
     let (char_width, char_height) = managed.terminal.cell_size();
@@ -79,25 +79,26 @@ fn start_terminal_selection(
         char_height,
     );
 
-    tracing::info!(col, row, "starting selection");
+    tracing::debug!(col, row, "starting selection");
 
     // Clear any previous selection and start new one
     managed.terminal.clear_selection();
     managed.terminal.start_selection(col, row);
+    managed.mark_dirty(); // Re-render to show selection highlight
 
     Some((terminal_id, cell_render_y as i32, cell_height))
 }
 
 /// Update an ongoing selection during pointer drag
 fn update_terminal_selection(
-    terminals: &TerminalManager,
+    terminals: &mut TerminalManager,
     terminal_id: TerminalId,
     cell_render_y: i32,
     cell_height: i32,
     render_x: f64,
     render_y: f64,
 ) {
-    if let Some(managed) = terminals.get(terminal_id) {
+    if let Some(managed) = terminals.get_mut(terminal_id) {
         let (char_width, char_height) = managed.terminal.cell_size();
         let (col, row) = render_to_grid_coords(
             render_x,
@@ -109,7 +110,8 @@ fn update_terminal_selection(
         );
 
         managed.terminal.update_selection(col, row);
-        tracing::trace!(col, row, "selection updated");
+        managed.mark_dirty(); // Re-render to show updated selection
+        tracing::debug!(col, row, "selection updated");
     }
 }
 
@@ -292,7 +294,7 @@ impl ColumnCompositor {
                             text
                         };
 
-                        if let Err(e) = clipboard.set_text(text.clone()) {
+                        if let Err(e) = clipboard.set_text(text) {
                             tracing::error!(?e, "failed to copy to clipboard");
                         }
                     }
@@ -604,7 +606,7 @@ impl ColumnCompositor {
     fn handle_pointer_button<I: InputBackend>(
         &mut self,
         event: impl PointerButtonEvent<I>,
-        terminals: Option<&mut TerminalManager>,
+        mut terminals: Option<&mut TerminalManager>,
     ) {
         let serial = SERIAL_COUNTER.next_serial();
         let button = event.button_code();
@@ -641,12 +643,10 @@ impl ColumnCompositor {
 
             // Log detailed position info for debugging
             tracing::debug!(
-                screen_location = ?(screen_location.x, screen_location.y),
-                render_location = ?(render_location.x, render_location.y),
-                output_size = ?(self.output_size.w, self.output_size.h),
-                scroll_offset = self.scroll_offset,
-                cell_count = self.layout_nodes.len(),
-                "handle_pointer_button: click pressed"
+                screen_x = screen_location.x,
+                screen_y = screen_location.y,
+                render_y = render_y.value(),
+                "click pressed"
             );
 
             // Check for resize handle before normal cell hit detection
@@ -796,7 +796,7 @@ impl ColumnCompositor {
 
                         // Start selection on left button press
                         if button == BTN_LEFT {
-                            if let Some(terminals) = &terminals {
+                            if let Some(terminals) = &mut terminals {
                                 self.selecting = start_terminal_selection(
                                     self,
                                     terminals,

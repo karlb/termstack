@@ -165,6 +165,15 @@ fn main() -> anyhow::Result<()> {
         tracing::info!(host_display = ?host, "saved host WAYLAND_DISPLAY");
     }
 
+    // Save original DISPLAY for clipboard operations
+    // We need this because arboard uses X11 clipboard, and some X11 operations
+    // may need the DISPLAY variable even after initial connection
+    let host_x11_display = std::env::var("DISPLAY").ok();
+    if let Some(ref x11_display) = host_x11_display {
+        std::env::set_var("HOST_DISPLAY", x11_display);
+        tracing::info!(x11_display, "saved host DISPLAY");
+    }
+
     // Set WAYLAND_DISPLAY for child processes (apps will open inside compositor)
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
@@ -172,9 +181,10 @@ fn main() -> anyhow::Result<()> {
     std::env::set_var("GDK_BACKEND", "wayland");
     std::env::set_var("QT_QPA_PLATFORM", "wayland");
 
-    // Unset DISPLAY to prevent any X11 fallback behavior in GTK/Qt
-    // This ensures apps are pure Wayland clients
-    std::env::remove_var("DISPLAY");
+    // Note: We intentionally do NOT unset DISPLAY anymore.
+    // Arboard needs DISPLAY to service clipboard requests from X11 apps.
+    // GTK/Qt apps are forced to Wayland via GDK_BACKEND/QT_QPA_PLATFORM anyway.
+    // std::env::remove_var("DISPLAY");
 
     // Insert socket source into event loop for new client connections
     event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
