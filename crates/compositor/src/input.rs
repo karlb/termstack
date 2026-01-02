@@ -510,14 +510,6 @@ impl ColumnCompositor {
         // Store pointer position for Shift+Scroll (scroll terminal under pointer)
         self.pointer_position = Point::from((screen_x, render_y));
 
-        // Log every motion event at info level to debug resize issue
-        tracing::info!(
-            screen_y = screen_y.value(),
-            render_y,
-            resizing = self.resizing.is_some(),
-            "motion event"
-        );
-
         // Check if pointer is on a resize handle (for cursor change)
         // Do this before checking for active resize drag
         let on_resize_handle = self.find_resize_handle_at(screen_y.value() as i32).is_some();
