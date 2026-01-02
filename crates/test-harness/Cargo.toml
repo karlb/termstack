@@ -13,6 +13,10 @@ thiserror.workspace = true
 anyhow.workspace = true
 compositor = { path = "../compositor" }
 
+[features]
+gui-tests = []
+
 [dev-dependencies]
 proptest.workspace = true
 terminal = { path = "../terminal" }
+rustix.workspace = true

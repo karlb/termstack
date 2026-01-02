@@ -2144,6 +2144,7 @@ dependencies = [
  "calloop 0.14.3",
  "compositor",
  "proptest",
+ "rustix 0.38.44",
  "smithay",
  "terminal",
  "thiserror 2.0.17",
