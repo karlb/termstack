@@ -934,6 +934,21 @@ impl ColumnCompositor {
                     if render_location.y < last_cell_bottom {
                         let last_index = self.layout_nodes.len() - 1;
                         self.set_focus_by_index(last_index);
+
+                        // Sync terminal_manager focus
+                        if let Some(node) = self.layout_nodes.get(last_index) {
+                            if let Some(ref mut tm) = terminals {
+                                match &node.cell {
+                                    ColumnCell::Terminal(id) => {
+                                        tm.focused = Some(*id);
+                                    }
+                                    ColumnCell::External(_) => {
+                                        tm.focused = None;
+                                    }
+                                }
+                            }
+                        }
+
                         tracing::debug!(
                             render_y = render_location.y,
                             last_cell_bottom,

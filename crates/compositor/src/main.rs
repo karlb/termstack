@@ -389,7 +389,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         // Handle external window insert/resize events
-        handle_external_window_events(&mut compositor);
+        handle_external_window_events(&mut compositor, &mut terminal_manager);
 
         // Update cell heights for input event processing
         let cell_heights = calculate_cell_heights(&compositor, &terminal_manager);
@@ -472,7 +472,7 @@ fn main() -> anyhow::Result<()> {
         handle_key_repeat(&mut compositor, &mut terminal_manager);
 
         // Handle focus and scroll requests from input
-        handle_focus_and_scroll_requests(&mut compositor);
+        handle_focus_and_scroll_requests(&mut compositor, &mut terminal_manager);
 
         // Process terminal PTY output and handle sizing actions
         process_terminal_output(&mut compositor, &mut terminal_manager);
@@ -797,7 +797,10 @@ fn setup_logging() {
 ///
 /// Updates cached heights and scroll position when external windows
 /// are added or resized.
-fn handle_external_window_events(compositor: &mut ColumnCompositor) {
+fn handle_external_window_events(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
     // Handle new external window - heights are already managed in add_window,
     // just need to scroll and set keyboard focus if needed
     if let Some(window_idx) = compositor.new_external_window_index.take() {
@@ -1148,7 +1151,10 @@ fn handle_compositor_resize(
 ///
 /// This processes the `focus_change_requested` and `scroll_requested` fields
 /// set by the input handler, applying the changes to compositor state.
-fn handle_focus_and_scroll_requests(compositor: &mut ColumnCompositor) {
+fn handle_focus_and_scroll_requests(
+    compositor: &mut ColumnCompositor,
+    terminal_manager: &mut TerminalManager,
+) {
     // Handle focus change requests
     if compositor.focus_change_requested != 0 {
         if compositor.focus_change_requested > 0 {
@@ -1161,8 +1167,18 @@ fn handle_focus_and_scroll_requests(compositor: &mut ColumnCompositor) {
         // Update keyboard focus to match the newly focused cell
         compositor.update_keyboard_focus_for_focused_cell();
 
-        // Scroll to show the newly focused cell
+        // Sync terminal_manager focus with compositor focus
         if let Some(focused_idx) = compositor.focused_index() {
+            if let Some(node) = compositor.layout_nodes.get(focused_idx) {
+                match &node.cell {
+                    ColumnCell::Terminal(id) => {
+                        terminal_manager.focused = Some(*id);
+                    }
+                    ColumnCell::External(_) => {
+                        terminal_manager.focused = None;
+                    }
+                }
+            }
             compositor.scroll_to_show_cell_bottom(focused_idx);
         }
     }
