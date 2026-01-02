@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{is_syntax_complete, Config};
+    use crate::{is_syntax_complete, normalize_fish_command, Config};
 
     #[test]
     fn shell_commands_from_config() {
@@ -168,6 +168,67 @@ mod tests {
             assert!(!is_syntax_complete("if true; then"), "if without fi");
             assert!(is_syntax_complete("if true; then echo hi; fi"), "complete if/fi");
         }
+    }
+
+    #[test]
+    fn syntax_check_multiline_equivalent_to_singleline() {
+        // Bug report: Multi-line and single-line versions of the same command
+        // should be treated identically. Syntactic differences (newlines vs semicolons)
+        // should not cause behavioral differences.
+
+        // Check if fish is available
+        use std::process::Command;
+        let fish_check = Command::new("fish").arg("--version").output();
+        if fish_check.is_err() {
+            eprintln!("Skipping test: fish not found in PATH");
+            return;
+        }
+
+        std::env::set_var("SHELL", "fish");
+
+        // Single-line version (with semicolons)
+        let singleline = "begin; echo a; echo b; end";
+
+        // Multi-line version (with newlines) - normalize first
+        let multiline = normalize_fish_command("begin\n  echo a\n  echo b\nend");
+
+        // Space-separated version (what Fish's commandline returns) - normalize first
+        let space_separated = normalize_fish_command("begin echo a echo b end");
+
+        // All three should be syntactically complete
+        let singleline_complete = is_syntax_complete(singleline);
+        let multiline_complete = is_syntax_complete(&multiline);
+        let space_separated_complete = is_syntax_complete(&space_separated);
+
+        assert_eq!(
+            singleline_complete, multiline_complete,
+            "Single-line and multi-line versions should have same syntax completeness. \
+             Single-line: {}, Multi-line: {}",
+            singleline_complete, multiline_complete
+        );
+
+        assert_eq!(
+            singleline_complete, space_separated_complete,
+            "Single-line and space-separated versions should have same syntax completeness. \
+             Single-line: {}, Space-separated: {}",
+            singleline_complete, space_separated_complete
+        );
+
+        // All should be complete (not incomplete)
+        assert!(
+            singleline_complete,
+            "Single-line 'begin; echo a; echo b; end' should be complete"
+        );
+        assert!(
+            multiline_complete,
+            "Multi-line 'begin\\n  echo a\\n  echo b\\nend' should be complete (normalized to '{}')",
+            multiline
+        );
+        assert!(
+            space_separated_complete,
+            "Space-separated 'begin echo a echo b end' should be complete (normalized to '{}')",
+            space_separated
+        );
     }
 
     #[test]

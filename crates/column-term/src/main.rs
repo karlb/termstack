@@ -192,9 +192,55 @@ fn debug_enabled() -> bool {
 
 /// Check if a command is syntactically complete for the current shell
 ///
+/// Normalize Fish commands by converting space-separated blocks to semicolon-separated.
+/// Fish's `commandline` sometimes strips newlines from multi-line input, converting
+/// "begin\n  echo a\nend" to "begin echo a end". This breaks syntax checking since
+/// "begin echo a end" is invalid (Fish thinks "echo a end" is arguments to begin).
+/// We fix this by inserting semicolons after keywords.
+pub(crate) fn normalize_fish_command(command: &str) -> String {
+    // Keywords that start blocks and need semicolons after them
+    let block_keywords = [
+        "begin", "if", "while", "for", "function", "switch",
+    ];
+
+    // Keywords that end blocks and need semicolons before them
+    let end_keywords = [
+        "end", "else", "case",
+    ];
+
+    let mut result = String::new();
+    let mut words = command.split_whitespace().peekable();
+    let mut needs_semicolon_before = false;
+
+    while let Some(word) = words.next() {
+        // Add semicolon before end keywords (unless at start)
+        if !result.is_empty() && end_keywords.contains(&word) && needs_semicolon_before {
+            result.push_str("; ");
+            needs_semicolon_before = false;
+        } else if !result.is_empty() {
+            result.push(' ');
+        }
+
+        result.push_str(word);
+
+        // Add semicolon after block keywords (unless at end)
+        if block_keywords.contains(&word) && words.peek().is_some() {
+            result.push(';');
+            needs_semicolon_before = true;
+        } else if !end_keywords.contains(&word) {
+            needs_semicolon_before = true;
+        }
+    }
+
+    result
+}
+
 /// Uses the shell's syntax check (-n flag) to determine if the command
 /// is complete. Returns false if incomplete (like `begin` without `end`)
 /// or if there's a syntax error.
+///
+/// NOTE: For Fish commands, pass the normalized version (with semicolons)
+/// not the space-separated version that Fish's commandline returns.
 pub(crate) fn is_syntax_complete(command: &str) -> bool {
     use std::process::Command;
 
@@ -323,10 +369,28 @@ fn main() -> Result<()> {
         return spawn_in_terminal(&command);
     }
 
+    // For Fish, normalize space-separated blocks (e.g., "begin echo a end" -> "begin; echo a; end")
+    // This fixes the issue where Fish's commandline builtin strips newlines from multi-line input
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell_name = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("sh");
+
+    let normalized_command = if shell_name == "fish" {
+        let normalized = normalize_fish_command(&command);
+        if debug && normalized != command {
+            eprintln!("[column-term] normalized: '{}' -> '{}'", command, normalized);
+        }
+        normalized
+    } else {
+        command.clone()
+    };
+
     // Load config and check command type
     let config = Config::load();
 
-    if config.is_shell_command(&command) {
+    if config.is_shell_command(&normalized_command) {
         if debug { eprintln!("[column-term] shell command, exit 2"); }
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
@@ -334,7 +398,7 @@ fn main() -> Result<()> {
 
     // Check if command is syntactically complete
     // If not, let the shell handle it (show continuation prompt or syntax error)
-    if !is_syntax_complete(&command) {
+    if !is_syntax_complete(&normalized_command) {
         if debug { eprintln!("[column-term] incomplete syntax, exit 3"); }
         std::process::exit(EXIT_INCOMPLETE_SYNTAX);
     }
@@ -342,7 +406,7 @@ fn main() -> Result<()> {
     // Regular command, GUI app, or TUI app - spawn in new terminal
     // TUI apps are auto-detected via alternate screen mode and resized
     if debug { eprintln!("[column-term] spawning in terminal"); }
-    spawn_in_terminal(&command)
+    spawn_in_terminal(&normalized_command)
 }
 
 /// Send a resize request to the compositor and wait for acknowledgement
