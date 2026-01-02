@@ -313,7 +313,8 @@ pub enum ColumnCell {
     /// An internal terminal, referenced by ID (actual terminal data in TerminalManager)
     Terminal(TerminalId),
     /// An external Wayland window (owns the WindowEntry directly)
-    External(WindowEntry),
+    /// Boxed to reduce enum size since WindowEntry is ~200 bytes while TerminalId is 4 bytes
+    External(Box<WindowEntry>),
 }
 
 impl ColumnCompositor {
@@ -517,7 +518,7 @@ impl ColumnCompositor {
         };
 
         self.layout_nodes.insert(insert_index, LayoutNode {
-            cell: ColumnCell::External(entry),
+            cell: ColumnCell::External(Box::new(entry)),
             height: initial_height as i32,
         });
 

@@ -42,6 +42,9 @@ use compositor::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 /// Minimum terminal height in rows.
 const MIN_TERMINAL_ROWS: u16 = 1;
 
+/// Popup render data: (x, y, geo_offset_x, geo_offset_y, elements)
+type PopupRenderData = Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)>;
+
 fn main() -> anyhow::Result<()> {
     // Initialize logging
     setup_logging();
@@ -524,7 +527,7 @@ fn main() -> anyhow::Result<()> {
             // Collect popup elements BEFORE starting the frame (need renderer access)
             // Store: (popup_x, popup_top, geo_offset_x, geo_offset_y, elements)
             // where popup_x/popup_top is where the popup content should appear in render coords
-            let mut popup_render_data: Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = Vec::new();
+            let mut popup_render_data: PopupRenderData = Vec::new();
 
             for (cell_idx, data) in render_data.iter().enumerate() {
                 if let CellRenderData::External { y, .. } = data {

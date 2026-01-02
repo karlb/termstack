@@ -2422,6 +2422,7 @@
     /// After `echo a`, visible content should be:
     /// - Line with command (e.g., "$ echo a" or just output "a")
     /// - New prompt line
+    ///
     /// No extra empty lines at the bottom.
     #[test]
     fn no_empty_trailing_row_after_echo() {
