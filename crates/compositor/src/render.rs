@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::{AsRenderElements, Element, RenderElement};
+use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree};
+use smithay::backend::renderer::element::{Element, Kind, RenderElement};
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Color32F, Frame, ImportMem, Texture};
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
@@ -182,10 +182,18 @@ pub fn collect_cell_data(
                 external_elements.push(Vec::new());
             }
             ColumnCell::External(entry) => {
-                let window = &entry.window;
-                let location: Point<i32, Physical> = Point::from((0, 0));
+                // Use render_elements_from_surface_tree directly on the toplevel surface
+                // instead of window.render_elements() which includes popups when PopupManager is used.
+                // This ensures popup surfaces don't affect the window's height calculation.
                 let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    window.render_elements(renderer, location, scale, 1.0);
+                    render_elements_from_surface_tree(
+                        renderer,
+                        entry.toplevel.wl_surface(),
+                        Point::from((0i32, 0i32)),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    );
 
                 let window_height = if elements.is_empty() {
                     node.height

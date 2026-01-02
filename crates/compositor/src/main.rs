@@ -475,11 +475,14 @@ fn main() -> anyhow::Result<()> {
             // where popup_x/popup_top is where the popup content should appear in render coords
             let mut popup_render_data: Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)> = Vec::new();
 
-            let mut rendered_popup_count = 0;
             for (cell_idx, data) in render_data.iter().enumerate() {
                 if let CellRenderData::External { y, .. } = data {
                     if let Some(node) = compositor.layout_nodes.get(cell_idx) {
                         if let ColumnCell::External(entry) = &node.cell {
+                            // Get parent window geometry for proper popup positioning
+                            // The geometry tells us where actual content is vs shadow/decoration areas
+                            let parent_window_geo = entry.window.geometry();
+
                             for (popup_kind, popup_offset) in PopupManager::popups_for_surface(entry.toplevel.wl_surface()) {
                                 let popup_surface = match &popup_kind {
                                     PopupKind::Xdg(xdg_popup) => xdg_popup,
@@ -487,23 +490,44 @@ fn main() -> anyhow::Result<()> {
                                 };
 
                                 let wl_surface = popup_surface.wl_surface();
-                                let popup_geo = popup_surface.with_pending_state(|state| state.geometry);
 
-                                // SIMPLIFIED: Just use popup_offset directly relative to window position
-                                // Window render Y = y (bottom of window in render coords)
-                                // Window top in render coords = y + height
-                                // Title bar offset for SSD windows
+                                // Two geometries to consider:
+                                // 1. popup_position_geo: where popup content should appear relative to parent surface
+                                //    (from our configure, stored in pending state)
+                                // 2. popup_window_geo: where content is within the popup surface
+                                //    (from client's set_window_geometry, for shadows/decorations)
+                                let popup_position_geo = popup_surface.with_pending_state(|state| state.geometry);
+                                let popup_window_geo = popup_kind.geometry();
+
+                                // Popup position relative to parent surface
+                                // If popup_offset from PopupManager is non-zero, use it; otherwise use our configured geometry
+                                let popup_position = if popup_offset.x != 0 || popup_offset.y != 0 {
+                                    popup_offset
+                                } else {
+                                    Point::from((popup_position_geo.loc.x, popup_position_geo.loc.y))
+                                };
+
+                                // Parent window's client area top in render coords
                                 let title_bar_offset = if entry.uses_csd { 0 } else { TITLE_BAR_HEIGHT as i32 };
                                 let client_area_top = *y + node.height - title_bar_offset;
 
-                                // Simple positioning: popup at offset from client area top-left
-                                let popup_x = popup_offset.x + compositor::render::FOCUS_INDICATOR_WIDTH;
-                                // In render coords, going down means subtracting Y
-                                let popup_top = client_area_top - popup_offset.y;
+                                // Calculate popup CONTENT position in screen coords
+                                // popup_position is relative to parent surface, so add parent's screen offset
+                                let popup_content_x = popup_position.x + parent_window_geo.loc.x + compositor::render::FOCUS_INDICATOR_WIDTH;
+                                let popup_content_top = client_area_top - popup_position.y - parent_window_geo.loc.y;
 
-                                // Popup geometry offset (shadow margins)
-                                let geo_offset_x = popup_geo.loc.x;
-                                let geo_offset_y = popup_geo.loc.y;
+                                // Popup SURFACE position = content position minus window geometry offset
+                                // If popup has shadows, window_geo.loc is where content starts within surface
+                                let popup_surface_x = popup_content_x - popup_window_geo.loc.x;
+                                let popup_surface_top = popup_content_top + popup_window_geo.loc.y;
+
+                                tracing::trace!(
+                                    ?popup_position,
+                                    ?popup_window_geo,
+                                    popup_surface_x,
+                                    popup_surface_top,
+                                    "popup render position"
+                                );
 
                                 let popup_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                                     render_elements_from_surface_tree(
@@ -515,27 +539,14 @@ fn main() -> anyhow::Result<()> {
                                         Kind::Unspecified,
                                     );
 
-                                rendered_popup_count += 1;
                                 if !popup_elements.is_empty() {
-                                    popup_render_data.push((popup_x, popup_top, geo_offset_x, geo_offset_y, popup_elements));
-                                } else {
-                                    tracing::debug!(
-                                        surface_id = ?popup_surface.wl_surface().id(),
-                                        "popup has no render elements"
-                                    );
+                                    // Store surface position (not content position) for rendering
+                                    popup_render_data.push((popup_surface_x, popup_surface_top, 0, 0, popup_elements));
                                 }
                             }
                         }
                     }
                 }
-            }
-
-            if rendered_popup_count > 0 {
-                tracing::debug!(
-                    rendered_popup_count,
-                    render_data_count = popup_render_data.len(),
-                    "popups found in render phase"
-                );
             }
 
             // Begin actual rendering
@@ -581,24 +592,20 @@ fn main() -> anyhow::Result<()> {
             }
 
             // Render popups on top of all cells (using pre-collected elements)
-            // popup_render_data contains (popup_x, popup_top, geo_offset_x, geo_offset_y, elements)
-            for (popup_x, popup_top, geo_offset_x, geo_offset_y, popup_elements) in popup_render_data {
+            // popup_render_data contains (popup_surface_x, popup_surface_top, _, _, elements)
+            // popup_surface_x/top is where the popup SURFACE origin should render (already adjusted for window geometry)
+            for (popup_surface_x, popup_surface_top, _, _, popup_elements) in popup_render_data {
                 for element in popup_elements.iter() {
                     let geo = element.geometry(scale);
                     let src = element.src();
-                    let surface_height = geo.size.h;
 
-                    // Calculate surface position
-                    // popup_x/popup_top is where the popup content should appear
-                    // geo_offset is where content starts within the surface (for shadows)
-                    let surface_x = popup_x - geo_offset_x;
-                    // popup_top is content top in render coords
-                    // surface_top = popup_top + geo_offset_y (add shadow at top)
-                    // surface_bottom = surface_top - surface_height
-                    let surface_y = popup_top + geo_offset_y - surface_height;
+                    // Element geometry is relative to popup surface origin
+                    // popup_surface_top is the TOP of the popup surface in render coords (Y increases upward)
+                    let dest_x = geo.loc.x + popup_surface_x;
+                    let dest_y = popup_surface_top - geo.size.h + geo.loc.y;
 
                     let dest = Rectangle::new(
-                        Point::from((geo.loc.x + surface_x, geo.loc.y + surface_y)),
+                        Point::from((dest_x, dest_y)),
                         geo.size,
                     );
 

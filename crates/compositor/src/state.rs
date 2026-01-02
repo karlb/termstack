@@ -22,7 +22,7 @@ use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
-use smithay::utils::{Physical, Point, Size, SERIAL_COUNTER};
+use smithay::utils::{Physical, Point, Rectangle, Size, SERIAL_COUNTER};
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
@@ -1022,33 +1022,62 @@ impl XdgShellHandler for ColumnCompositor {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
-        // Following Anvil's pattern: just set geometry and track the popup
+        // Following Anvil's pattern: set geometry with constraints, then track
         // Initial configure is sent during commit, not here
-        let geo = positioner.get_geometry();
 
-        // Log parent surface information for debugging
         let parent_surface = surface.get_parent_surface();
-        let parent_id = parent_surface.as_ref().map(|s| format!("{:?}", s.id()));
-        let popup_id = format!("{:?}", surface.wl_surface().id());
 
-        tracing::info!(
+        // Find the parent window's position in content coordinates
+        // This is needed to properly constrain the popup to the screen
+        let parent_content_y = parent_surface.as_ref().and_then(|parent| {
+            self.layout_nodes.iter().enumerate().find_map(|(idx, node)| {
+                if let ColumnCell::External(entry) = &node.cell {
+                    if entry.toplevel.wl_surface() == parent {
+                        // Calculate content Y position (sum of heights above this window)
+                        let content_y: i32 = self.layout_nodes[..idx]
+                            .iter()
+                            .map(|n| n.height)
+                            .sum();
+                        return Some(content_y);
+                    }
+                }
+                None
+            })
+        }).unwrap_or(0);
+
+        // Calculate the PARENT SURFACE position on screen (accounting for scroll)
+        // The positioner works in parent-surface-local coordinates
+        // Content Y to Screen Y: screen_y = content_y - scroll_offset
+        let parent_screen_y = (parent_content_y as f64 - self.scroll_offset).max(0.0) as i32;
+
+        // Parent X is at the focus indicator offset
+        let parent_screen_x = crate::render::FOCUS_INDICATOR_WIDTH;
+
+        // Create target rectangle in PARENT-SURFACE-LOCAL coordinates
+        // This tells the positioner where the screen edges are relative to the parent's (0,0)
+        // Screen top (Y=0) is at parent-local Y = -parent_screen_y
+        // Screen left (X=0) is at parent-local X = -parent_screen_x
+        let target = Rectangle::new(
+            Point::from((-parent_screen_x, -parent_screen_y)),
+            Size::from((self.output_size.w, self.output_size.h)),
+        );
+
+        let geo = positioner.get_unconstrained_geometry(target);
+
+        tracing::debug!(
             ?geo,
-            ?popup_id,
-            ?parent_id,
-            "new_popup: XDG popup created (configure will be sent on commit)"
+            ?target,
+            "new_popup: XDG popup created"
         );
 
         surface.with_pending_state(|state| {
             state.geometry = geo;
+            state.positioner = positioner;
         });
-        // NOTE: Do NOT send_configure here - Anvil sends it during commit
-        // when is_initial_configure_sent() returns false
 
         // Track the popup so it can be rendered and receive input
         if let Err(e) = self.popup_manager.track_popup(PopupKind::Xdg(surface)) {
             tracing::warn!(?e, "failed to track popup");
-        } else {
-            tracing::info!("XDG popup tracked successfully");
         }
     }
 
@@ -1178,16 +1207,47 @@ impl XdgShellHandler for ColumnCompositor {
     fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
         // GTK may request popup repositioning (e.g., when popup would go off-screen)
         // We must respond with send_repositioned() or GTK may hang
-        let new_geo = positioner.get_geometry();
+
+        // Find parent window position (same logic as new_popup)
+        let parent_surface = surface.get_parent_surface();
+        let parent_content_y = parent_surface.as_ref().and_then(|parent| {
+            self.layout_nodes.iter().enumerate().find_map(|(idx, node)| {
+                if let ColumnCell::External(entry) = &node.cell {
+                    if entry.toplevel.wl_surface() == parent {
+                        let content_y: i32 = self.layout_nodes[..idx]
+                            .iter()
+                            .map(|n| n.height)
+                            .sum();
+                        return Some(content_y);
+                    }
+                }
+                None
+            })
+        }).unwrap_or(0);
+
+        // Calculate parent surface position on screen (same as new_popup)
+        let parent_screen_y = (parent_content_y as f64 - self.scroll_offset).max(0.0) as i32;
+        let parent_screen_x = crate::render::FOCUS_INDICATOR_WIDTH;
+
+        // Target in parent-surface-local coordinates
+        let target = Rectangle::new(
+            Point::from((-parent_screen_x, -parent_screen_y)),
+            Size::from((self.output_size.w, self.output_size.h)),
+        );
+
+        let new_geo = positioner.get_unconstrained_geometry(target);
+
         tracing::info!(
             ?token,
             ?new_geo,
+            ?target,
             "reposition_request: updating popup position"
         );
 
-        // Update popup geometry
+        // Update popup geometry and positioner
         surface.with_pending_state(|state| {
             state.geometry = new_geo;
+            state.positioner = positioner;
         });
 
         // Send repositioned event to client
