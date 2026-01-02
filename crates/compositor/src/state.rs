@@ -766,7 +766,14 @@ impl ColumnCompositor {
                 toplevel.send_configure();
             }
             SurfaceKind::X11(x11) => {
-                // X11 windows are resized via configure
+                // For X11 SSD windows: new_height is visual (includes title bar),
+                // but X11 windows expect content height, so subtract title bar
+                let content_height = if entry.uses_csd {
+                    new_height
+                } else {
+                    new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
+                };
+
                 // Respect size hints (min/max size constraints)
                 let min_h = x11.min_size().map(|s| s.h as u32);
                 let max_h = x11.max_size().map(|s| s.h as u32);
@@ -776,15 +783,15 @@ impl ColumnCompositor {
                         // Fixed size window - don't allow resize
                         tracing::warn!(
                             height = min,
-                            requested_height = new_height,
+                            requested_height = content_height,
                             "X11 window has FIXED SIZE (min == max), blocking resize"
                         );
                         return;
                     }
-                    let clamped = new_height.clamp(min, max);
-                    if clamped != new_height {
+                    let clamped = content_height.clamp(min, max);
+                    if clamped != content_height {
                         tracing::info!(
-                            requested = new_height,
+                            requested = content_height,
                             clamped,
                             min,
                             max,
@@ -793,17 +800,18 @@ impl ColumnCompositor {
                     }
                     clamped
                 } else if let Some(min) = min_h {
-                    new_height.max(min)
+                    content_height.max(min)
                 } else if let Some(max) = max_h {
-                    new_height.min(max)
+                    content_height.min(max)
                 } else {
-                    new_height
+                    content_height
                 };
 
                 // Use (0,0) for position - X11 windows in column layout are positioned via viewport
                 tracing::debug!(
                     current_height = current,
-                    requested_height = new_height,
+                    requested_visual_height = new_height,
+                    content_height,
                     clamped_height,
                     min_h,
                     max_h,
@@ -953,37 +961,11 @@ impl ColumnCompositor {
         }
     }
 
-    /// Get the visual height of a cell (including title bar for SSD windows)
-    ///
-    /// This returns the actual rendered height, which includes title bars for:
-    /// - X11 windows with SSD (node.height + TITLE_BAR_HEIGHT)
-    /// - Terminals and Wayland windows already have title bar in node.height
-    fn get_cell_visual_height(&self, index: usize) -> i32 {
-        let Some(node) = self.layout_nodes.get(index) else {
-            return 0;
-        };
-
-        match &node.cell {
-            ColumnCell::External(entry) => {
-                // For X11 SSD windows, add title bar height
-                // Wayland windows already have title bar included in node.height
-                if matches!(entry.surface, SurfaceKind::X11(_)) && !entry.uses_csd {
-                    node.height + crate::title_bar::TITLE_BAR_HEIGHT as i32
-                } else {
-                    node.height
-                }
-            }
-            ColumnCell::Terminal(_) => {
-                // Terminals already have title bar included in node.height
-                node.height
-            }
-        }
-    }
 
     /// Calculate maximum scroll offset based on content height
     fn max_scroll(&self) -> f64 {
-        let total_height: i32 = (0..self.layout_nodes.len())
-            .map(|i| self.get_cell_visual_height(i))
+        let total_height: i32 = self.layout_nodes.iter()
+            .map(|node| node.height)
             .sum();
         (total_height as f64 - self.output_size.h as f64).max(0.0)
     }
@@ -1179,14 +1161,6 @@ impl ColumnCompositor {
         }
 
         for (node, height) in self.layout_nodes.iter_mut().zip(heights.into_iter()) {
-            // Skip X11 windows - their height is managed by configure_notify.
-            // Updating from render heights causes a feedback loop where
-            // TITLE_BAR_HEIGHT is added every frame.
-            if let ColumnCell::External(entry) = &node.cell {
-                if matches!(entry.surface, SurfaceKind::X11(_)) {
-                    continue;
-                }
-            }
             node.height = height;
         }
     }
@@ -1199,13 +1173,11 @@ impl ColumnCompositor {
     /// Scroll to ensure a cell's bottom edge is visible on screen.
     /// Returns the new scroll offset if it changed, None otherwise.
     pub fn scroll_to_show_cell_bottom(&mut self, cell_index: usize) -> Option<f64> {
-        let y: i32 = (0..cell_index).map(|i| self.get_cell_visual_height(i)).sum();
-        let height = self.get_cell_visual_height(cell_index);
+        let y: i32 = self.layout_nodes[..cell_index].iter().map(|node| node.height).sum();
+        let height = self.layout_nodes.get(cell_index).map(|n| n.height).unwrap_or(0);
         let bottom_y = y + height;
         let visible_height = self.output_size.h;
-        let total_height: i32 = (0..self.layout_nodes.len())
-            .map(|i| self.get_cell_visual_height(i))
-            .sum();
+        let total_height: i32 = self.layout_nodes.iter().map(|node| node.height).sum();
         let max_scroll = (total_height - visible_height).max(0) as f64;
         let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
         let new_scroll = min_scroll_for_bottom.min(max_scroll);
@@ -1291,7 +1263,7 @@ impl ColumnCompositor {
         let mut content_y = -self.scroll_offset;
 
         for i in 0..self.layout_nodes.len() {
-            let cell_height = self.get_cell_visual_height(i) as f64;
+            let cell_height = self.layout_nodes[i].height as f64;
 
             // Calculate render Y for this cell (same formula as main.rs rendering)
             let render_y = crate::coords::content_to_render_y(content_y, cell_height, screen_height);
@@ -1336,11 +1308,11 @@ impl ColumnCompositor {
 
         for i in 0..self.layout_nodes.len() {
             if i == index {
-                let height = self.get_cell_visual_height(i);
+                let height = self.layout_nodes[i].height;
                 let render_y = crate::coords::content_to_render_y(content_y, height as f64, screen_height);
                 return (render_y, height);
             }
-            content_y += self.get_cell_visual_height(i) as f64;
+            content_y += self.layout_nodes[i].height as f64;
         }
 
         // Fallback if index out of bounds
@@ -1356,11 +1328,11 @@ impl ColumnCompositor {
             if i == index {
                 // In screen coords: top_y = content_y, bottom_y = content_y + height
                 let top_y = content_y;
-                let height = self.get_cell_visual_height(i);
+                let height = self.layout_nodes[i].height;
                 let bottom_y = content_y + height;
                 return Some((top_y, bottom_y));
             }
-            content_y += self.get_cell_visual_height(i);
+            content_y += self.layout_nodes[i].height;
         }
         None
     }
@@ -1381,8 +1353,8 @@ impl ColumnCompositor {
         let half_handle = RESIZE_HANDLE_SIZE / 2;
 
         for i in 0..self.layout_nodes.len() {
-            let visual_height = self.get_cell_visual_height(i);
-            let bottom_y = content_y + visual_height;
+            let height = self.layout_nodes[i].height;
+            let bottom_y = content_y + height;
 
             // Check if screen_y is in the handle zone around this cell's bottom edge
             // But not for the last cell (nothing below to resize into)

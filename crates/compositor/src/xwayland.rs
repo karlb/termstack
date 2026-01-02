@@ -152,7 +152,18 @@ impl XwmHandler for ColumnCompositor {
                 };
 
                 if should_update {
-                    node.height = geometry.size.h;
+                    // For SSD windows, store visual height (content + title bar)
+                    // For CSD windows, store the height as-is
+                    let visual_height = if let ColumnCell::External(entry) = &node.cell {
+                        if entry.uses_csd {
+                            geometry.size.h
+                        } else {
+                            geometry.size.h + crate::title_bar::TITLE_BAR_HEIGHT as i32
+                        }
+                    } else {
+                        geometry.size.h
+                    };
+                    node.height = visual_height;
 
                     // Update window state to Active with new height
                     // X11 doesn't use configure_ack, configure_notify means the resize is done
@@ -161,6 +172,7 @@ impl XwmHandler for ColumnCompositor {
                         tracing::info!(
                             index = idx,
                             notified_height,
+                            visual_height,
                             "X11 window resize completed via configure_notify"
                         );
                     }

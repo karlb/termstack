@@ -1,149 +1,157 @@
 //! Tests for X11 window height handling
 //!
 //! These tests verify that X11 window heights are calculated correctly
-//! without feedback loops that cause windows to grow indefinitely.
+//! with unified visual height storage (no feedback loops).
 
 /// Title bar height constant (must match compositor::title_bar::TITLE_BAR_HEIGHT)
 const TITLE_BAR_HEIGHT: u32 = 24;
 
 /// Test that X11 window height is stable (no feedback loop)
 ///
-/// This verifies the fix: X11 window heights are NOT updated from
-/// collect_cell_data return values. Instead, they're only updated by
-/// configure_notify and resize drag.
+/// After unification: node.height stores VISUAL height (includes title bar for SSD).
+/// collect_cell_data returns this same visual height, and update_layout_heights
+/// can safely update it without causing a feedback loop.
 #[test]
 fn x11_height_no_feedback_loop() {
     // Simulate the initial state when an X11 window is created
-    let initial_content_height: i32 = 200;
-    let mut node_height = initial_content_height;
-    let uses_csd = false; // Server-side decorations (we add title bar)
-    let is_x11 = true;
+    // configure_notify sets visual height (content + title bar for SSD)
+    let content_from_x11: i32 = 200;
+    let uses_csd = false; // Server-side decorations
 
-    println!("Initial: node_height = {}", node_height);
+    // configure_notify adds title bar to get visual height
+    let initial_visual_height = if uses_csd {
+        content_from_x11
+    } else {
+        content_from_x11 + TITLE_BAR_HEIGHT as i32
+    };
+    let mut node_height = initial_visual_height;
+
+    println!("Initial: node_height = {} (visual)", node_height);
     println!("TITLE_BAR_HEIGHT = {}", TITLE_BAR_HEIGHT);
 
     // Simulate 10 frames of the main loop
     for frame in 0..10 {
-        // collect_cell_data returns height with title bar for positioning
-        let window_height = node_height;
-        let actual_height = if uses_csd {
-            window_height
-        } else {
-            window_height + TITLE_BAR_HEIGHT as i32
-        };
+        // collect_cell_data returns visual height (node_height is already visual)
+        let render_height = node_height;
 
-        // update_layout_heights now SKIPS X11 windows
-        // So node_height is NOT updated from actual_height
-        if !is_x11 {
-            node_height = actual_height;
-        }
-        // For X11, node_height stays as set by configure_notify
+        // update_layout_heights updates from render_height
+        // No feedback loop because both are visual height
+        node_height = render_height;
 
-        println!("Frame {}: actual_height = {} (for render), node_height = {} (stable)",
-                 frame, actual_height, node_height);
+        println!("Frame {}: render_height = {}, node_height = {} (stable)",
+                 frame, render_height, node_height);
     }
 
-    // node_height should remain at the initial content height
+    // node_height should remain at the initial visual height
     assert_eq!(
-        node_height, initial_content_height,
-        "X11 node.height should stay at content height {}, not grow to {}",
-        initial_content_height, node_height
+        node_height, initial_visual_height,
+        "node.height should stay at visual height {}, not grow to {}",
+        initial_visual_height, node_height
     );
 }
 
-/// Test that the height calculation is stable when done correctly
+/// Test that the height calculation is stable with unified storage
 ///
-/// The fix is to NOT update node.height from collect_cell_data's return value
-/// for X11 windows. Instead, node.height should only be updated by:
-/// 1. add_x11_window (initial height)
-/// 2. configure_notify (resize acknowledgment)
-/// 3. Resize drag handler (during resize)
+/// With unified height storage: node.height stores visual height for ALL cells.
+/// - configure_notify sets visual height (content + title bar for SSD)
+/// - collect_cell_data returns visual height (just node.height)
+/// - update_layout_heights can safely update from rendered heights
 #[test]
 fn x11_height_stable_when_not_updating_from_render() {
     // Simulate the initial state when an X11 window is created
-    let initial_content_height: i32 = 200;
-    let mut node_height = initial_content_height;
+    let content_from_x11: i32 = 200;
     let uses_csd = false; // Server-side decorations
 
-    println!("Initial: node_height = {}", node_height);
+    // configure_notify adds title bar to store visual height
+    let initial_visual_height = if uses_csd {
+        content_from_x11
+    } else {
+        content_from_x11 + TITLE_BAR_HEIGHT as i32
+    };
+    let mut node_height = initial_visual_height;
+
+    println!("Initial: node_height = {} (visual)", node_height);
 
     // Simulate 10 frames of the main loop
     for frame in 0..10 {
-        // collect_cell_data returns the height for rendering (with title bar)
-        let window_height = node_height;
-        let actual_height = if uses_csd {
-            window_height
-        } else {
-            window_height + TITLE_BAR_HEIGHT as i32
-        };
+        // collect_cell_data returns visual height (node_height is already visual)
+        let render_height = node_height;
 
-        // FIX: Don't update node_height from actual_height for X11 windows
-        // node_height stays as the content height set by configure_notify
+        // update_layout_heights CAN update from render_height
+        // No feedback loop because both are visual height
+        node_height = render_height;
 
-        println!("Frame {}: actual_height = {} (for render), node_height = {} (stable)",
-                 frame, actual_height, node_height);
+        println!("Frame {}: render_height = {}, node_height = {} (stable)",
+                 frame, render_height, node_height);
     }
 
-    // node_height should remain at the initial value
+    // node_height should remain at the initial visual height
     assert_eq!(
-        node_height, initial_content_height,
-        "node.height should stay at content height {}, got {}",
-        initial_content_height, node_height
+        node_height, initial_visual_height,
+        "node.height should stay at visual height {}, got {}",
+        initial_visual_height, node_height
     );
 }
 
 /// Test that resize updates are applied correctly
 #[test]
 fn x11_resize_updates_height() {
-    let initial_height: i32 = 200;
-    let mut node_height = initial_height;
+    let uses_csd = false;
 
-    // Simulate configure_notify from X11 with new size
-    let new_configured_height = 300;
-    node_height = new_configured_height; // This is what configure_notify does
+    // Simulate configure_notify from X11 with new content size
+    let new_content = 300;
+    let new_visual = if uses_csd {
+        new_content
+    } else {
+        new_content + TITLE_BAR_HEIGHT as i32
+    };
+    let mut node_height = new_visual; // configure_notify sets visual height
 
-    // After configure_notify, the height should be the new value
-    assert_eq!(node_height, new_configured_height);
+    // After configure_notify, the height should be the new visual height
+    assert_eq!(node_height, new_visual);
 
     // Simulate several frames - height should stay stable
     for _frame in 0..5 {
-        // collect_cell_data would return this for rendering
-        let _render_height = node_height + TITLE_BAR_HEIGHT as i32;
-        // But we DON'T update node_height from this
+        // collect_cell_data returns visual height
+        let render_height = node_height;
+        // update_layout_heights updates from render_height
+        node_height = render_height;
     }
 
-    // Height should still be what configure_notify set
-    assert_eq!(node_height, new_configured_height);
+    // Height should still be the visual height that configure_notify set
+    assert_eq!(node_height, new_visual);
 }
 
-/// Test that the render height includes title bar for SSD windows
+/// Test that configure_notify sets visual height (includes title bar for SSD)
 #[test]
 fn x11_render_height_includes_title_bar() {
-    let content_height: i32 = 200;
+    let content_from_x11: i32 = 200;
     let uses_csd = false;
 
-    // For rendering, we need the total height (content + title bar)
-    let render_height = if uses_csd {
-        content_height
+    // configure_notify receives content height from X11
+    // and stores visual height (content + title bar for SSD)
+    let visual_height = if uses_csd {
+        content_from_x11
     } else {
-        content_height + TITLE_BAR_HEIGHT as i32
+        content_from_x11 + TITLE_BAR_HEIGHT as i32
     };
 
-    assert_eq!(render_height, 200 + TITLE_BAR_HEIGHT as i32);
+    assert_eq!(visual_height, 200 + TITLE_BAR_HEIGHT as i32);
 }
 
 /// Test that CSD windows don't get title bar added
 #[test]
 fn x11_csd_window_no_extra_title_bar() {
-    let content_height: i32 = 200;
+    let content_from_x11: i32 = 200;
     let uses_csd = true; // Client-side decorations
 
-    // For CSD windows, render height equals content height
-    let render_height = if uses_csd {
-        content_height
+    // For CSD windows, visual height equals content height
+    // (no compositor-drawn title bar)
+    let visual_height = if uses_csd {
+        content_from_x11
     } else {
-        content_height + TITLE_BAR_HEIGHT as i32
+        content_from_x11 + TITLE_BAR_HEIGHT as i32
     };
 
-    assert_eq!(render_height, content_height);
+    assert_eq!(visual_height, content_from_x11);
 }

@@ -861,11 +861,14 @@ fn handle_external_window_events(
 
 /// Calculate cell heights for layout.
 ///
-/// For terminals: hidden terminals always get 0 height; otherwise uses cached
-/// height if available, falls back to terminal.height for new cells.
+/// All cells store visual height in node.height (including title bar for SSD windows).
+/// This is set by configure_notify (X11), configure_ack (Wayland), or terminal resize.
 ///
-/// For external windows: uses cached height if available, otherwise computes
-/// from window state (including title bar height for SSD windows).
+/// For terminals: hidden terminals always get 0 height; otherwise uses cached height
+/// if available, falls back to terminal.height for new cells (already includes title bar).
+///
+/// For external windows: uses cached visual height if available, otherwise computes
+/// from window state (which stores content height, so we add title bar for SSD).
 fn calculate_cell_heights(
     compositor: &ColumnCompositor,
     terminal_manager: &TerminalManager,
@@ -877,26 +880,27 @@ fn calculate_cell_heights(
                 if terminal_manager.get(*tid).map(|t| !t.is_visible()).unwrap_or(false) {
                     return 0;
                 }
-                // Use cached height if available
+                // Use cached visual height if available
                 if node.height > 0 {
                     return node.height;
                 }
-                // Fallback for new cells
+                // Fallback for new cells: terminal.height already includes title bar
                 terminal_manager.get(*tid)
                     .map(|t| t.height as i32)
                     .unwrap_or(200)
             }
             ColumnCell::External(entry) => {
-                // Use cached height if available
+                // Use cached visual height if available
                 if node.height > 0 {
                     return node.height;
                 }
-                // Include title bar height for SSD windows only
-                let base_height = entry.state.current_height() as i32;
+                // Fallback for new cells: window state stores content height
+                let content_height = entry.state.current_height() as i32;
                 if entry.uses_csd {
-                    base_height
+                    content_height
                 } else {
-                    base_height + TITLE_BAR_HEIGHT as i32
+                    // Add title bar for SSD windows to get visual height
+                    content_height + TITLE_BAR_HEIGHT as i32
                 }
             }
         }
