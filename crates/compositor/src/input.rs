@@ -26,6 +26,29 @@ const SCROLL_STEP: f64 = 50.0;
 /// Scroll amount per scroll wheel tick (pixels)
 const SCROLL_WHEEL_MULTIPLIER: f64 = 15.0;
 
+/// Check if a click is on the close button in a title bar
+fn is_click_on_close_button(
+    render_y: f64,
+    cell_render_top: f64,
+    click_x: f64,
+    output_width: i32,
+    has_ssd: bool,
+    button: u32,
+) -> bool {
+    if !has_ssd || button != BTN_LEFT {
+        return false;
+    }
+
+    let title_bar_top = cell_render_top;
+    let title_bar_bottom = title_bar_top - TITLE_BAR_HEIGHT as f64;
+    let in_title_bar = render_y <= title_bar_top && render_y > title_bar_bottom;
+
+    let close_btn_left = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64;
+    let in_close_btn = click_x >= close_btn_left;
+
+    in_title_bar && in_close_btn
+}
+
 /// Convert render coordinates to terminal grid coordinates (col, row)
 ///
 /// - `render_x`, `render_y`: Position in render coordinates (Y=0 at bottom)
@@ -778,20 +801,14 @@ impl ColumnCompositor {
                 match cell_info {
                     CellClickInfo::External { surface, has_ssd } => {
                         // Check if click is on close button in title bar
-                        let on_close_button = if has_ssd && button == BTN_LEFT {
-                            let title_bar_top = cell_render_top;
-                            let title_bar_bottom = title_bar_top - TITLE_BAR_HEIGHT as f64;
-                            let in_title_bar = render_location.y <= title_bar_top
-                                && render_location.y > title_bar_bottom;
-                            let close_btn_left =
-                                (self.output_size.w - CLOSE_BUTTON_WIDTH as i32) as f64;
-                            let in_close_btn = render_location.x >= close_btn_left;
-                            in_title_bar && in_close_btn
-                        } else {
-                            false
-                        };
-
-                        if on_close_button {
+                        if is_click_on_close_button(
+                            render_location.y,
+                            cell_render_top,
+                            render_location.x,
+                            self.output_size.w,
+                            has_ssd,
+                            button,
+                        ) {
                             tracing::debug!(index, "close button clicked, sending close");
                             surface.send_close();
                             return; // Don't process further
@@ -802,20 +819,14 @@ impl ColumnCompositor {
                     }
                     CellClickInfo::Terminal { id, has_ssd } => {
                         // Check if click is on close button in title bar (for terminals with title bars)
-                        let on_close_button = if has_ssd && button == BTN_LEFT {
-                            let title_bar_top = cell_render_top;
-                            let title_bar_bottom = title_bar_top - TITLE_BAR_HEIGHT as f64;
-                            let in_title_bar = render_location.y <= title_bar_top
-                                && render_location.y > title_bar_bottom;
-                            let close_btn_left =
-                                (self.output_size.w - CLOSE_BUTTON_WIDTH as i32) as f64;
-                            let in_close_btn = render_location.x >= close_btn_left;
-                            in_title_bar && in_close_btn
-                        } else {
-                            false
-                        };
-
-                        if on_close_button {
+                        if is_click_on_close_button(
+                            render_location.y,
+                            cell_render_top,
+                            render_location.x,
+                            self.output_size.w,
+                            has_ssd,
+                            button,
+                        ) {
                             tracing::debug!(index, terminal_id = ?id, "close button clicked on terminal, removing");
                             // Remove the terminal from the layout
                             self.layout_nodes.remove(index);
