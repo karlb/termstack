@@ -916,11 +916,44 @@ impl ColumnCompositor {
                     }
                 }
             } else {
-                tracing::debug!(
-                    render_y = render_location.y,
-                    screen_y = screen_location.y,
-                    "handle_pointer_button: click not on terminal or window"
-                );
+                // Click not on any cell - check if it's below all cells
+                // If so, focus the last cell
+                if !self.layout_nodes.is_empty() {
+                    // Calculate the bottom edge of the last cell in render coords
+                    let screen_height = self.output_size.h as f64;
+                    let mut content_y = -self.scroll_offset;
+
+                    for node in &self.layout_nodes {
+                        content_y += node.height as f64;
+                    }
+
+                    // Last cell's bottom in render coords: screen_height - content_y
+                    let last_cell_bottom = screen_height - content_y;
+
+                    // If click is below the last cell's bottom, focus the last cell
+                    if render_location.y < last_cell_bottom {
+                        let last_index = self.layout_nodes.len() - 1;
+                        self.set_focus_by_index(last_index);
+                        tracing::debug!(
+                            render_y = render_location.y,
+                            last_cell_bottom,
+                            last_index,
+                            "clicked below all cells, focusing last cell"
+                        );
+                    } else {
+                        tracing::debug!(
+                            render_y = render_location.y,
+                            screen_y = screen_location.y,
+                            "handle_pointer_button: click not on terminal or window"
+                        );
+                    }
+                } else {
+                    tracing::debug!(
+                        render_y = render_location.y,
+                        screen_y = screen_location.y,
+                        "handle_pointer_button: click not on terminal or window"
+                    );
+                }
             }
         }
 

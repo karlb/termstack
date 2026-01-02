@@ -2079,6 +2079,78 @@ mod tests {
     }
 
     #[test]
+    fn test_click_below_last_cell() {
+        // Verify we can detect when a click is below all cells
+        let pos = MockPositioning {
+            screen_height: 600,
+            scroll_offset: 0.0,
+            layout_heights: vec![200, 300],
+        };
+
+        // Cell 0: content_y=0,   height=200 → render_y=400, render_end=600
+        // Cell 1: content_y=200, height=300 → render_y=100, render_end=400
+        // Total content height = 500
+        // Last cell bottom in render coords = 600 - 500 = 100
+
+        let ranges = pos.cell_ranges();
+        assert_eq!(ranges[1], (100.0, 400.0), "last cell (cell 1) range");
+
+        // Click at Y=99 (below last cell's render_y of 100) should hit nothing
+        assert_eq!(pos.cell_at(99.0), None, "click below last cell hits nothing");
+
+        // Click at Y=100 (at last cell's render_y) should hit last cell
+        assert_eq!(pos.cell_at(100.0), Some(1), "click at last cell bottom hits last cell");
+
+        // Calculate last_cell_bottom (same logic as the implementation)
+        let screen_height = pos.screen_height as f64;
+        let mut content_y = -pos.scroll_offset;
+        for &height in &pos.layout_heights {
+            content_y += height as f64;
+        }
+        let last_cell_bottom = screen_height - content_y;
+        assert_eq!(last_cell_bottom, 100.0, "last cell bottom should be at render Y=100");
+
+        // Clicks below last_cell_bottom should trigger "focus last cell" logic
+        assert!(50.0 < last_cell_bottom, "Y=50 is below last cell");
+        assert!(99.0 < last_cell_bottom, "Y=99 is below last cell");
+        assert!(!(100.0 < last_cell_bottom), "Y=100 is NOT below last cell (it's at the edge)");
+    }
+
+    #[test]
+    fn test_click_below_with_scroll() {
+        // Verify click detection below cells works correctly when scrolled
+        let pos = MockPositioning {
+            screen_height: 600,
+            scroll_offset: 100.0,
+            layout_heights: vec![200, 300],
+        };
+
+        // With scroll=100:
+        // content_y starts at -100
+        // Cell 0: content_y=-100, height=200 → render_y=500, render_end=700 (partially off screen)
+        //         content_y becomes -100 + 200 = 100
+        // Cell 1: content_y=100, height=300 → render_y=200, render_end=500
+        //         content_y becomes 100 + 300 = 400
+        // Last cell bottom = screen_height - final_content_y = 600 - 400 = 200
+
+        let ranges = pos.cell_ranges();
+        assert_eq!(ranges[1], (200.0, 500.0), "last cell with scroll");
+
+        // Calculate last_cell_bottom with scroll
+        let screen_height = pos.screen_height as f64;
+        let mut content_y = -pos.scroll_offset;
+        for &height in &pos.layout_heights {
+            content_y += height as f64;
+        }
+        let last_cell_bottom = screen_height - content_y;
+        assert_eq!(last_cell_bottom, 200.0, "last cell bottom should be at render Y=200");
+
+        // Clicks below 200 should trigger "focus last cell"
+        assert!(50.0 < last_cell_bottom);
+        assert!(199.0 < last_cell_bottom);
+    }
+
+    #[test]
     fn test_new_terminals_insert_above_focused() {
         use crate::terminal_manager::TerminalId;
         use crate::state::{ColumnCell, LayoutNode};
