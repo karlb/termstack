@@ -42,6 +42,7 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 
 use std::os::unix::net::UnixStream;
+use std::time::Instant;
 
 use std::collections::HashMap;
 use crate::ipc::{GuiSpawnRequest, ResizeMode, SpawnRequest};
@@ -271,6 +272,9 @@ pub struct WindowEntry {
     pub is_foreground_gui: bool,
 }
 
+/// Timeout for pending resize operations (milliseconds)
+pub const RESIZE_TIMEOUT_MS: u128 = 500;
+
 /// Explicit window state machine - prevents implicit state bugs from v1
 #[derive(Debug, Clone)]
 pub enum WindowState {
@@ -282,6 +286,8 @@ pub enum WindowState {
         current_height: u32,
         requested_height: u32,
         request_serial: u32,
+        /// When the resize was requested, for timeout detection
+        requested_at: Instant,
     },
 
     /// Client acknowledged, waiting for commit with new size
@@ -689,6 +695,7 @@ impl ColumnCompositor {
             current_height: current,
             requested_height: new_height,
             request_serial: serial,
+            requested_at: Instant::now(),
         };
 
         tracing::debug!(
@@ -845,6 +852,31 @@ impl ColumnCompositor {
                 tracing::debug!("clearing stale resize state");
                 self.resizing = None;
                 self.cursor_on_resize_handle = false;
+            }
+        }
+    }
+
+    /// Check for and cancel stale pending resize operations.
+    ///
+    /// External windows that don't respond to resize requests within RESIZE_TIMEOUT_MS
+    /// will have their resize cancelled and revert to their current height.
+    /// This prevents windows from getting stuck in PendingResize state forever.
+    pub fn cancel_stale_pending_resizes(&mut self) {
+        let now = Instant::now();
+
+        for node in &mut self.layout_nodes {
+            if let ColumnCell::External(entry) = &mut node.cell {
+                if let WindowState::PendingResize { current_height, requested_at, .. } = &entry.state {
+                    let elapsed = now.duration_since(*requested_at).as_millis();
+                    if elapsed > RESIZE_TIMEOUT_MS {
+                        tracing::warn!(
+                            elapsed_ms = elapsed,
+                            current_height,
+                            "cancelling stale pending resize - client did not respond"
+                        );
+                        entry.state = WindowState::Active { height: *current_height };
+                    }
+                }
             }
         }
     }

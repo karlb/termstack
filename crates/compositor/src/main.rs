@@ -357,6 +357,9 @@ fn main() -> anyhow::Result<()> {
         // This handles lost release events when window loses focus mid-drag
         compositor.clear_stale_drag_state(compositor.pointer_buttons_pressed > 0);
 
+        // Cancel pending resizes from unresponsive clients
+        compositor.cancel_stale_pending_resizes();
+
         // Handle external window insert/resize events
         handle_external_window_events(&mut compositor);
 
