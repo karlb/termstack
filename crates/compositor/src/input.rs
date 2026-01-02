@@ -135,6 +135,67 @@ fn update_terminal_selection(
     }
 }
 
+/// Compositor keybinding action
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompositorAction {
+    Quit,
+    SpawnTerminal,
+    FocusNext,
+    FocusPrev,
+    ScrollDown,
+    ScrollUp,
+    ScrollToTop,
+    ScrollToBottom,
+    PageDown,
+    PageUp,
+    Copy,
+    Paste,
+}
+
+/// Parse compositor keybindings from modifiers and keysym
+fn parse_compositor_keybinding(modifiers: &ModifiersState, keysym: Keysym) -> Option<CompositorAction> {
+    // Ctrl+Shift bindings (work when Super is grabbed by parent compositor)
+    if modifiers.ctrl && modifiers.shift && !modifiers.logo && !modifiers.alt {
+        return match keysym {
+            Keysym::q | Keysym::Q => Some(CompositorAction::Quit),
+            Keysym::Return | Keysym::t | Keysym::T => Some(CompositorAction::SpawnTerminal),
+            Keysym::j | Keysym::J | Keysym::Down => Some(CompositorAction::FocusNext),
+            Keysym::k | Keysym::K | Keysym::Up => Some(CompositorAction::FocusPrev),
+            Keysym::Page_Down => Some(CompositorAction::PageDown),
+            Keysym::Page_Up => Some(CompositorAction::PageUp),
+            Keysym::v | Keysym::V => Some(CompositorAction::Paste),
+            Keysym::c | Keysym::C => Some(CompositorAction::Copy),
+            _ => None,
+        };
+    }
+
+    // Super (Mod4) bindings
+    if modifiers.logo && !modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+        return match keysym {
+            Keysym::q | Keysym::Q => Some(CompositorAction::Quit),
+            Keysym::Return | Keysym::t | Keysym::T => Some(CompositorAction::SpawnTerminal),
+            Keysym::j | Keysym::J => Some(CompositorAction::FocusNext),
+            Keysym::k | Keysym::K => Some(CompositorAction::FocusPrev),
+            Keysym::Down => Some(CompositorAction::ScrollDown),
+            Keysym::Up => Some(CompositorAction::ScrollUp),
+            Keysym::Home => Some(CompositorAction::ScrollToTop),
+            Keysym::End => Some(CompositorAction::ScrollToBottom),
+            _ => None,
+        };
+    }
+
+    // Page Up/Down without modifiers
+    if !modifiers.ctrl && !modifiers.shift && !modifiers.logo && !modifiers.alt {
+        return match keysym {
+            Keysym::Page_Up => Some(CompositorAction::PageUp),
+            Keysym::Page_Down => Some(CompositorAction::PageDown),
+            _ => None,
+        };
+    }
+
+    None
+}
+
 impl ColumnCompositor {
     /// Process an input event with terminal support
     pub fn process_input_event_with_terminals<I: InputBackend>(
@@ -328,88 +389,60 @@ impl ColumnCompositor {
         keysym: Keysym,
         state: KeyState,
     ) -> bool {
-        // Use the regular binding handler first
-        if self.handle_compositor_binding(modifiers, keysym, state) {
-            return true;
-        }
-
-        // Additional bindings for terminal management
         if state != KeyState::Pressed {
             return false;
         }
 
-        // Super+Return or Super+T: Signal to spawn new terminal
-        if modifiers.logo {
-            match keysym {
-                Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::debug!("spawn terminal binding triggered (Super)");
-                    self.spawn_terminal_requested = true;
-                    return true;
-                }
-                _ => {}
+        let Some(action) = parse_compositor_keybinding(modifiers, keysym) else {
+            return false;
+        };
+
+        match action {
+            CompositorAction::Quit => {
+                tracing::info!("quit requested");
+                self.running = false;
+            }
+            CompositorAction::SpawnTerminal => {
+                tracing::debug!("spawn terminal binding triggered");
+                self.spawn_terminal_requested = true;
+            }
+            CompositorAction::FocusNext => {
+                tracing::debug!("focus next requested");
+                self.focus_change_requested = 1;
+            }
+            CompositorAction::FocusPrev => {
+                tracing::debug!("focus prev requested");
+                self.focus_change_requested = -1;
+            }
+            CompositorAction::ScrollDown => {
+                self.scroll_requested = SCROLL_STEP;
+            }
+            CompositorAction::ScrollUp => {
+                self.scroll_requested = -SCROLL_STEP;
+            }
+            CompositorAction::ScrollToTop => {
+                self.scroll_to_top();
+            }
+            CompositorAction::ScrollToBottom => {
+                self.scroll_to_bottom();
+            }
+            CompositorAction::PageDown => {
+                self.scroll_requested = self.output_size.h as f64 * 0.9;
+            }
+            CompositorAction::PageUp => {
+                self.scroll_requested = -(self.output_size.h as f64 * 0.9);
+            }
+            CompositorAction::Copy => {
+                tracing::debug!("copy to clipboard requested");
+                self.pending_copy = true;
+            }
+            CompositorAction::Paste => {
+                tracing::debug!("paste from clipboard requested");
+                self.pending_paste = true;
             }
         }
 
-        // Alternative: Ctrl+Shift+T or Ctrl+Shift+Return to spawn terminal
-        // (useful when Super is grabbed by parent compositor)
-        if modifiers.ctrl && modifiers.shift {
-            match keysym {
-                Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::debug!("spawn terminal binding triggered (Ctrl+Shift)");
-                    self.spawn_terminal_requested = true;
-                    return true;
-                }
-                // Focus switching: Ctrl+Shift+J/K or Ctrl+Shift+Down/Up
-                Keysym::j | Keysym::J | Keysym::Down => {
-                    tracing::debug!("focus next terminal");
-                    self.focus_change_requested = 1;
-                    return true;
-                }
-                Keysym::k | Keysym::K | Keysym::Up => {
-                    tracing::debug!("focus prev terminal");
-                    self.focus_change_requested = -1;
-                    return true;
-                }
-                // Scrolling: Ctrl+Shift+Page Up/Down
-                Keysym::Page_Down => {
-                    self.scroll_requested = SCROLL_STEP * 10.0;
-                    return true;
-                }
-                Keysym::Page_Up => {
-                    self.scroll_requested = -SCROLL_STEP * 10.0;
-                    return true;
-                }
-                // Clipboard: Ctrl+Shift+V (paste) / Ctrl+Shift+C (copy)
-                Keysym::v | Keysym::V => {
-                    tracing::debug!("paste from clipboard requested");
-                    self.pending_paste = true;
-                    return true;
-                }
-                Keysym::c | Keysym::C => {
-                    tracing::debug!("copy to clipboard requested");
-                    self.pending_copy = true;
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        // Page Up/Down without modifiers for scrolling
-        if !modifiers.ctrl && !modifiers.alt && !modifiers.logo {
-            match keysym {
-                Keysym::Page_Down => {
-                    self.scroll_requested = SCROLL_STEP * 10.0;
-                    return true;
-                }
-                Keysym::Page_Up => {
-                    self.scroll_requested = -SCROLL_STEP * 10.0;
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        false
+        true
     }
 
     /// Handle global compositor bindings that work regardless of focused window type.
@@ -425,149 +458,34 @@ impl ColumnCompositor {
             return false;
         }
 
-        // Ctrl+Shift bindings (work when Super is grabbed by parent compositor)
-        if modifiers.ctrl && modifiers.shift {
-            match keysym {
-                Keysym::q | Keysym::Q => {
-                    tracing::debug!("quit requested (Ctrl+Shift+Q)");
-                    self.running = false;
-                    return true;
-                }
-                Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::debug!("spawn terminal binding triggered (Ctrl+Shift)");
-                    self.spawn_terminal_requested = true;
-                    return true;
-                }
-                Keysym::j | Keysym::J | Keysym::Down => {
-                    tracing::debug!("focus next (Ctrl+Shift)");
-                    self.focus_change_requested = 1;
-                    return true;
-                }
-                Keysym::k | Keysym::K | Keysym::Up => {
-                    tracing::debug!("focus prev (Ctrl+Shift)");
-                    self.focus_change_requested = -1;
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        // Super (Mod4) bindings
-        if modifiers.logo {
-            match keysym {
-                Keysym::q | Keysym::Q => {
-                    tracing::debug!("quit requested (Super+Q)");
-                    self.running = false;
-                    return true;
-                }
-                Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::debug!("spawn terminal binding triggered (Super)");
-                    self.spawn_terminal_requested = true;
-                    return true;
-                }
-                Keysym::j | Keysym::J => {
-                    self.focus_next();
-                    self.update_keyboard_focus_for_focused_cell();
-                    return true;
-                }
-                Keysym::k | Keysym::K => {
-                    self.focus_prev();
-                    self.update_keyboard_focus_for_focused_cell();
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        false
-    }
-
-    /// Handle compositor-level keybindings
-    /// Returns true if the binding was handled
-    fn handle_compositor_binding(
-        &mut self,
-        modifiers: &ModifiersState,
-        keysym: Keysym,
-        state: KeyState,
-    ) -> bool {
-        // Only process on key press, not release
-        if state != KeyState::Pressed {
+        let Some(action) = parse_compositor_keybinding(modifiers, keysym) else {
             return false;
-        }
+        };
 
-        // Ctrl+Shift+Q: Alternative quit (when Super is grabbed)
-        if modifiers.ctrl && modifiers.shift && matches!(keysym, Keysym::q | Keysym::Q) {
-            tracing::info!("quit requested (Ctrl+Shift+Q)");
-            self.running = false;
-            return true;
-        }
-
-        // Super (Mod4) + key bindings
-        if modifiers.logo {
-            match keysym {
-                // Super+Q: Quit compositor
-                Keysym::q | Keysym::Q => {
-                    tracing::info!("quit requested (Super+Q)");
-                    self.running = false;
-                    return true;
-                }
-
-                // Super+J: Focus next window
-                Keysym::j | Keysym::J => {
-                    self.focus_next();
-                    self.update_keyboard_focus_for_focused_cell();
-                    return true;
-                }
-
-                // Super+K: Focus previous window
-                Keysym::k | Keysym::K => {
-                    self.focus_prev();
-                    self.update_keyboard_focus_for_focused_cell();
-                    return true;
-                }
-
-                // Super+Down: Scroll down
-                Keysym::Down => {
-                    self.scroll(SCROLL_STEP);
-                    return true;
-                }
-
-                // Super+Up: Scroll up
-                Keysym::Up => {
-                    self.scroll(-SCROLL_STEP);
-                    return true;
-                }
-
-                // Super+Home: Scroll to top
-                Keysym::Home => {
-                    self.scroll_to_top();
-                    return true;
-                }
-
-                // Super+End: Scroll to bottom
-                Keysym::End => {
-                    self.scroll_to_bottom();
-                    return true;
-                }
-
-                _ => {}
+        match action {
+            CompositorAction::Quit => {
+                tracing::debug!("quit requested");
+                self.running = false;
             }
+            CompositorAction::SpawnTerminal => {
+                tracing::debug!("spawn terminal binding triggered");
+                self.spawn_terminal_requested = true;
+            }
+            CompositorAction::FocusNext => {
+                tracing::debug!("focus next");
+                self.focus_next();
+                self.update_keyboard_focus_for_focused_cell();
+            }
+            CompositorAction::FocusPrev => {
+                tracing::debug!("focus prev");
+                self.focus_prev();
+                self.update_keyboard_focus_for_focused_cell();
+            }
+            // Other actions not used in global bindings
+            _ => return false,
         }
 
-        // Page Up/Down without modifiers for scrolling
-        match keysym {
-            Keysym::Page_Up => {
-                self.scroll(-self.output_size.h as f64 * 0.9);
-                return true;
-            }
-            Keysym::Page_Down => {
-                self.scroll(self.output_size.h as f64 * 0.9);
-                return true;
-            }
-            _ => {}
-        }
-
-        false
+        true
     }
 
     fn handle_pointer_motion<I: InputBackend>(&mut self, _event: impl smithay::backend::input::PointerMotionEvent<I>) {
