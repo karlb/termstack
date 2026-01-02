@@ -429,9 +429,6 @@ pub struct TerminalManager {
     /// Next terminal ID
     next_id: u32,
 
-    /// Currently focused terminal
-    pub focused: Option<TerminalId>,
-
     /// Cell dimensions
     pub cell_width: u32,
     pub cell_height: u32,
@@ -466,7 +463,6 @@ impl TerminalManager {
         Self {
             terminals: HashMap::new(),
             next_id: 0,
-            focused: None,
             cell_width,
             cell_height,
             default_cols,
@@ -481,9 +477,13 @@ impl TerminalManager {
         Self::new_with_size(800, 600, Theme::default())
     }
 
-    /// Get the focused terminal mutably
-    pub fn get_focused_mut(&mut self) -> Option<&mut ManagedTerminal> {
-        let id = self.focused?;
+    /// Get the focused terminal mutably based on the compositor's focused cell
+    pub fn get_focused_mut(&mut self, focused_cell: Option<&crate::state::FocusedCell>) -> Option<&mut ManagedTerminal> {
+        use crate::state::FocusedCell;
+        let id = match focused_cell? {
+            FocusedCell::Terminal(id) => *id,
+            FocusedCell::External(_) => return None,
+        };
         self.terminals.get_mut(&id)
     }
 
@@ -578,9 +578,6 @@ impl TerminalManager {
 
         self.terminals.insert(id, terminal);
 
-        // Focus the new terminal
-        self.focused = Some(id);
-
         Ok(id)
     }
 
@@ -636,9 +633,6 @@ impl TerminalManager {
                        ?parent, command, "spawned command terminal");
 
         self.terminals.insert(id, terminal);
-
-        // Focus the new command terminal
-        self.focused = Some(id);
 
         // Debug: show which terminals are hidden/visible
         for (tid, term) in &self.terminals {
@@ -776,11 +770,6 @@ impl TerminalManager {
             }
         }
 
-        // Focus parent terminals
-        for parent_id in parents_to_focus {
-            self.focused = Some(parent_id);
-        }
-
         // Transition visibility for exited terminals
         for id in terminals_to_transition {
             if let Some(term) = self.terminals.get_mut(&id) {
@@ -807,39 +796,6 @@ impl TerminalManager {
         self.terminals.iter_mut()
     }
 
-    /// Focus the next visible terminal (by ID order)
-    pub fn focus_next(&mut self) -> bool {
-        let ids = self.visible_ids();
-        if ids.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.focused
-            .and_then(|f| ids.iter().position(|id| *id == f))
-            .unwrap_or(0);
-
-        let next_idx = (current_idx + 1) % ids.len();
-        self.focused = Some(ids[next_idx]);
-        tracing::debug!(focused = ?self.focused, "focused next terminal");
-        true
-    }
-
-    /// Focus the previous visible terminal (by ID order)
-    pub fn focus_prev(&mut self) -> bool {
-        let ids = self.visible_ids();
-        if ids.is_empty() {
-            return false;
-        }
-
-        let current_idx = self.focused
-            .and_then(|f| ids.iter().position(|id| *id == f))
-            .unwrap_or(0);
-
-        let prev_idx = if current_idx == 0 { ids.len() - 1 } else { current_idx - 1 };
-        self.focused = Some(ids[prev_idx]);
-        tracing::debug!(focused = ?self.focused, "focused prev terminal");
-        true
-    }
 
     /// Get the Y position of a visible terminal (for scrolling to it)
     pub fn terminal_y_position(&self, target_id: TerminalId) -> Option<i32> {
@@ -855,13 +811,6 @@ impl TerminalManager {
         None
     }
 
-    /// Get the Y position and height of the focused terminal
-    pub fn focused_position(&self) -> Option<(i32, i32)> {
-        let focused_id = self.focused?;
-        let y = self.terminal_y_position(focused_id)?;
-        let height = self.terminals.get(&focused_id)?.height as i32;
-        Some((y, height))
-    }
 
     /// Find which visible terminal is at a given render Y position
     ///
@@ -885,13 +834,6 @@ impl TerminalManager {
         None
     }
 
-    /// Focus a specific terminal
-    pub fn focus(&mut self, id: TerminalId) {
-        if self.terminals.contains_key(&id) {
-            self.focused = Some(id);
-            tracing::info!(?id, "focused terminal");
-        }
-    }
 }
 
 impl Default for TerminalManager {

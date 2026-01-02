@@ -237,7 +237,7 @@ impl ColumnCompositor {
             // Forward to focused terminal if we got bytes
             if let Some((handled, Some(bytes))) = result {
                 if !handled {
-                    if let Some(terminal) = terminals.get_focused_mut() {
+                    if let Some(terminal) = terminals.get_focused_mut(self.focused_cell.as_ref()) {
                         if let Err(e) = terminal.write(&bytes) {
                             tracing::error!(?e, "failed to write to terminal");
                         } else {
@@ -258,7 +258,7 @@ impl ColumnCompositor {
                 if let Some(ref mut clipboard) = self.clipboard {
                     match clipboard.get_text() {
                         Ok(text) => {
-                            if let Some(terminal) = terminals.get_focused_mut() {
+                            if let Some(terminal) = terminals.get_focused_mut(self.focused_cell.as_ref()) {
                                 if let Err(e) = terminal.write(text.as_bytes()) {
                                     tracing::error!(?e, "failed to paste to terminal");
                                 } else {
@@ -277,7 +277,7 @@ impl ColumnCompositor {
             if self.pending_copy {
                 self.pending_copy = false;
                 if let Some(ref mut clipboard) = self.clipboard {
-                    if let Some(terminal) = terminals.get_focused_mut() {
+                    if let Some(terminal) = terminals.get_focused_mut(self.focused_cell.as_ref()) {
                         // Prefer selection text, fall back to entire grid content
                         let text = if let Some(selected) = terminal.terminal.selection_text() {
                             tracing::debug!(len = selected.len(), "copying selection to clipboard");
@@ -847,10 +847,6 @@ impl ColumnCompositor {
                                 );
                             }
                         }
-
-                        if let Some(terminals) = terminals {
-                            terminals.focus(id);
-                        }
                     }
                 }
             } else {
@@ -872,20 +868,6 @@ impl ColumnCompositor {
                     if render_location.y < last_cell_bottom {
                         let last_index = self.layout_nodes.len() - 1;
                         self.set_focus_by_index(last_index);
-
-                        // Sync terminal_manager focus
-                        if let Some(node) = self.layout_nodes.get(last_index) {
-                            if let Some(ref mut tm) = terminals {
-                                match &node.cell {
-                                    ColumnCell::Terminal(id) => {
-                                        tm.focused = Some(*id);
-                                    }
-                                    ColumnCell::External(_) => {
-                                        tm.focused = None;
-                                    }
-                                }
-                            }
-                        }
 
                         tracing::debug!(
                             render_y = render_location.y,

@@ -2122,7 +2122,9 @@
 
         // Write a command that produces 10 lines of output
         {
-            let terminal = manager.get_focused_mut().unwrap();
+            use crate::state::FocusedCell;
+            let focused_cell = FocusedCell::Terminal(id);
+            let terminal = manager.get_focused_mut(Some(&focused_cell)).unwrap();
             terminal.write(b"seq 10\n").expect("write to terminal");
         }
 
@@ -2205,7 +2207,9 @@
 
         // Write a simple command
         {
-            let terminal = manager.get_focused_mut().unwrap();
+            use crate::state::FocusedCell;
+            let focused_cell = FocusedCell::Terminal(id);
+            let terminal = manager.get_focused_mut(Some(&focused_cell)).unwrap();
             terminal.write(b"echo HELLO\n").expect("write to terminal");
         }
 
@@ -2253,7 +2257,6 @@
 
         // First spawn a parent shell terminal
         let parent_id = manager.spawn().expect("spawn parent");
-        manager.focused = Some(parent_id);
 
         // Now spawn a command that outputs multiple lines to stderr and exits immediately
         // Using "echo ... >&2" to write to stderr
@@ -2339,7 +2342,6 @@
 
         // First spawn a parent shell terminal
         let parent_id = manager.spawn().expect("spawn parent");
-        manager.focused = Some(parent_id);
 
         // Simulate the real command format from column-term
         // This is what process_spawn_request creates: "echo '> cmd'; cmd"

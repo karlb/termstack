@@ -992,7 +992,11 @@ fn handle_gui_spawn_requests(
 
     while let Some(request) = compositor.pending_gui_spawn_requests.pop() {
         // Get the launching terminal (currently focused)
-        let launching_terminal = terminal_manager.focused;
+        use compositor::state::FocusedCell;
+        let launching_terminal = compositor.focused_cell.as_ref().and_then(|cell| match cell {
+            FocusedCell::Terminal(id) => Some(*id),
+            FocusedCell::External(_) => None,
+        });
 
         // Modify environment for GUI apps
         let mut env = request.env.clone();
@@ -1059,7 +1063,8 @@ fn handle_gui_spawn_requests(
                 // In both cases, restore focus to the launcher terminal now.
                 // For foreground mode, add_window will focus the GUI window when it's created.
                 if let Some(launcher_id) = launching_terminal {
-                    terminal_manager.focused = Some(launcher_id);
+                    use compositor::state::FocusedCell;
+                    compositor.focused_cell = Some(FocusedCell::Terminal(launcher_id));
                     tracing::debug!(
                         launcher_id = launcher_id.0,
                         "restored terminal focus to launcher after gui_spawn"
@@ -1092,7 +1097,7 @@ fn handle_key_repeat(
     // Time to send a repeat event
     let bytes_to_send = bytes.clone();
 
-    if let Some(terminal) = terminal_manager.get_focused_mut() {
+    if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_cell.as_ref()) {
         if let Err(e) = terminal.write(&bytes_to_send) {
             tracing::error!(?e, "failed to write repeat to terminal");
             compositor.key_repeat = None;
@@ -1144,7 +1149,7 @@ fn handle_compositor_resize(
 /// set by the input handler, applying the changes to compositor state.
 fn handle_focus_and_scroll_requests(
     compositor: &mut ColumnCompositor,
-    terminal_manager: &mut TerminalManager,
+    _terminal_manager: &mut TerminalManager,
 ) {
     // Handle focus change requests
     if compositor.focus_change_requested != 0 {
@@ -1158,18 +1163,8 @@ fn handle_focus_and_scroll_requests(
         // Update keyboard focus to match the newly focused cell
         compositor.update_keyboard_focus_for_focused_cell();
 
-        // Sync terminal_manager focus with compositor focus
+        // Scroll to show focused cell
         if let Some(focused_idx) = compositor.focused_index() {
-            if let Some(node) = compositor.layout_nodes.get(focused_idx) {
-                match &node.cell {
-                    ColumnCell::Terminal(id) => {
-                        terminal_manager.focused = Some(*id);
-                    }
-                    ColumnCell::External(_) => {
-                        terminal_manager.focused = None;
-                    }
-                }
-            }
             compositor.scroll_to_show_cell_bottom(focused_idx);
         }
     }
@@ -1301,7 +1296,11 @@ fn process_spawn_request(
         env.insert("SHELL".to_string(), shell);
     }
 
-    let parent = terminal_manager.focused;
+    use compositor::state::FocusedCell;
+    let parent = compositor.focused_cell.as_ref().and_then(|cell| match cell {
+        FocusedCell::Terminal(id) => Some(*id),
+        FocusedCell::External(_) => None,
+    });
 
     // Reject spawns from alternate screen terminals (TUI apps)
     if let Some(parent_id) = parent {
@@ -1367,7 +1366,9 @@ fn process_terminal_output(
             terminal_manager.grow_terminal(id, target_rows);
 
             // If focused terminal grew, update cache and scroll (if bottom was visible)
-            if terminal_manager.focused == Some(id) {
+            use compositor::state::FocusedCell;
+            let is_focused = matches!(compositor.focused_cell.as_ref(), Some(FocusedCell::Terminal(fid)) if *fid == id);
+            if is_focused {
                 if let Some(idx) = find_terminal_cell_index(compositor, id) {
                     // Check if bottom was visible before resize
                     let was_bottom_visible = is_cell_bottom_visible(compositor, idx);
@@ -1472,10 +1473,14 @@ fn handle_ipc_resize_request(
         return;
     };
 
-    let Some(focused_id) = terminal_manager.focused else {
-        tracing::warn!("resize request but no focused terminal");
-        compositor::ipc::send_ack(ack_stream);
-        return;
+    use compositor::state::FocusedCell;
+    let focused_id = match compositor.focused_cell.as_ref() {
+        Some(FocusedCell::Terminal(id)) => *id,
+        _ => {
+            tracing::warn!("resize request but no focused terminal");
+            compositor::ipc::send_ack(ack_stream);
+            return;
+        }
     };
 
     let cell_height = terminal_manager.cell_height;
@@ -1613,7 +1618,6 @@ fn handle_output_terminal_cleanup(
             // Focus the restored launcher
             if let Some(idx) = find_terminal_cell_index(compositor, launcher_id) {
                 compositor.set_focus_by_index(idx);
-                terminal_manager.focused = Some(launcher_id);
                 tracing::info!(
                     launcher_id = launcher_id.0,
                     index = idx,
@@ -1671,7 +1675,6 @@ fn cleanup_and_sync_focus(
                 // Focus the restored launcher
                 if let Some(idx) = find_terminal_cell_index(compositor, launcher_id) {
                     compositor.set_focus_by_index(idx);
-                    terminal_manager.focused = Some(launcher_id);
                     tracing::info!(
                         launcher_id = launcher_id.0,
                         index = idx,
