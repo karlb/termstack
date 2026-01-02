@@ -147,6 +147,26 @@ impl RenderPoint {
     }
 }
 
+/// Convert content position to render position accounting for Y-flip and cell height
+///
+/// Formula: render_y = screen_height - content_y - height
+///
+/// This is the core Y-flip formula used throughout the compositor to convert
+/// from content coordinates (where Y=0 is at the top of the scrollable content)
+/// to render coordinates (where Y=0 is at the bottom of the screen).
+pub fn content_to_render_y(content_y: f64, height: f64, screen_height: f64) -> f64 {
+    screen_height - content_y - height
+}
+
+/// Convert render position to content position accounting for Y-flip and cell height
+///
+/// Formula: content_y = screen_height - render_y - height
+///
+/// This is the inverse of content_to_render_y.
+pub fn render_to_content_y(render_y: f64, height: f64, screen_height: f64) -> f64 {
+    screen_height - render_y - height
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

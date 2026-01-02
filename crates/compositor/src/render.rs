@@ -257,7 +257,7 @@ pub fn build_render_data<'a>(
 
     for (cell_idx, node) in layout_nodes.iter().enumerate() {
         let height = heights[cell_idx];
-        let render_y = screen_height - content_y - height;
+        let render_y = crate::coords::content_to_render_y(content_y as f64, height as f64, screen_height as f64) as i32;
 
         match &node.cell {
             ColumnCell::Terminal(id) => {

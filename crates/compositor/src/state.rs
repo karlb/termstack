@@ -488,8 +488,12 @@ impl ColumnCompositor {
 
             // Only external windows need to be mapped in Space
             if let ColumnCell::External(entry) = &node.cell {
-                // Apply Y-flip: render_y = screen_height - content_y - height
-                let render_y = screen_height - content_y - height;
+                // Apply Y-flip
+                let render_y = crate::coords::content_to_render_y(
+                    content_y as f64,
+                    height as f64,
+                    screen_height as f64
+                ) as i32;
                 let loc = Point::from((0, render_y));
                 self.space.map_element(entry.window.clone(), loc, false);
 
@@ -1290,8 +1294,7 @@ impl ColumnCompositor {
             let cell_height = self.get_cell_visual_height(i) as f64;
 
             // Calculate render Y for this cell (same formula as main.rs rendering)
-            // render_y = screen_height - content_y - height
-            let render_y = screen_height - content_y - cell_height;
+            let render_y = crate::coords::content_to_render_y(content_y, cell_height, screen_height);
             let render_end = render_y + cell_height;
 
             if point.y >= render_y && point.y < render_end {
@@ -1334,8 +1337,7 @@ impl ColumnCompositor {
         for i in 0..self.layout_nodes.len() {
             if i == index {
                 let height = self.get_cell_visual_height(i);
-                // render_y = screen_height - content_y - height
-                let render_y = screen_height - content_y - height as f64;
+                let render_y = crate::coords::content_to_render_y(content_y, height as f64, screen_height);
                 return (render_y, height);
             }
             content_y += self.get_cell_visual_height(i) as f64;
@@ -1863,8 +1865,8 @@ mod tests {
             for (i, &height) in self.layout_heights.iter().enumerate() {
                 let cell_height = height as f64;
 
-                // Y-flip formula: render_y = screen_height - content_y - height
-                let render_y = screen_height - content_y - cell_height;
+                // Y-flip formula
+                let render_y = crate::coords::content_to_render_y(content_y, cell_height, screen_height);
                 let render_end = render_y + cell_height;
 
                 if y >= render_y && y < render_end {
@@ -1884,7 +1886,11 @@ mod tests {
             self.layout_heights
                 .iter()
                 .map(|&height| {
-                    let render_y = screen_height - content_y - height;
+                    let render_y = crate::coords::content_to_render_y(
+                        content_y as f64,
+                        height as f64,
+                        screen_height as f64
+                    ) as i32;
                     content_y += height;
                     (render_y, height)
                 })
@@ -1900,7 +1906,7 @@ mod tests {
                 .iter()
                 .map(|&height| {
                     let cell_height = height as f64;
-                    let render_y = screen_height - content_y - cell_height;
+                    let render_y = crate::coords::content_to_render_y(content_y, cell_height, screen_height);
                     let render_end = render_y + cell_height;
                     content_y += cell_height;
                     (render_y, render_end)
