@@ -677,7 +677,7 @@ impl ColumnCompositor {
 
             if let Some(index) = self.cell_at(render_location) {
                 // Clicked on a cell - focus it
-                self.focused_index = Some(index);
+                self.set_focus_by_index(index);
 
                 // Calculate cell's render position for close button detection
                 let cell_render_top = {
@@ -774,16 +774,8 @@ impl ColumnCompositor {
                             if let Some(terminals) = terminals {
                                 terminals.remove(id);
                             }
-                            // Adjust focus if needed
-                            if let Some(focused) = self.focused_index {
-                                if focused >= self.layout_nodes.len() {
-                                    self.focused_index = if self.layout_nodes.is_empty() {
-                                        None
-                                    } else {
-                                        Some(self.layout_nodes.len() - 1)
-                                    };
-                                }
-                            }
+                            // Update focus if the focused cell was removed
+                            self.update_focus_after_removal(index);
                             return; // Don't process further
                         }
 

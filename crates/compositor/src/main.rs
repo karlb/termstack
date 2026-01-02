@@ -511,7 +511,7 @@ fn main() -> anyhow::Result<()> {
                 &render_data,
                 &terminal_manager,
                 compositor.scroll_offset,
-                compositor.focused_index,
+                compositor.focused_index(),
                 physical_size.h,
             );
 
@@ -607,7 +607,7 @@ fn main() -> anyhow::Result<()> {
 
             // Render all cells
             for (cell_idx, data) in render_data.into_iter().enumerate() {
-                let is_focused = compositor.focused_index == Some(cell_idx);
+                let is_focused = compositor.focused_index() == Some(cell_idx);
 
                 match data {
                     CellRenderData::Terminal { id, y, height, title_bar_texture } => {
@@ -757,7 +757,7 @@ fn handle_external_window_events(compositor: &mut ColumnCompositor) {
         tracing::info!(
             window_idx,
             cells_count = compositor.layout_nodes.len(),
-            focused_index = ?compositor.focused_index,
+            focused_index = ?compositor.focused_index(),
             needs_keyboard_focus,
             "handling new external window"
         );
@@ -777,7 +777,7 @@ fn handle_external_window_events(compositor: &mut ColumnCompositor) {
         }
 
         // Scroll to show the focused cell
-        if let Some(focused_idx) = compositor.focused_index {
+        if let Some(focused_idx) = compositor.focused_index() {
             if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                 tracing::info!(
                     window_idx,
@@ -801,7 +801,7 @@ fn handle_external_window_events(compositor: &mut ColumnCompositor) {
             node.height = new_height;
         }
 
-        if let Some(focused_idx) = compositor.focused_index {
+        if let Some(focused_idx) = compositor.focused_index() {
             if focused_idx >= resized_idx {
                 if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                     tracing::info!(
@@ -879,7 +879,7 @@ fn handle_terminal_spawn(
             compositor.update_layout_heights(new_heights);
 
             // Scroll to show the new terminal
-            if let Some(focused_idx) = compositor.focused_index {
+            if let Some(focused_idx) = compositor.focused_index() {
                 if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                     tracing::info!(
                         id = id.0,
@@ -911,7 +911,7 @@ fn handle_ipc_spawn_requests(
             for (i, node) in compositor.layout_nodes.iter().enumerate() {
                 if let ColumnCell::Terminal(tid) = node.cell {
                     if tid == id {
-                        compositor.focused_index = Some(i);
+                        compositor.set_focus_by_index(i);
                         tracing::info!(id = id.0, index = i, "focused new command terminal");
                         break;
                     }
@@ -923,7 +923,7 @@ fn handle_ipc_spawn_requests(
             compositor.update_layout_heights(new_heights);
 
             // Scroll to show the new terminal
-            if let Some(focused_idx) = compositor.focused_index {
+            if let Some(focused_idx) = compositor.focused_index() {
                 if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                     tracing::info!(
                         id = id.0,
@@ -1110,7 +1110,7 @@ fn handle_focus_and_scroll_requests(compositor: &mut ColumnCompositor) {
         compositor.focus_change_requested = 0;
 
         // Scroll to show the newly focused cell
-        if let Some(focused_idx) = compositor.focused_index {
+        if let Some(focused_idx) = compositor.focused_index() {
             compositor.scroll_to_show_cell_bottom(focused_idx);
         }
     }
@@ -1145,7 +1145,7 @@ fn check_and_handle_height_changes(
     let heights_changed = heights_changed_significantly(
         &current_heights,
         &actual_heights,
-        compositor.focused_index,
+        compositor.focused_index(),
     );
 
     compositor.update_layout_heights(actual_heights);
@@ -1153,7 +1153,7 @@ fn check_and_handle_height_changes(
     // Adjust scroll if heights changed, but NOT during manual resize drag
     // (user is intentionally changing heights, auto-scroll would be disruptive)
     if heights_changed && compositor.resizing.is_none() {
-        if let Some(focused_idx) = compositor.focused_index {
+        if let Some(focused_idx) = compositor.focused_index() {
             if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
                 tracing::info!(
                     focused_idx,
@@ -1398,7 +1398,7 @@ fn handle_ipc_resize_request(
         }
 
         // Scroll to keep terminal visible
-        if let Some(idx) = compositor.focused_index {
+        if let Some(idx) = compositor.focused_index() {
             compositor.scroll_to_show_cell_bottom(idx);
         }
     }
@@ -1492,7 +1492,7 @@ fn handle_output_terminal_cleanup(
 
             // Focus the restored launcher
             if let Some(idx) = find_terminal_cell_index(compositor, launcher_id) {
-                compositor.focused_index = Some(idx);
+                compositor.set_focus_by_index(idx);
                 terminal_manager.focused = Some(launcher_id);
                 tracing::info!(
                     launcher_id = launcher_id.0,
@@ -1550,7 +1550,7 @@ fn cleanup_and_sync_focus(
 
                 // Focus the restored launcher
                 if let Some(idx) = find_terminal_cell_index(compositor, launcher_id) {
-                    compositor.focused_index = Some(idx);
+                    compositor.set_focus_by_index(idx);
                     terminal_manager.focused = Some(launcher_id);
                     tracing::info!(
                         launcher_id = launcher_id.0,
@@ -1568,7 +1568,7 @@ fn cleanup_and_sync_focus(
     // Sync compositor focus if a command terminal exited
     if let Some(new_focus_id) = focus_changed_to {
         if let Some(idx) = find_terminal_cell_index(compositor, new_focus_id) {
-            compositor.focused_index = Some(idx);
+            compositor.set_focus_by_index(idx);
             tracing::info!(id = new_focus_id.0, index = idx, "synced compositor focus to parent terminal");
 
             // Update cached height for unhidden terminal (was 0 when hidden)

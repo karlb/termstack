@@ -48,6 +48,18 @@ use crate::ipc::{GuiSpawnRequest, ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
+/// Identifies a focused cell by its content identity, not position.
+///
+/// Unlike indices, cell identity remains stable when cells are added/removed,
+/// preventing focus from accidentally sliding to a different cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusedCell {
+    /// A terminal cell, identified by its TerminalId
+    Terminal(TerminalId),
+    /// An external window, identified by its surface ObjectId
+    External(smithay::reexports::wayland_server::backend::ObjectId),
+}
+
 /// Active resize drag state
 pub struct ResizeDrag {
     /// Index of the cell being resized
@@ -93,8 +105,8 @@ pub struct ColumnCompositor {
     /// Current scroll offset (pixels from top)
     pub scroll_offset: f64,
 
-    /// Index of focused cell (works for both terminals and windows)
-    pub focused_index: Option<usize>,
+    /// Identity of focused cell (stable across cell additions/removals)
+    pub focused_cell: Option<FocusedCell>,
 
     /// Cached layout calculation
     pub layout: ColumnLayout,
@@ -337,7 +349,7 @@ impl ColumnCompositor {
             popup_manager: PopupManager::default(),
             layout_nodes: Vec::new(),
             scroll_offset: 0.0,
-            focused_index: None,
+            focused_cell: None,
             layout: ColumnLayout::empty(),
             output_size,
             seat,
@@ -492,10 +504,10 @@ impl ColumnCompositor {
                     terminal_id = term_id.0,
                     "output terminal not found in layout, using focused index"
                 );
-                self.focused_index.unwrap_or(self.layout_nodes.len())
+                self.focused_index().unwrap_or(self.layout_nodes.len())
             }
         } else {
-            self.focused_index.unwrap_or(self.layout_nodes.len())
+            self.focused_index().unwrap_or(self.layout_nodes.len())
         };
 
         self.layout_nodes.insert(insert_index, LayoutNode {
@@ -504,19 +516,13 @@ impl ColumnCompositor {
         });
 
         // For foreground GUI windows, focus the new window
-        // For other windows (background GUI or regular), keep focus on previously focused cell
+        // For other windows (background GUI or regular), focus stays on existing cell
+        // (with identity-based focus, no adjustment needed for insertion)
         if is_foreground_gui {
-            self.focused_index = Some(insert_index);
+            self.set_focus_by_index(insert_index);
             tracing::info!(insert_index, "focused foreground GUI window");
-        } else {
-            // Keep focus on the previously focused cell
-            // Account for the insertion shifting cells down
-            if let Some(idx) = self.focused_index {
-                if idx >= insert_index {
-                    self.focused_index = Some(idx + 1);
-                }
-            }
         }
+        // Note: with identity-based focus, we don't need to adjust for insertion
 
         // Signal main loop to scroll to show this new window and set keyboard focus if needed
         self.new_external_window_index = Some(insert_index);
@@ -529,7 +535,7 @@ impl ColumnCompositor {
 
         tracing::info!(
             cell_count = self.layout_nodes.len(),
-            focused = ?self.focused_index,
+            focused = ?self.focused_cell,
             insert_index,
             has_output_terminal = output_terminal.is_some(),
             command = %command,
@@ -541,7 +547,7 @@ impl ColumnCompositor {
     pub fn add_terminal(&mut self, id: TerminalId) {
         // Insert at focused index to appear ABOVE the focused cell
         // (lower index = higher on screen after Y-flip)
-        let insert_index = self.focused_index.unwrap_or(self.layout_nodes.len());
+        let insert_index = self.focused_index().unwrap_or(self.layout_nodes.len());
 
         // Insert with placeholder height 0, will be updated in next frame
         self.layout_nodes.insert(insert_index, LayoutNode {
@@ -549,9 +555,11 @@ impl ColumnCompositor {
             height: 0,
         });
 
-        // Keep focus on the previously focused cell (which moved down by 1)
+        // With identity-based focus, the previously focused cell's identity is unchanged
         // If nothing was focused, focus the new cell
-        self.focused_index = Some(self.focused_index.map(|idx| idx + 1).unwrap_or(insert_index));
+        if self.focused_cell.is_none() {
+            self.focused_cell = Some(FocusedCell::Terminal(id));
+        }
 
         self.recalculate_layout();
 
@@ -592,7 +600,7 @@ impl ColumnCompositor {
 
             tracing::info!(
                 cell_count = self.layout_nodes.len(),
-                focused = ?self.focused_index,
+                focused = ?self.focused_cell,
                 has_output_terminal = output_terminal.is_some(),
                 is_foreground_gui,
                 "external window removed"
@@ -618,24 +626,38 @@ impl ColumnCompositor {
 
             tracing::info!(
                 cell_count = self.layout_nodes.len(),
-                focused = ?self.focused_index,
+                focused = ?self.focused_cell,
                 terminal_id = ?id,
                 "terminal removed"
             );
         }
     }
 
-    /// Update focus after removing a cell at the given index
-    fn update_focus_after_removal(&mut self, removed_index: usize) {
+    /// Update focus after removing a cell.
+    ///
+    /// With identity-based focus, this only needs to handle the case where the
+    /// focused cell itself was removed. If so, focus the previous cell (or next
+    /// if at the start).
+    pub fn update_focus_after_removal(&mut self, removed_index: usize) {
         if self.layout_nodes.is_empty() {
-            self.focused_index = None;
-        } else if let Some(focused) = self.focused_index {
-            if focused >= self.layout_nodes.len() {
-                self.focused_index = Some(self.layout_nodes.len() - 1);
-            } else if focused > removed_index {
-                self.focused_index = Some(focused - 1);
-            }
+            self.clear_focus();
+            return;
         }
+
+        // If the focused cell still exists, nothing to do
+        if self.focused_index().is_some() {
+            return;
+        }
+
+        // The focused cell was removed - focus adjacent cell
+        // Prefer the cell that was after the removed one (now at removed_index)
+        // Fall back to the one before if we removed the last cell
+        let new_index = if removed_index < self.layout_nodes.len() {
+            removed_index
+        } else {
+            self.layout_nodes.len().saturating_sub(1)
+        };
+        self.set_focus_by_index(new_index);
     }
 
     /// Request an external window resize (by cell index)
@@ -829,9 +851,9 @@ impl ColumnCompositor {
 
     /// Focus previous cell
     pub fn focus_prev(&mut self) {
-        if let Some(current) = self.focused_index {
+        if let Some(current) = self.focused_index() {
             if current > 0 {
-                self.focused_index = Some(current - 1);
+                self.set_focus_by_index(current - 1);
                 self.ensure_focused_visible();
             }
         }
@@ -839,9 +861,9 @@ impl ColumnCompositor {
 
     /// Focus next cell
     pub fn focus_next(&mut self) {
-        if let Some(current) = self.focused_index {
+        if let Some(current) = self.focused_index() {
             if current + 1 < self.layout_nodes.len() {
-                self.focused_index = Some(current + 1);
+                self.set_focus_by_index(current + 1);
                 self.ensure_focused_visible();
             }
         }
@@ -927,35 +949,58 @@ impl ColumnCompositor {
 
     /// Ensure the focused cell is visible
     fn ensure_focused_visible(&mut self) {
-        if let Some(index) = self.focused_index {
+        if let Some(index) = self.focused_index() {
             self.scroll_to_show_cell_bottom(index);
         }
     }
 
+    /// Get the index of the focused cell by finding it in layout_nodes.
+    ///
+    /// Returns None if no cell is focused or if the focused cell no longer exists.
+    pub fn focused_index(&self) -> Option<usize> {
+        let focused = self.focused_cell.as_ref()?;
+        self.layout_nodes.iter().position(|node| match (&node.cell, focused) {
+            (ColumnCell::Terminal(tid), FocusedCell::Terminal(focused_tid)) => tid == focused_tid,
+            (ColumnCell::External(entry), FocusedCell::External(focused_id)) => {
+                entry.toplevel.wl_surface().id() == *focused_id
+            }
+            _ => false,
+        })
+    }
+
+    /// Set focus to the cell at the given index.
+    ///
+    /// Extracts the cell's identity and stores it in focused_cell.
+    pub fn set_focus_by_index(&mut self, index: usize) {
+        if let Some(node) = self.layout_nodes.get(index) {
+            self.focused_cell = Some(match &node.cell {
+                ColumnCell::Terminal(id) => FocusedCell::Terminal(*id),
+                ColumnCell::External(entry) => FocusedCell::External(entry.toplevel.wl_surface().id()),
+            });
+        }
+    }
+
+    /// Clear focus (no cell focused).
+    pub fn clear_focus(&mut self) {
+        self.focused_cell = None;
+    }
+
     /// Check if the focused cell is a terminal
     pub fn is_terminal_focused(&self) -> bool {
-        self.focused_index
-            .and_then(|i| self.layout_nodes.get(i))
-            .map(|node| matches!(node.cell, ColumnCell::Terminal(_)))
-            .unwrap_or(false)
+        matches!(self.focused_cell, Some(FocusedCell::Terminal(_)))
     }
 
     /// Check if the focused cell is an external window
     pub fn is_external_focused(&self) -> bool {
-        self.focused_index
-            .and_then(|i| self.layout_nodes.get(i))
-            .map(|node| matches!(node.cell, ColumnCell::External(_)))
-            .unwrap_or(false)
+        matches!(self.focused_cell, Some(FocusedCell::External(_)))
     }
 
     /// Get the focused terminal ID, if any
     pub fn focused_terminal(&self) -> Option<TerminalId> {
-        self.focused_index
-            .and_then(|i| self.layout_nodes.get(i))
-            .and_then(|node| match &node.cell {
-                ColumnCell::Terminal(id) => Some(*id),
-                ColumnCell::External(_) => None,
-            })
+        match &self.focused_cell {
+            Some(FocusedCell::Terminal(id)) => Some(*id),
+            _ => None,
+        }
     }
 
     /// Get the cell under a point
