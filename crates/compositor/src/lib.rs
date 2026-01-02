@@ -12,6 +12,7 @@ pub mod render;
 pub mod state;
 pub mod terminal_manager;
 pub mod title_bar;
+pub mod xwayland;
 
 #[cfg(test)]
 mod ipc_test;

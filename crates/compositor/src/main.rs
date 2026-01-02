@@ -27,6 +27,8 @@ use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as
 use smithay::reexports::wayland_server::{Display, Resource};
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::xwayland_shell::XWaylandShellState;
+use smithay::xwayland::{X11Wm, XWayland, XWaylandEvent};
 
 use compositor::config::Config;
 use compositor::cursor::CursorManager;
@@ -198,10 +200,10 @@ fn main() -> anyhow::Result<()> {
     std::env::set_var("GDK_BACKEND", "wayland");
     std::env::set_var("QT_QPA_PLATFORM", "wayland");
 
-    // Note: We intentionally do NOT unset DISPLAY anymore.
-    // Arboard needs DISPLAY to service clipboard requests from X11 apps.
-    // GTK/Qt apps are forced to Wayland via GDK_BACKEND/QT_QPA_PLATFORM anyway.
-    // std::env::remove_var("DISPLAY");
+    // Unset DISPLAY so X11 apps spawned from terminals use our XWayland, not the host.
+    // XWayland will set DISPLAY when it's ready.
+    // Note: Terminals spawned before XWayland is ready won't have DISPLAY set.
+    std::env::remove_var("DISPLAY");
 
     // Insert socket source into event loop for new client connections
     event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
@@ -331,6 +333,9 @@ fn main() -> anyhow::Result<()> {
         }
     }).expect("failed to insert X11 backend source");
 
+    // Initialize XWayland support for X11 apps
+    initialize_xwayland(&mut compositor, &mut display, event_loop.handle());
+
     tracing::info!("entering main loop");
 
     let bg_color = Color32F::new(
@@ -357,16 +362,8 @@ fn main() -> anyhow::Result<()> {
     // Cache for title bar textures to avoid re-rendering every frame
     let mut title_bar_cache: TitleBarCache = TitleBarCache::new();
 
-    // Spawn initial terminal
-    match terminal_manager.spawn() {
-        Ok(id) => {
-            compositor.add_terminal(id);
-            tracing::info!(id = id.0, "spawned initial terminal");
-        }
-        Err(e) => {
-            tracing::error!("failed to spawn initial terminal: {}", e);
-        }
-    }
+    // Initial terminal will be spawned after XWayland is ready (in main loop)
+    // This ensures DISPLAY is set correctly for X11 app support
 
     // Main event loop
     while compositor.running {
@@ -376,6 +373,20 @@ fn main() -> anyhow::Result<()> {
 
         // Cancel pending resizes from unresponsive clients
         compositor.cancel_stale_pending_resizes();
+
+        // Spawn initial terminal once XWayland is ready
+        if compositor.spawn_initial_terminal {
+            compositor.spawn_initial_terminal = false;
+            match terminal_manager.spawn() {
+                Ok(id) => {
+                    compositor.add_terminal(id);
+                    tracing::info!(id = id.0, "spawned initial terminal (XWayland ready)");
+                }
+                Err(e) => {
+                    tracing::error!("failed to spawn initial terminal: {}", e);
+                }
+            }
+        }
 
         // Handle external window insert/resize events
         handle_external_window_events(&mut compositor);
@@ -389,8 +400,22 @@ fn main() -> anyhow::Result<()> {
         compositor.recalculate_layout();
 
         // Process X11 input events from channel
+        let mut event_count = 0;
         while let Ok(input_event) = x11_event_rx.try_recv() {
+            event_count += 1;
+            let event_type = match &input_event {
+                InputEvent::PointerMotion { .. } => "PointerMotion",
+                InputEvent::PointerMotionAbsolute { .. } => "PointerMotionAbsolute",
+                InputEvent::PointerButton { .. } => "PointerButton",
+                InputEvent::PointerAxis { .. } => "PointerAxis",
+                InputEvent::Keyboard { .. } => "Keyboard",
+                _ => "Other",
+            };
+            tracing::info!(event_type, "X11 input event from channel");
             compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
+        }
+        if event_count > 0 {
+            tracing::info!(event_count, "processed X11 input events this frame");
         }
 
         // Handle X11 resize events
@@ -551,7 +576,11 @@ fn main() -> anyhow::Result<()> {
                             // The geometry tells us where actual content is vs shadow/decoration areas
                             let parent_window_geo = entry.window.geometry();
 
-                            for (popup_kind, popup_offset) in PopupManager::popups_for_surface(entry.toplevel.wl_surface()) {
+                            // Only Wayland surfaces have popups
+                            let Some(wl_surface) = entry.surface.wl_surface() else {
+                                continue;
+                            };
+                            for (popup_kind, popup_offset) in PopupManager::popups_for_surface(&wl_surface) {
                                 let popup_surface = match &popup_kind {
                                     PopupKind::Xdg(xdg_popup) => xdg_popup,
                                     _ => continue,
@@ -784,16 +813,8 @@ fn handle_external_window_events(compositor: &mut ColumnCompositor) {
 
         // If this is a foreground GUI window, give it keyboard focus
         if needs_keyboard_focus {
-            if let Some(node) = compositor.layout_nodes.get(window_idx) {
-                if let compositor::state::ColumnCell::External(entry) = &node.cell {
-                    let surface = entry.toplevel.wl_surface().clone();
-                    if let Some(keyboard) = compositor.seat.get_keyboard() {
-                        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                        keyboard.set_focus(compositor, Some(surface), serial);
-                        tracing::info!(window_idx, "set keyboard focus to foreground GUI window");
-                    }
-                }
-            }
+            compositor.update_keyboard_focus_for_focused_cell();
+            tracing::info!(window_idx, "set keyboard focus to foreground GUI window");
         }
 
         // Scroll to show the focused cell
@@ -1128,6 +1149,9 @@ fn handle_focus_and_scroll_requests(compositor: &mut ColumnCompositor) {
             compositor.focus_prev();
         }
         compositor.focus_change_requested = 0;
+
+        // Update keyboard focus to match the newly focused cell
+        compositor.update_keyboard_focus_for_focused_cell();
 
         // Scroll to show the newly focused cell
         if let Some(focused_idx) = compositor.focused_index() {
@@ -1616,4 +1640,74 @@ fn cleanup_and_sync_focus(
     }
 
     false
+}
+
+/// Initialize XWayland support for running X11 applications
+fn initialize_xwayland(
+    compositor: &mut ColumnCompositor,
+    display: &mut Display<ColumnCompositor>,
+    loop_handle: smithay::reexports::calloop::LoopHandle<'static, ColumnCompositor>,
+) {
+    // Create XWayland shell state (required for X11 surface association)
+    let xwayland_shell_state = XWaylandShellState::new::<ColumnCompositor>(&display.handle());
+    compositor.xwayland_shell_state = Some(xwayland_shell_state);
+
+    // Try to spawn XWayland
+    let (xwayland, xwayland_client) = match XWayland::spawn(
+        &display.handle(),
+        None, // Let XWayland pick display number
+        std::iter::empty::<(String, String)>(),
+        true,  // Use abstract socket
+        std::process::Stdio::null(),
+        std::process::Stdio::null(),
+        |_| (),
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!(?e, "Failed to spawn XWayland - X11 apps will not work");
+            return;
+        }
+    };
+
+    // Clone handle for use inside the closure
+    let wm_handle = loop_handle.clone();
+
+    // Insert XWayland event source to handle Ready/Error events
+    if let Err(e) = loop_handle.insert_source(xwayland, move |event, _, compositor| {
+        match event {
+            XWaylandEvent::Ready {
+                x11_socket,
+                display_number,
+            } => {
+                tracing::info!(display_number, "XWayland ready");
+
+                // Set DISPLAY for child processes
+                std::env::set_var("DISPLAY", format!(":{}", display_number));
+
+                // Start the X11 Window Manager
+                match X11Wm::start_wm(
+                    wm_handle.clone(),
+                    x11_socket,
+                    xwayland_client.clone(),
+                ) {
+                    Ok(wm) => {
+                        tracing::info!("X11 Window Manager started");
+                        compositor.x11_wm = Some(wm);
+                        // Now spawn initial terminal with DISPLAY set
+                        compositor.spawn_initial_terminal = true;
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, "Failed to start X11 Window Manager");
+                    }
+                }
+            }
+            XWaylandEvent::Error => {
+                tracing::error!("XWayland failed");
+            }
+        }
+    }) {
+        tracing::warn!(?e, "Failed to insert XWayland event source");
+    }
+
+    tracing::info!("XWayland initialization complete");
 }

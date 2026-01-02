@@ -182,29 +182,49 @@ pub fn collect_cell_data(
                 external_elements.push(Vec::new());
             }
             ColumnCell::External(entry) => {
-                // Use render_elements_from_surface_tree directly on the toplevel surface
+                // Use render_elements_from_surface_tree directly on the surface
                 // instead of window.render_elements() which includes popups when PopupManager is used.
                 // This ensures popup surfaces don't affect the window's height calculation.
                 let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    render_elements_from_surface_tree(
-                        renderer,
-                        entry.toplevel.wl_surface(),
-                        Point::from((0i32, 0i32)),
-                        scale,
-                        1.0,
-                        Kind::Unspecified,
-                    );
+                    if let Some(wl_surface) = entry.surface.wl_surface() {
+                        render_elements_from_surface_tree(
+                            renderer,
+                            &wl_surface,
+                            Point::from((0i32, 0i32)),
+                            scale,
+                            1.0,
+                            Kind::Unspecified,
+                        )
+                    } else {
+                        Vec::new()
+                    };
 
-                let window_height = if elements.is_empty() {
-                    node.height
-                } else {
-                    elements.iter()
-                        .map(|e| {
-                            let geo = e.geometry(scale);
-                            geo.loc.y + geo.size.h
-                        })
-                        .max()
-                        .unwrap_or(node.height)
+                // For X11 windows: Always use node.height (configured height)
+                // X11 apps lag in resizing buffers. We trust our configured size
+                // which is set by resize drag (input.rs) and configure_notify (xwayland.rs).
+                // This also avoids feedback loops through check_and_handle_height_changes.
+                //
+                // For Wayland: Calculate from actual surface geometry
+                // The configure/ack protocol ensures the surface matches configured size.
+                let window_height = match &entry.surface {
+                    crate::state::SurfaceKind::X11(_) => {
+                        // X11: Use configured height directly
+                        node.height
+                    }
+                    crate::state::SurfaceKind::Wayland(_) => {
+                        // Wayland: Calculate from actual surface geometry
+                        if elements.is_empty() {
+                            node.height
+                        } else {
+                            elements.iter()
+                                .map(|e| {
+                                    let geo = e.geometry(scale);
+                                    geo.loc.y + geo.size.h
+                                })
+                                .max()
+                                .unwrap_or(node.height)
+                        }
+                    }
                 };
 
                 let actual_height = if entry.uses_csd {

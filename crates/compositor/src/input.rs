@@ -11,7 +11,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::coords::ScreenY;
 use crate::render::FOCUS_INDICATOR_WIDTH;
-use crate::state::{ColumnCell, ColumnCompositor, ResizeDrag, MIN_CELL_HEIGHT};
+use crate::state::{ColumnCell, ColumnCompositor, ResizeDrag, SurfaceKind, MIN_CELL_HEIGHT};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
@@ -128,7 +128,14 @@ impl ColumnCompositor {
             InputEvent::PointerMotionAbsolute { event } => {
                 self.handle_pointer_motion_absolute(event, terminals)
             }
-            InputEvent::PointerButton { event } => self.handle_pointer_button(event, Some(terminals)),
+            InputEvent::PointerButton { event } => {
+                tracing::info!(
+                    button = event.button_code(),
+                    state = ?event.state(),
+                    "PointerButton event received"
+                );
+                self.handle_pointer_button(event, Some(terminals))
+            }
             InputEvent::PointerAxis { event } => self.handle_pointer_axis(event, Some(terminals)),
             _ => {}
         }
@@ -167,6 +174,8 @@ impl ColumnCompositor {
             );
 
             // Process through keyboard - grab will route events appropriately
+            // Only intercept essential compositor bindings (focus switch, quit, spawn)
+            // All other keys (including PageUp/Down) pass through to the focused window
             let input_result = keyboard.input::<bool, _>(
                 self,
                 keycode,
@@ -175,7 +184,7 @@ impl ColumnCompositor {
                 time,
                 |state, modifiers, keysym| {
                     let sym = keysym.modified_sym();
-                    if state.handle_compositor_binding_with_terminals(modifiers, sym, key_state) {
+                    if state.handle_global_compositor_binding(modifiers, sym, key_state) {
                         FilterResult::Intercept(true)
                     } else {
                         // Forward to the focused Wayland surface (or popup via grab)
@@ -399,6 +408,76 @@ impl ColumnCompositor {
         false
     }
 
+    /// Handle global compositor bindings that work regardless of focused window type.
+    /// These are: quit, focus switch, spawn terminal.
+    /// Returns true if the binding was handled.
+    fn handle_global_compositor_binding(
+        &mut self,
+        modifiers: &ModifiersState,
+        keysym: Keysym,
+        state: KeyState,
+    ) -> bool {
+        if state != KeyState::Pressed {
+            return false;
+        }
+
+        // Ctrl+Shift bindings (work when Super is grabbed by parent compositor)
+        if modifiers.ctrl && modifiers.shift {
+            match keysym {
+                Keysym::q | Keysym::Q => {
+                    tracing::info!("quit requested (Ctrl+Shift+Q)");
+                    self.running = false;
+                    return true;
+                }
+                Keysym::Return | Keysym::t | Keysym::T => {
+                    tracing::info!("spawn terminal binding triggered (Ctrl+Shift)");
+                    self.spawn_terminal_requested = true;
+                    return true;
+                }
+                Keysym::j | Keysym::J | Keysym::Down => {
+                    tracing::info!("focus next (Ctrl+Shift)");
+                    self.focus_change_requested = 1;
+                    return true;
+                }
+                Keysym::k | Keysym::K | Keysym::Up => {
+                    tracing::info!("focus prev (Ctrl+Shift)");
+                    self.focus_change_requested = -1;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        // Super (Mod4) bindings
+        if modifiers.logo {
+            match keysym {
+                Keysym::q | Keysym::Q => {
+                    tracing::info!("quit requested (Super+Q)");
+                    self.running = false;
+                    return true;
+                }
+                Keysym::Return | Keysym::t | Keysym::T => {
+                    tracing::info!("spawn terminal binding triggered (Super)");
+                    self.spawn_terminal_requested = true;
+                    return true;
+                }
+                Keysym::j | Keysym::J => {
+                    self.focus_next();
+                    self.update_keyboard_focus_for_focused_cell();
+                    return true;
+                }
+                Keysym::k | Keysym::K => {
+                    self.focus_prev();
+                    self.update_keyboard_focus_for_focused_cell();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        false
+    }
+
     /// Handle compositor-level keybindings
     /// Returns true if the binding was handled
     fn handle_compositor_binding(
@@ -432,12 +511,14 @@ impl ColumnCompositor {
                 // Super+J: Focus next window
                 Keysym::j | Keysym::J => {
                     self.focus_next();
+                    self.update_keyboard_focus_for_focused_cell();
                     return true;
                 }
 
                 // Super+K: Focus previous window
                 Keysym::k | Keysym::K => {
                     self.focus_prev();
+                    self.update_keyboard_focus_for_focused_cell();
                     return true;
                 }
 
@@ -507,11 +588,12 @@ impl ColumnCompositor {
         // Store pointer position for Shift+Scroll (scroll terminal under pointer)
         self.pointer_position = Point::from((screen_x, render_y));
 
-        tracing::trace!(
+        // Log every motion event at info level to debug resize issue
+        tracing::info!(
             screen_y = screen_y.value(),
             render_y,
-            output_height = output_size.h,
-            "pointer motion"
+            resizing = self.resizing.is_some(),
+            "motion event"
         );
 
         // Check if pointer is on a resize handle (for cursor change)
@@ -521,6 +603,12 @@ impl ColumnCompositor {
 
         // Handle resize drag if active
         if let Some(drag) = &self.resizing {
+            tracing::info!(
+                cell_index = drag.cell_index,
+                screen_y = screen_y.value(),
+                start_y = drag.start_screen_y,
+                "RESIZE DRAG: processing pointer motion"
+            );
             let cell_index = drag.cell_index;
             let delta = screen_y.value() as i32 - drag.start_screen_y;
             let new_height = (drag.start_height + delta).max(MIN_CELL_HEIGHT);
@@ -528,14 +616,21 @@ impl ColumnCompositor {
             // Get the cell type to determine how to resize
             let cell_type = self.layout_nodes.get(cell_index).and_then(|node| {
                 match &node.cell {
-                    ColumnCell::Terminal(id) => Some(*id),
-                    ColumnCell::External(_) => None,
+                    ColumnCell::Terminal(id) => {
+                        tracing::info!(cell_index, terminal_id = id.0, "RESIZE DRAG: cell is Terminal");
+                        Some(*id)
+                    }
+                    ColumnCell::External(_) => {
+                        tracing::info!(cell_index, "RESIZE DRAG: cell is External, calling request_resize");
+                        None
+                    }
                 }
             });
 
             match cell_type {
                 Some(id) => {
                     // Terminal
+                    tracing::info!(id = id.0, new_height, "RESIZE DRAG: resizing terminal");
                     let cell_height = terminals.cell_height;
                     if let Some(terminal) = terminals.get_mut(id) {
                         terminal.resize_to_height(new_height as u32, cell_height);
@@ -547,6 +642,7 @@ impl ColumnCompositor {
                 }
                 None => {
                     // External window - request resize through the state
+                    tracing::info!(cell_index, new_height, "RESIZE DRAG: calling request_resize for external");
                     self.request_resize(cell_index, new_height as u32);
                     // Update cached height
                     if let Some(node) = self.layout_nodes.get_mut(cell_index) {
@@ -701,23 +797,35 @@ impl ColumnCompositor {
                     false
                 };
 
+                // Extract cell info for click handling
+                enum CellClickInfo<'a> {
+                    External {
+                        surface: &'a SurfaceKind,
+                        has_ssd: bool,
+                    },
+                    Terminal {
+                        id: TerminalId,
+                        has_ssd: bool,
+                    },
+                }
+
                 let cell_info = match &self.layout_nodes[index].cell {
                     ColumnCell::External(entry) => {
-                        Some((
-                            true,
-                            Some(entry.toplevel.wl_surface().clone()),
-                            None,
-                            !entry.uses_csd, // has_ssd
-                            Some(entry.toplevel.clone()),
-                        ))
+                        CellClickInfo::External {
+                            surface: &entry.surface,
+                            has_ssd: !entry.uses_csd,
+                        }
                     }
                     ColumnCell::Terminal(id) => {
-                        Some((false, None, Some(*id), terminal_has_title_bar, None))
+                        CellClickInfo::Terminal {
+                            id: *id,
+                            has_ssd: terminal_has_title_bar,
+                        }
                     }
                 };
 
-                if let Some((is_external, surface, terminal_id, has_ssd, toplevel)) = cell_info {
-                    if is_external {
+                match cell_info {
+                    CellClickInfo::External { surface, has_ssd } => {
                         // Check if click is on close button in title bar
                         let on_close_button = if has_ssd && button == BTN_LEFT {
                             let title_bar_top = cell_render_top;
@@ -733,11 +841,9 @@ impl ColumnCompositor {
                         };
 
                         if on_close_button {
-                            if let Some(tl) = toplevel {
-                                tracing::info!(index, "close button clicked, sending close");
-                                tl.send_close();
-                                return; // Don't process further
-                            }
+                            tracing::info!(index, "close button clicked, sending close");
+                            surface.send_close();
+                            return; // Don't process further
                         }
 
                         tracing::info!(
@@ -746,12 +852,10 @@ impl ColumnCompositor {
                             "handle_pointer_button: hit external window"
                         );
 
-                        if let Some(keyboard) = self.seat.get_keyboard() {
-                            keyboard.set_focus(self, surface, serial);
-                        }
-                        // Set XDG toplevel activated state (required for GTK animations)
-                        self.activate_toplevel(index);
-                    } else if let Some(id) = terminal_id {
+                        // Update keyboard focus (handles both Wayland and X11)
+                        self.update_keyboard_focus_for_focused_cell();
+                    }
+                    CellClickInfo::Terminal { id, has_ssd } => {
                         // Check if click is on close button in title bar (for terminals with title bars)
                         let on_close_button = if has_ssd && button == BTN_LEFT {
                             let title_bar_top = cell_render_top;
@@ -932,8 +1036,11 @@ impl ColumnCompositor {
                 }
                 let window_render_top = output_height - content_y;
 
-                // Check popups for this window
-                for (popup_kind, popup_offset) in smithay::desktop::PopupManager::popups_for_surface(entry.toplevel.wl_surface()) {
+                // Check popups for this window (only Wayland surfaces have popups)
+                let Some(wl_surface) = entry.surface.wl_surface() else {
+                    continue;
+                };
+                for (popup_kind, popup_offset) in smithay::desktop::PopupManager::popups_for_surface(&wl_surface) {
                     let popup_surface = match &popup_kind {
                         smithay::desktop::PopupKind::Xdg(xdg_popup) => xdg_popup,
                         _ => continue,
