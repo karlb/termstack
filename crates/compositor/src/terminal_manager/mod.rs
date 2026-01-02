@@ -341,13 +341,14 @@ impl ManagedTerminal {
         self.terminal.pty_fd()
     }
 
-    /// Check if terminal is still running
+    /// Check if terminal is still running (no side effects)
     pub fn is_running(&mut self) -> bool {
-        let running = self.terminal.is_running();
-        if !running {
-            self.exited = true;
-        }
-        running
+        self.terminal.is_running()
+    }
+
+    /// Mark terminal as exited (hides cursor on next render)
+    pub fn mark_exited(&mut self) {
+        self.exited = true;
     }
 
     /// Get content row count
@@ -748,36 +749,35 @@ impl TerminalManager {
 
         for id in ids {
             if let Some(term) = self.terminals.get_mut(&id) {
-                // Check exited BEFORE is_running() since is_running() sets exited as side effect
                 let was_already_exited = term.exited;
                 let running = term.is_running();
 
-                if !running {
-                    // Terminal has exited
-                    if !was_already_exited {
-                        // First time detecting exit - drain PTY buffer before checking content
-                        // This ensures we capture any output that was written before exit
-                        term.process();
+                if !running && !was_already_exited {
+                    // First time detecting exit - mark as exited
+                    term.mark_exited();
 
-                        // First time detecting exit - handle parent focus
-                        if let Some(parent_id) = term.parent {
-                            parents_to_focus.push(parent_id);
-                            focus_changed_to = Some(parent_id);
-                            tracing::info!(child = id.0, parent = parent_id.0, "command exited, focusing parent");
+                    // Drain PTY buffer before checking content
+                    // This ensures we capture any output that was written before exit
+                    term.process();
 
-                            // Transition visibility state on exit
-                            // WaitingForOutput -> ExitedEmpty (hidden)
-                            // HasOutput -> HasOutput (stays visible)
-                            if term.visibility == VisibilityState::WaitingForOutput {
-                                terminals_to_transition.push(id);
-                                tracing::info!(id = id.0, "command terminal exited without output");
-                            }
+                    // Handle parent focus
+                    if let Some(parent_id) = term.parent {
+                        parents_to_focus.push(parent_id);
+                        focus_changed_to = Some(parent_id);
+                        tracing::info!(child = id.0, parent = parent_id.0, "command exited, focusing parent");
+
+                        // Transition visibility state on exit
+                        // WaitingForOutput -> ExitedEmpty (hidden)
+                        // HasOutput -> HasOutput (stays visible)
+                        if term.visibility == VisibilityState::WaitingForOutput {
+                            terminals_to_transition.push(id);
+                            tracing::info!(id = id.0, "command terminal exited without output");
                         }
                     }
+                }
 
-                    if !term.keep_open {
-                        dead.push(id);
-                    }
+                if !running && !term.keep_open {
+                    dead.push(id);
                 }
             }
         }
