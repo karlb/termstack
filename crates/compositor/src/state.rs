@@ -949,9 +949,38 @@ impl ColumnCompositor {
         }
     }
 
+    /// Get the visual height of a cell (including title bar for SSD windows)
+    ///
+    /// This returns the actual rendered height, which includes title bars for:
+    /// - X11 windows with SSD (node.height + TITLE_BAR_HEIGHT)
+    /// - Terminals and Wayland windows already have title bar in node.height
+    fn get_cell_visual_height(&self, index: usize) -> i32 {
+        let Some(node) = self.layout_nodes.get(index) else {
+            return 0;
+        };
+
+        match &node.cell {
+            ColumnCell::External(entry) => {
+                // For X11 SSD windows, add title bar height
+                // Wayland windows already have title bar included in node.height
+                if matches!(entry.surface, SurfaceKind::X11(_)) && !entry.uses_csd {
+                    node.height + crate::title_bar::TITLE_BAR_HEIGHT as i32
+                } else {
+                    node.height
+                }
+            }
+            ColumnCell::Terminal(_) => {
+                // Terminals already have title bar included in node.height
+                node.height
+            }
+        }
+    }
+
     /// Calculate maximum scroll offset based on content height
     fn max_scroll(&self) -> f64 {
-        let total_height: i32 = self.layout_nodes.iter().map(|n| n.height).sum();
+        let total_height: i32 = (0..self.layout_nodes.len())
+            .map(|i| self.get_cell_visual_height(i))
+            .sum();
         (total_height as f64 - self.output_size.h as f64).max(0.0)
     }
 
@@ -1166,11 +1195,13 @@ impl ColumnCompositor {
     /// Scroll to ensure a cell's bottom edge is visible on screen.
     /// Returns the new scroll offset if it changed, None otherwise.
     pub fn scroll_to_show_cell_bottom(&mut self, cell_index: usize) -> Option<f64> {
-        let y: i32 = self.layout_nodes.iter().take(cell_index).map(|n| n.height).sum();
-        let height = self.get_cell_height(cell_index).unwrap_or(200);
+        let y: i32 = (0..cell_index).map(|i| self.get_cell_visual_height(i)).sum();
+        let height = self.get_cell_visual_height(cell_index);
         let bottom_y = y + height;
         let visible_height = self.output_size.h;
-        let total_height: i32 = self.layout_nodes.iter().map(|n| n.height).sum();
+        let total_height: i32 = (0..self.layout_nodes.len())
+            .map(|i| self.get_cell_visual_height(i))
+            .sum();
         let max_scroll = (total_height - visible_height).max(0) as f64;
         let min_scroll_for_bottom = (bottom_y - visible_height).max(0) as f64;
         let new_scroll = min_scroll_for_bottom.min(max_scroll);
@@ -1255,8 +1286,8 @@ impl ColumnCompositor {
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
-        for (i, node) in self.layout_nodes.iter().enumerate() {
-            let cell_height = node.height as f64;
+        for i in 0..self.layout_nodes.len() {
+            let cell_height = self.get_cell_visual_height(i) as f64;
 
             // Calculate render Y for this cell (same formula as main.rs rendering)
             // render_y = screen_height - content_y - height
@@ -1300,13 +1331,14 @@ impl ColumnCompositor {
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
-        for (i, node) in self.layout_nodes.iter().enumerate() {
+        for i in 0..self.layout_nodes.len() {
             if i == index {
+                let height = self.get_cell_visual_height(i);
                 // render_y = screen_height - content_y - height
-                let render_y = screen_height - content_y - node.height as f64;
-                return (render_y, node.height);
+                let render_y = screen_height - content_y - height as f64;
+                return (render_y, height);
             }
-            content_y += node.height as f64;
+            content_y += self.get_cell_visual_height(i) as f64;
         }
 
         // Fallback if index out of bounds
@@ -1318,14 +1350,15 @@ impl ColumnCompositor {
     pub fn get_cell_screen_bounds(&self, index: usize) -> Option<(i32, i32)> {
         let mut content_y = -(self.scroll_offset as i32);
 
-        for (i, node) in self.layout_nodes.iter().enumerate() {
+        for i in 0..self.layout_nodes.len() {
             if i == index {
                 // In screen coords: top_y = content_y, bottom_y = content_y + height
                 let top_y = content_y;
-                let bottom_y = content_y + node.height;
+                let height = self.get_cell_visual_height(i);
+                let bottom_y = content_y + height;
                 return Some((top_y, bottom_y));
             }
-            content_y += node.height;
+            content_y += self.get_cell_visual_height(i);
         }
         None
     }
@@ -1345,23 +1378,8 @@ impl ColumnCompositor {
         let mut content_y = -(self.scroll_offset as i32);
         let half_handle = RESIZE_HANDLE_SIZE / 2;
 
-        for (i, node) in self.layout_nodes.iter().enumerate() {
-            // Calculate visual height
-            // For X11 SSD windows: node.height is content only, add title bar
-            // For Wayland windows: node.height already includes title bar (from feedback loop)
-            // For terminals: node.height is the full height
-            let visual_height = match &node.cell {
-                ColumnCell::External(entry) => {
-                    // Only add title bar for X11 SSD windows
-                    if matches!(entry.surface, SurfaceKind::X11(_)) && !entry.uses_csd {
-                        node.height + crate::title_bar::TITLE_BAR_HEIGHT as i32
-                    } else {
-                        node.height
-                    }
-                }
-                ColumnCell::Terminal(_) => node.height,
-            };
-
+        for i in 0..self.layout_nodes.len() {
+            let visual_height = self.get_cell_visual_height(i);
             let bottom_y = content_y + visual_height;
 
             // Check if screen_y is in the handle zone around this cell's bottom edge
