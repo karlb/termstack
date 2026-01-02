@@ -403,19 +403,10 @@ fn main() -> anyhow::Result<()> {
         let mut event_count = 0;
         while let Ok(input_event) = x11_event_rx.try_recv() {
             event_count += 1;
-            let event_type = match &input_event {
-                InputEvent::PointerMotion { .. } => "PointerMotion",
-                InputEvent::PointerMotionAbsolute { .. } => "PointerMotionAbsolute",
-                InputEvent::PointerButton { .. } => "PointerButton",
-                InputEvent::PointerAxis { .. } => "PointerAxis",
-                InputEvent::Keyboard { .. } => "Keyboard",
-                _ => "Other",
-            };
-            tracing::info!(event_type, "X11 input event from channel");
             compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
         }
         if event_count > 0 {
-            tracing::info!(event_count, "processed X11 input events this frame");
+            tracing::debug!(event_count, "processed X11 input events this frame");
         }
 
         // Handle X11 resize events
@@ -799,7 +790,7 @@ fn setup_logging() {
 /// are added or resized.
 fn handle_external_window_events(
     compositor: &mut ColumnCompositor,
-    terminal_manager: &mut TerminalManager,
+    _terminal_manager: &mut TerminalManager,
 ) {
     // Handle new external window - heights are already managed in add_window,
     // just need to scroll and set keyboard focus if needed

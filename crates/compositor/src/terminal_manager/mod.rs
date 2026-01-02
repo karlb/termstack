@@ -240,7 +240,6 @@ impl ManagedTerminal {
         // Only mark dirty when there's actual output to render
         if bytes_read > 0 && !self.dirty {
             self.dirty = true;
-            tracing::trace!(id = self.id.0, "terminal marked dirty");
         }
 
         // If terminal has output for the first time, transition visibility state
@@ -254,7 +253,6 @@ impl ManagedTerminal {
 
     /// Write input to the terminal
     pub fn write(&mut self, data: &[u8]) -> Result<(), terminal::state::TerminalError> {
-        tracing::trace!(id = self.id.0, len = data.len(), "writing to terminal PTY");
         self.terminal.write(data)
     }
 
@@ -363,13 +361,9 @@ impl ManagedTerminal {
 
     /// Render terminal to texture
     pub fn render(&mut self, renderer: &mut GlesRenderer) -> Option<&GlesTexture> {
-        tracing::debug!(id = self.id.0, dirty = self.dirty, has_texture = self.texture.is_some(), "render() called");
         if !self.dirty && self.texture.is_some() {
-            tracing::debug!(id = self.id.0, "render() early return - not dirty and has texture");
             return self.texture.as_ref();
         }
-
-        tracing::trace!(id = self.id.0, width = self.width, height = self.height, dirty = self.dirty, "re-rendering terminal");
 
         // Render terminal to pixel buffer (hide cursor if process exited)
         self.terminal.render(self.width, self.height, !self.exited);
@@ -826,7 +820,7 @@ impl TerminalManager {
 
         let next_idx = (current_idx + 1) % ids.len();
         self.focused = Some(ids[next_idx]);
-        tracing::info!(focused = ?self.focused, "focused next terminal");
+        tracing::debug!(focused = ?self.focused, "focused next terminal");
         true
     }
 
@@ -843,7 +837,7 @@ impl TerminalManager {
 
         let prev_idx = if current_idx == 0 { ids.len() - 1 } else { current_idx - 1 };
         self.focused = Some(ids[prev_idx]);
-        tracing::info!(focused = ?self.focused, "focused prev terminal");
+        tracing::debug!(focused = ?self.focused, "focused prev terminal");
         true
     }
 

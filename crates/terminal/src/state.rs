@@ -260,15 +260,6 @@ impl Terminal {
                     // Check if in alternate screen BEFORE processing (for logging)
                     let was_alt = term.mode().contains(TermMode::ALT_SCREEN);
 
-                    // Count line endings for sizing state machine
-                    // Only count \n (newline) - \r is cursor control, not line advancement
-                    let newlines = buf[..n].iter().filter(|&&b| b == b'\n').count();
-
-                    // Log for debugging (INFO level for visibility)
-                    if newlines > 0 {
-                        tracing::info!(bytes = n, newlines, was_alt, "PTY output with newlines");
-                    }
-
                     // Process bytes through VTE parser
                     for byte in &buf[..n] {
                         self.parser.advance(&mut *term, *byte);
@@ -312,21 +303,15 @@ impl Terminal {
                         // Request growth if content exceeds visual rows
                         if last_content >= visual_rows {
                             let target_rows = last_content + 1;
-                            tracing::info!(cursor_line, last_content, visual_rows, target_rows, "content exceeded visual size, requesting growth");
+                            tracing::debug!(cursor_line, last_content, visual_rows, target_rows, "content exceeded visual size, requesting growth");
                             actions.push(SizingAction::RequestGrowth { target_rows });
                         }
-                    } else if newlines > 0 && (is_alt || was_alt) {
-                        tracing::info!(newlines, was_alt, is_alt, "skipping growth check in alternate screen");
                     }
 
                     drop(term);
                 }
                 Err(_) => break,
             }
-        }
-
-        if total_read > 0 {
-            tracing::info!(bytes = total_read, "read from PTY");
         }
 
         // Process terminal events (e.g., PtyWrite for terminal query responses)

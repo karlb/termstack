@@ -79,8 +79,6 @@ fn start_terminal_selection(
         char_height,
     );
 
-    tracing::debug!(col, row, "starting selection");
-
     // Clear any previous selection and start new one
     managed.terminal.clear_selection();
     managed.terminal.start_selection(col, row);
@@ -111,7 +109,6 @@ fn update_terminal_selection(
 
         managed.terminal.update_selection(col, row);
         managed.mark_dirty(); // Re-render to show updated selection
-        tracing::debug!(col, row, "selection updated");
     }
 }
 
@@ -202,8 +199,6 @@ impl ColumnCompositor {
             return;
         }
 
-        tracing::debug!(?keycode, ?key_state, "processing keyboard event for terminal");
-
         // Process through keyboard for modifier tracking
         let result = keyboard.input::<(bool, Option<Vec<u8>>), _>(
             self,
@@ -213,17 +208,14 @@ impl ColumnCompositor {
             time,
             |state, modifiers, keysym| {
                 let sym = keysym.modified_sym();
-                tracing::debug!(?sym, ?modifiers, "keysym processed");
 
                 // Handle compositor keybindings
                 if state.handle_compositor_binding_with_terminals(modifiers, sym, key_state)
                 {
-                    tracing::info!("compositor binding handled");
                     FilterResult::Intercept((true, None))
                 } else if key_state == KeyState::Pressed {
                     // Convert keysym to bytes for terminal
                     let bytes = keysym_to_bytes(sym, modifiers);
-                    tracing::debug!(?bytes, "converted to bytes");
                     if !bytes.is_empty() {
                         FilterResult::Intercept((false, Some(bytes)))
                     } else {
@@ -235,8 +227,6 @@ impl ColumnCompositor {
             },
         );
 
-        tracing::debug!(?result, "keyboard.input result");
-
         // Handle key release - stop repeat
         if key_state == KeyState::Released {
             self.key_repeat = None;
@@ -247,14 +237,10 @@ impl ColumnCompositor {
             // Forward to focused terminal if we got bytes
             if let Some((handled, Some(bytes))) = result {
                 if !handled {
-                    let focused_id = terminals.focused;
-                    let term_count = terminals.count();
-                    tracing::debug!(focused = ?focused_id, term_count, ?bytes, "forwarding input to terminal");
                     if let Some(terminal) = terminals.get_focused_mut() {
                         if let Err(e) = terminal.write(&bytes) {
                             tracing::error!(?e, "failed to write to terminal");
                         } else {
-                            tracing::debug!("write succeeded");
                             // Set up key repeat for this key
                             let repeat_time = std::time::Instant::now()
                                 + std::time::Duration::from_millis(self.repeat_delay_ms);
@@ -276,7 +262,7 @@ impl ColumnCompositor {
                                 if let Err(e) = terminal.write(text.as_bytes()) {
                                     tracing::error!(?e, "failed to paste to terminal");
                                 } else {
-                                    tracing::info!(len = text.len(), "pasted text to terminal");
+                                    tracing::debug!(len = text.len(), "pasted text to terminal");
                                 }
                             }
                         }
@@ -294,12 +280,12 @@ impl ColumnCompositor {
                     if let Some(terminal) = terminals.get_focused_mut() {
                         // Prefer selection text, fall back to entire grid content
                         let text = if let Some(selected) = terminal.terminal.selection_text() {
-                            tracing::info!(len = selected.len(), "copying selection to clipboard");
+                            tracing::debug!(len = selected.len(), "copying selection to clipboard");
                             selected
                         } else {
                             let lines = terminal.terminal.grid_content();
                             let text = lines.join("\n");
-                            tracing::info!(len = text.len(), "copying entire terminal content to clipboard (no selection)");
+                            tracing::debug!(len = text.len(), "copying entire terminal content to clipboard (no selection)");
                             text
                         };
 
@@ -319,8 +305,6 @@ impl ColumnCompositor {
         keysym: Keysym,
         state: KeyState,
     ) -> bool {
-        tracing::debug!(?modifiers, ?keysym, ?state, "checking compositor binding");
-
         // Use the regular binding handler first
         if self.handle_compositor_binding(modifiers, keysym, state) {
             return true;
@@ -331,14 +315,11 @@ impl ColumnCompositor {
             return false;
         }
 
-        tracing::debug!(logo = modifiers.logo, ctrl = modifiers.ctrl, shift = modifiers.shift,
-                        "checking modifiers for spawn");
-
         // Super+Return or Super+T: Signal to spawn new terminal
         if modifiers.logo {
             match keysym {
                 Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::info!("spawn terminal binding triggered (Super)");
+                    tracing::debug!("spawn terminal binding triggered (Super)");
                     self.spawn_terminal_requested = true;
                     return true;
                 }
@@ -351,18 +332,18 @@ impl ColumnCompositor {
         if modifiers.ctrl && modifiers.shift {
             match keysym {
                 Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::info!("spawn terminal binding triggered (Ctrl+Shift)");
+                    tracing::debug!("spawn terminal binding triggered (Ctrl+Shift)");
                     self.spawn_terminal_requested = true;
                     return true;
                 }
                 // Focus switching: Ctrl+Shift+J/K or Ctrl+Shift+Down/Up
                 Keysym::j | Keysym::J | Keysym::Down => {
-                    tracing::info!("focus next terminal");
+                    tracing::debug!("focus next terminal");
                     self.focus_change_requested = 1;
                     return true;
                 }
                 Keysym::k | Keysym::K | Keysym::Up => {
-                    tracing::info!("focus prev terminal");
+                    tracing::debug!("focus prev terminal");
                     self.focus_change_requested = -1;
                     return true;
                 }
@@ -377,12 +358,12 @@ impl ColumnCompositor {
                 }
                 // Clipboard: Ctrl+Shift+V (paste) / Ctrl+Shift+C (copy)
                 Keysym::v | Keysym::V => {
-                    tracing::info!("paste from clipboard requested");
+                    tracing::debug!("paste from clipboard requested");
                     self.pending_paste = true;
                     return true;
                 }
                 Keysym::c | Keysym::C => {
-                    tracing::info!("copy to clipboard requested");
+                    tracing::debug!("copy to clipboard requested");
                     self.pending_copy = true;
                     return true;
                 }
@@ -425,22 +406,22 @@ impl ColumnCompositor {
         if modifiers.ctrl && modifiers.shift {
             match keysym {
                 Keysym::q | Keysym::Q => {
-                    tracing::info!("quit requested (Ctrl+Shift+Q)");
+                    tracing::debug!("quit requested (Ctrl+Shift+Q)");
                     self.running = false;
                     return true;
                 }
                 Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::info!("spawn terminal binding triggered (Ctrl+Shift)");
+                    tracing::debug!("spawn terminal binding triggered (Ctrl+Shift)");
                     self.spawn_terminal_requested = true;
                     return true;
                 }
                 Keysym::j | Keysym::J | Keysym::Down => {
-                    tracing::info!("focus next (Ctrl+Shift)");
+                    tracing::debug!("focus next (Ctrl+Shift)");
                     self.focus_change_requested = 1;
                     return true;
                 }
                 Keysym::k | Keysym::K | Keysym::Up => {
-                    tracing::info!("focus prev (Ctrl+Shift)");
+                    tracing::debug!("focus prev (Ctrl+Shift)");
                     self.focus_change_requested = -1;
                     return true;
                 }
@@ -452,12 +433,12 @@ impl ColumnCompositor {
         if modifiers.logo {
             match keysym {
                 Keysym::q | Keysym::Q => {
-                    tracing::info!("quit requested (Super+Q)");
+                    tracing::debug!("quit requested (Super+Q)");
                     self.running = false;
                     return true;
                 }
                 Keysym::Return | Keysym::t | Keysym::T => {
-                    tracing::info!("spawn terminal binding triggered (Super)");
+                    tracing::debug!("spawn terminal binding triggered (Super)");
                     self.spawn_terminal_requested = true;
                     return true;
                 }
@@ -603,12 +584,6 @@ impl ColumnCompositor {
 
         // Handle resize drag if active
         if let Some(drag) = &self.resizing {
-            tracing::info!(
-                cell_index = drag.cell_index,
-                screen_y = screen_y.value(),
-                start_y = drag.start_screen_y,
-                "RESIZE DRAG: processing pointer motion"
-            );
             let cell_index = drag.cell_index;
             let delta = screen_y.value() as i32 - drag.start_screen_y;
             let new_height = (drag.start_height + delta).max(MIN_CELL_HEIGHT);
@@ -616,21 +591,14 @@ impl ColumnCompositor {
             // Get the cell type to determine how to resize
             let cell_type = self.layout_nodes.get(cell_index).and_then(|node| {
                 match &node.cell {
-                    ColumnCell::Terminal(id) => {
-                        tracing::info!(cell_index, terminal_id = id.0, "RESIZE DRAG: cell is Terminal");
-                        Some(*id)
-                    }
-                    ColumnCell::External(_) => {
-                        tracing::info!(cell_index, "RESIZE DRAG: cell is External, calling request_resize");
-                        None
-                    }
+                    ColumnCell::Terminal(id) => Some(*id),
+                    ColumnCell::External(_) => None,
                 }
             });
 
             match cell_type {
                 Some(id) => {
                     // Terminal
-                    tracing::info!(id = id.0, new_height, "RESIZE DRAG: resizing terminal");
                     let cell_height = terminals.cell_height;
                     if let Some(terminal) = terminals.get_mut(id) {
                         terminal.resize_to_height(new_height as u32, cell_height);
@@ -642,7 +610,6 @@ impl ColumnCompositor {
                 }
                 None => {
                     // External window - request resize through the state
-                    tracing::info!(cell_index, new_height, "RESIZE DRAG: calling request_resize for external");
                     self.request_resize(cell_index, new_height as u32);
                     // Update cached height
                     if let Some(node) = self.layout_nodes.get_mut(cell_index) {
@@ -720,14 +687,12 @@ impl ColumnCompositor {
         if button == BTN_LEFT && state == ButtonState::Released {
             // End resize drag
             if self.resizing.is_some() {
-                tracing::info!("resize drag ended");
                 self.resizing = None;
                 return; // Don't process further
             }
 
             // End selection drag (selection remains for copying)
             if self.selecting.is_some() {
-                tracing::info!("selection drag ended");
                 self.selecting = None;
             }
         }
@@ -743,25 +708,11 @@ impl ColumnCompositor {
             let render_y = screen_y.to_render(self.output_size.h);
             let render_location: Point<f64, Logical> = Point::from((screen_location.x, render_y.value()));
 
-            // Log detailed position info for debugging
-            tracing::debug!(
-                screen_x = screen_location.x,
-                screen_y = screen_location.y,
-                render_y = render_y.value(),
-                "click pressed"
-            );
-
             // Check for resize handle before normal cell hit detection
             if button == BTN_LEFT {
                 if let Some(cell_index) = self.find_resize_handle_at(screen_location.y as i32) {
                     // Start resize drag
                     let start_height = self.get_cell_height(cell_index).unwrap_or(100);
-                    tracing::info!(
-                        cell_index,
-                        start_height,
-                        screen_y = screen_location.y,
-                        "starting resize drag"
-                    );
                     self.resizing = Some(ResizeDrag {
                         cell_index,
                         start_screen_y: screen_location.y as i32,
@@ -841,16 +792,10 @@ impl ColumnCompositor {
                         };
 
                         if on_close_button {
-                            tracing::info!(index, "close button clicked, sending close");
+                            tracing::debug!(index, "close button clicked, sending close");
                             surface.send_close();
                             return; // Don't process further
                         }
-
-                        tracing::info!(
-                            index,
-                            render_y = render_location.y,
-                            "handle_pointer_button: hit external window"
-                        );
 
                         // Update keyboard focus (handles both Wayland and X11)
                         self.update_keyboard_focus_for_focused_cell();
@@ -871,7 +816,7 @@ impl ColumnCompositor {
                         };
 
                         if on_close_button {
-                            tracing::info!(index, terminal_id = ?id, "close button clicked on terminal, removing");
+                            tracing::debug!(index, terminal_id = ?id, "close button clicked on terminal, removing");
                             // Remove the terminal from the layout
                             self.layout_nodes.remove(index);
                             // Remove from terminal manager
@@ -882,13 +827,6 @@ impl ColumnCompositor {
                             self.update_focus_after_removal(index);
                             return; // Don't process further
                         }
-
-                        tracing::info!(
-                            index,
-                            terminal_id = ?id,
-                            render_y = render_location.y,
-                            "handle_pointer_button: hit terminal"
-                        );
 
                         if let Some(keyboard) = self.seat.get_keyboard() {
                             keyboard.set_focus(self, None, serial);
