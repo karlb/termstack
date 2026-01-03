@@ -50,11 +50,16 @@ sudo apt install \
 ```
 
 **Runtime dependencies for X11 support** (optional but recommended):
+
 ```bash
-# Quick install - run the setup script
+# Quick install - run the setup script (handles everything automatically)
 ./install-deps.sh
 
-# Or manually install xwayland-satellite from GitHub
+# Or manually install xwayland-satellite:
+# 1. Install system libraries
+sudo apt install libxcb-cursor-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+# 2. Install xwayland-satellite from GitHub
 cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland-satellite
 ```
 
