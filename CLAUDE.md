@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Installation
+
+```bash
+# Install dependencies (including xwayland-satellite for X11 support)
+./install-deps.sh
+
+# Or manually:
+cargo install xwayland-satellite
+```
+
 ## Development Commands
 
 ```bash

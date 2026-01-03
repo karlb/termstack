@@ -35,18 +35,9 @@ column-compositor/
 
 ## Building
 
-```bash
-# Build all binaries
-cargo build --release
-
-# Or build specific binary
-cargo build --release --bin column-compositor
-cargo build --release --bin column-term
-```
-
 ### Dependencies
 
-On Debian/Ubuntu:
+**System packages** (Debian/Ubuntu):
 ```bash
 sudo apt install \
     libwayland-dev \
@@ -56,6 +47,28 @@ sudo apt install \
     libgbm-dev \
     libdrm-dev \
     libseat-dev
+```
+
+**Runtime dependencies for X11 support** (optional but recommended):
+```bash
+# Quick install - run the setup script
+./install-deps.sh
+
+# Or manually install xwayland-satellite
+cargo install xwayland-satellite
+```
+
+> **Note**: xwayland-satellite is required for X11 application support (e.g., mupdf, xeyes). The compositor will work without it in Wayland-only mode.
+
+### Build
+
+```bash
+# Build all binaries
+cargo build --release
+
+# Or build specific binary
+cargo build --release --bin column-compositor
+cargo build --release --bin column-term
 ```
 
 ## Running
