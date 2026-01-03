@@ -54,8 +54,8 @@ sudo apt install \
 # Quick install - run the setup script
 ./install-deps.sh
 
-# Or manually install xwayland-satellite
-cargo install xwayland-satellite
+# Or manually install xwayland-satellite from GitHub
+cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland-satellite
 ```
 
 > **Note**: xwayland-satellite is required for X11 application support (e.g., mupdf, xeyes). The compositor will work without it in Wayland-only mode.

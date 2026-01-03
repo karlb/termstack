@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies (including xwayland-satellite for X11 support)
 ./install-deps.sh
 
-# Or manually:
-cargo install xwayland-satellite
+# Or manually install from GitHub:
+cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland-satellite
 ```
 
 ## Development Commands

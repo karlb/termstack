@@ -5,8 +5,8 @@ echo "Installing column-compositor dependencies..."
 
 # Check if xwayland-satellite is installed
 if ! command -v xwayland-satellite &> /dev/null; then
-    echo "xwayland-satellite not found, installing..."
-    cargo install xwayland-satellite
+    echo "xwayland-satellite not found, installing from GitHub..."
+    cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland-satellite
     echo "✓ xwayland-satellite installed"
 else
     echo "✓ xwayland-satellite already installed"
