@@ -825,6 +825,13 @@ impl ColumnCompositor {
             return;
         };
 
+        // Skip processing commits if we're actively resizing this window
+        // (commits during drag have the old size and would overwrite our visual updates)
+        if self.resizing.as_ref().map(|d| d.cell_index) == Some(index) {
+            tracing::debug!(index, "skipping commit during active resize drag");
+            return;
+        }
+
         // Check if this is a CSD app (before getting mutable borrow)
         let should_mark_csd = {
             let Some(node) = self.layout_nodes.get(index) else {
@@ -890,7 +897,7 @@ impl ColumnCompositor {
                     if committed_cell_height == *requested_height =>
                 {
                     entry.state = WindowState::Active { height: committed_cell_height };
-                    tracing::debug!(
+                    tracing::info!(
                         index,
                         cell_height = committed_cell_height,
                         surface_height = committed_surface_height,
@@ -899,11 +906,23 @@ impl ColumnCompositor {
                     self.external_window_resized = Some((index, committed_cell_height as i32));
                     self.recalculate_layout();
                 }
+                WindowState::PendingResize { requested_height, current_height, .. } => {
+                    // Resize pending but committed height doesn't match - log mismatch
+                    tracing::warn!(
+                        index,
+                        committed_cell_height,
+                        committed_surface_height,
+                        requested_height,
+                        current_height,
+                        uses_csd = entry.uses_csd,
+                        "resize mismatch - committed height != requested"
+                    );
+                }
                 WindowState::AwaitingCommit { target_height, .. }
                     if committed_cell_height == *target_height =>
                 {
                     entry.state = WindowState::Active { height: committed_cell_height };
-                    tracing::debug!(
+                    tracing::info!(
                         index,
                         cell_height = committed_cell_height,
                         surface_height = committed_surface_height,
@@ -913,11 +932,13 @@ impl ColumnCompositor {
                     self.recalculate_layout();
                 }
                 WindowState::Active { height } if committed_cell_height != *height => {
+                    let old_height = *height;
                     entry.state = WindowState::Active { height: committed_cell_height };
-                    tracing::debug!(
+                    tracing::info!(
                         index,
                         cell_height = committed_cell_height,
                         surface_height = committed_surface_height,
+                        old_height,
                         "external window size changed"
                     );
                     self.external_window_resized = Some((index, committed_cell_height as i32));

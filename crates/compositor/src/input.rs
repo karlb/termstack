@@ -9,7 +9,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
-use crate::coords::ScreenY;
+use crate::coords::{RenderY, ScreenY};
 use crate::render::FOCUS_INDICATOR_WIDTH;
 use crate::state::{ColumnCell, ColumnCompositor, ResizeDrag, SurfaceKind, MIN_CELL_HEIGHT};
 use crate::terminal_manager::TerminalManager;
@@ -544,15 +544,19 @@ impl ColumnCompositor {
                 None => {
                     // External window - don't send resize during drag, only update visual height
                     // Final resize will be sent on button release with force=true
-                    tracing::debug!(
-                        cell_index,
-                        new_height,
-                        "EXTERNAL WINDOW RESIZE: updating visual height (no configure during drag)"
-                    );
+                    let before_height = self.layout_nodes.get(cell_index).map(|n| n.height);
                     // Update cached height for visual feedback
                     if let Some(node) = self.layout_nodes.get_mut(cell_index) {
                         node.height = new_height;
                     }
+                    let after_height = self.layout_nodes.get(cell_index).map(|n| n.height);
+                    tracing::info!(
+                        cell_index,
+                        new_height,
+                        before_height,
+                        after_height,
+                        "EXTERNAL WINDOW RESIZE: updated visual height"
+                    );
                 }
             }
             self.recalculate_layout();
@@ -629,9 +633,17 @@ impl ColumnCompositor {
                 let final_height = self.layout_nodes.get(drag.cell_index)
                     .map(|n| n.height as u32)
                     .unwrap_or(0);
+                tracing::info!(
+                    cell_index = drag.cell_index,
+                    final_height,
+                    node_count = self.layout_nodes.len(),
+                    "RESIZE DRAG ENDED"
+                );
                 if final_height > 0 {
                     // Send with force=true to bypass throttle
                     self.request_resize(drag.cell_index, final_height, true);
+                } else {
+                    tracing::warn!(cell_index = drag.cell_index, "final_height is 0, not calling request_resize");
                 }
                 return; // Don't process further
             }
@@ -644,31 +656,37 @@ impl ColumnCompositor {
 
         // Focus window on click
         if state == ButtonState::Pressed {
-            // Pointer location from Smithay is in screen coordinates (Y=0 at top)
-            // because that's what we send to pointer.motion()
-            let screen_location = pointer.current_location();
-            let screen_y = ScreenY::new(screen_location.y);
+            // Use self.pointer_position which is updated on every motion event
+            // pointer.current_location() can be stale if no motion happened since last button press
+            let screen_x = self.pointer_position.x;
+            let render_y = self.pointer_position.y;
 
-            // Convert to render coordinates (Y=0 at bottom) for hit detection
-            let render_y = screen_y.to_render(self.output_size.h);
-            let render_location: Point<f64, Logical> = Point::from((screen_location.x, render_y.value()));
+            // Convert render Y back to screen Y for resize handle detection
+            let screen_y = RenderY::new(render_y).to_screen(self.output_size.h);
+            let render_location: Point<f64, Logical> = Point::from((screen_x, render_y));
 
             // Check for resize handle before normal cell hit detection
             if button == BTN_LEFT {
-                if let Some(cell_index) = self.find_resize_handle_at(screen_location.y as i32) {
+                if let Some(cell_index) = self.find_resize_handle_at(screen_y.value() as i32) {
                     // Start resize drag
                     let start_height = self.get_cell_height(cell_index).unwrap_or(100);
                     tracing::info!(
                         cell_index,
-                        screen_y = screen_location.y,
+                        screen_y = screen_y.value(),
                         start_height,
                         "RESIZE DRAG STARTED"
                     );
                     self.resizing = Some(ResizeDrag {
                         cell_index,
-                        start_screen_y: screen_location.y as i32,
+                        start_screen_y: screen_y.value() as i32,
                         start_height,
                     });
+                    // Clear any pending external_window_resized for this cell
+                    // to prevent stale resize events from overwriting our drag updates
+                    if self.external_window_resized.as_ref().map(|(idx, _)| *idx) == Some(cell_index) {
+                        self.external_window_resized = None;
+                        tracing::debug!(cell_index, "cleared pending external_window_resized on drag start");
+                    }
                     return; // Don't process as normal click
                 }
             }
@@ -817,14 +835,14 @@ impl ColumnCompositor {
                     } else {
                         tracing::debug!(
                             render_y = render_location.y,
-                            screen_y = screen_location.y,
+                            screen_y = screen_y.value(),
                             "handle_pointer_button: click not on terminal or window"
                         );
                     }
                 } else {
                     tracing::debug!(
                         render_y = render_location.y,
-                        screen_y = screen_location.y,
+                        screen_y = screen_y.value(),
                         "handle_pointer_button: click not on terminal or window"
                     );
                 }

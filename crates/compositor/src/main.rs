@@ -868,33 +868,46 @@ fn handle_external_window_events(
 
     // Handle external window resize
     if let Some((resized_idx, new_height)) = compositor.external_window_resized.take() {
-        tracing::info!(
-            resized_idx,
-            new_height,
-            "handling external window resize"
-        );
-
-        // Check if focused cell bottom is visible before resize
-        let should_autoscroll = if let Some(focused_idx) = compositor.focused_index() {
-            focused_idx >= resized_idx && is_cell_bottom_visible(compositor, focused_idx)
+        // Skip processing if this cell is currently being resized by the user
+        // (don't let stale commits overwrite the drag updates)
+        let is_resizing = compositor.resizing.as_ref().map(|d| d.cell_index);
+        if is_resizing == Some(resized_idx) {
+            tracing::info!(
+                resized_idx,
+                new_height,
+                is_resizing = ?is_resizing,
+                "SKIPPING external_window_resized processing during active resize drag"
+            );
         } else {
-            false
-        };
+            tracing::info!(
+                resized_idx,
+                new_height,
+                is_resizing = ?is_resizing,
+                "handling external window resize"
+            );
 
-        if let Some(node) = compositor.layout_nodes.get_mut(resized_idx) {
-            node.height = new_height;
-        }
+            // Check if focused cell bottom is visible before resize
+            let should_autoscroll = if let Some(focused_idx) = compositor.focused_index() {
+                focused_idx >= resized_idx && is_cell_bottom_visible(compositor, focused_idx)
+            } else {
+                false
+            };
 
-        // Only autoscroll if focused cell is at/below resized window AND bottom was visible
-        if should_autoscroll {
-            if let Some(focused_idx) = compositor.focused_index() {
-                if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
-                    tracing::info!(
-                        resized_idx,
-                        focused_idx,
-                        new_scroll,
-                        "scrolled to show focused cell after external window resize (bottom was visible)"
-                    );
+            if let Some(node) = compositor.layout_nodes.get_mut(resized_idx) {
+                node.height = new_height;
+            }
+
+            // Only autoscroll if focused cell is at/below resized window AND bottom was visible
+            if should_autoscroll {
+                if let Some(focused_idx) = compositor.focused_index() {
+                    if let Some(new_scroll) = compositor.scroll_to_show_cell_bottom(focused_idx) {
+                        tracing::info!(
+                            resized_idx,
+                            focused_idx,
+                            new_scroll,
+                            "scrolled to show focused cell after external window resize (bottom was visible)"
+                        );
+                    }
                 }
             }
         }
@@ -1260,12 +1273,20 @@ fn is_cell_bottom_visible(compositor: &ColumnCompositor, cell_idx: usize) -> boo
 /// Check if heights changed significantly and auto-scroll if needed.
 ///
 /// This updates the layout heights cache and adjusts scroll to keep the focused
-/// cell visible when content changes size. Skips auto-scroll during manual resize
-/// to avoid disrupting user's drag operation.
+/// cell visible when content changes size. Skips height updates entirely during
+/// manual resize to avoid overwriting the user's drag updates.
 fn check_and_handle_height_changes(
     compositor: &mut ColumnCompositor,
     actual_heights: Vec<i32>,
 ) {
+    // Skip all height updates during active resize drag
+    // (the resize handler updates heights, and we don't want actual rendered heights
+    // to overwrite the user's drag updates)
+    if compositor.resizing.is_some() {
+        tracing::debug!("skipping height update during active resize drag");
+        return;
+    }
+
     let current_heights: Vec<i32> = compositor
         .layout_nodes
         .iter()
@@ -1280,7 +1301,7 @@ fn check_and_handle_height_changes(
 
     // Before updating heights, check if focused cell bottom is visible
     // This prevents autoscroll when user has scrolled up to view earlier content
-    let should_autoscroll = if heights_changed && compositor.resizing.is_none() {
+    let should_autoscroll = if heights_changed {
         if let Some(focused_idx) = compositor.focused_index() {
             is_cell_bottom_visible(compositor, focused_idx)
         } else {
