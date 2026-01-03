@@ -9,6 +9,7 @@ use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_text_input_manager;
+use smithay::delegate_viewporter;
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::reexports::wayland_server::Resource;
@@ -93,6 +94,7 @@ pub struct ColumnCompositor {
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
     pub text_input_state: TextInputManagerState,
+    pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
 
     /// Desktop space for managing external windows
     pub space: Space<Window>,
@@ -386,6 +388,7 @@ impl ColumnCompositor {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let text_input_state = TextInputManagerState::new::<Self>(&display_handle);
+        let viewporter_state = smithay::wayland::viewporter::ViewporterState::new::<Self>(&display_handle);
 
         let mut seat = seat_state.new_wl_seat(&display_handle, "seat0");
 
@@ -403,6 +406,7 @@ impl ColumnCompositor {
             seat_state,
             data_device_state,
             text_input_state,
+            viewporter_state,
             space: Space::default(),
             popup_manager: PopupManager::default(),
             layout_nodes: Vec::new(),
@@ -1734,6 +1738,7 @@ delegate_seat!(ColumnCompositor);
 delegate_data_device!(ColumnCompositor);
 delegate_output!(ColumnCompositor);
 delegate_text_input_manager!(ColumnCompositor);
+delegate_viewporter!(ColumnCompositor);
 // XWayland shell support will be re-added after switching to xwayland-satellite
 // delegate_xwayland_shell!(ColumnCompositor);
 
