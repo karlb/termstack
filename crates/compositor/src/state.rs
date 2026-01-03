@@ -45,13 +45,8 @@ use smithay::delegate_xwayland_shell;
 use smithay::xwayland::{X11Surface, X11Wm, XWayland};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 
-use std::sync::Arc;
 use std::os::unix::net::UnixStream;
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::ConnectionExt as XprotoConnectionExt;
-use x11rb::rust_connection::RustConnection;
-use x11rb::x11_utils::Serialize;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use std::collections::HashMap;
 use crate::ipc::{GuiSpawnRequest, ResizeMode, SpawnRequest};
