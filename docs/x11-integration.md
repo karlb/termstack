@@ -1,6 +1,40 @@
 # X11/XWayland Integration Notes
 
-This document captures hard-won knowledge about X11 window integration in this Smithay-based Wayland compositor.
+---
+
+## Current: xwayland-satellite (2026-01-03+)
+
+**As of 2026-01-03, we use [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) for X11 support.**
+
+X11 windows are presented as normal Wayland `ToplevelSurface` windows - all the issues documented below are historical and no longer apply.
+
+**Current Architecture:**
+```
+X11 App <-> XWayland <-> xwayland-satellite <-> Compositor
+                         (acts as WM + Wayland client)
+```
+
+**Why we switched:**
+- Smithay's X11Wm integration is fundamentally incomplete for compositor-initiated resizes (see Issue 8 below)
+- X11 windows now "just work" through the Wayland protocol
+- Removed ~750 lines of X11-specific workaround code
+- Production-tested solution (used by niri and other compositors)
+
+**Implementation:** See `crates/compositor/src/main.rs:initialize_xwayland()` for:
+- XWayland spawn with on-disk socket
+- xwayland-satellite lifecycle management
+- Auto-restart on crash
+- Soft dependency handling (warns if missing, continues in Wayland-only mode)
+
+**Testing:** See `crates/test-harness/tests/x11_integration.rs` for integration tests.
+
+---
+
+## Historical: Smithay X11Wm Integration (Removed 2026-01-03)
+
+**The sections below document our previous Smithay X11Wm integration and the issues we encountered.**
+
+This document captures hard-won knowledge about X11 window integration using Smithay's X11Wm.
 
 ## Architecture Overview
 
@@ -542,10 +576,12 @@ With satellite:     X11 App <-> XWayland <-> xwayland-satellite <-> Compositor
 - [Smithay XwmHandler docs](https://smithay.github.io/smithay/smithay/xwayland/xwm/trait.XwmHandler.html) - Current (incomplete) approach
 - [Smithay X11Wm PR](https://github.com/Smithay/smithay/pull/570) - Original implementation (noted as basic, works for "simple clients")
 
-## Future Improvements
+## Historical Future Improvements
 
-1. **Switch to xwayland-satellite** for proper X11 support (recommended)
-2. Implement frame synchronization protocol for smoother resizes (if staying with Smithay X11Wm)
-3. Consider using `_XWAYLAND_ALLOW_COMMITS` to gate buffer updates
-4. Investigate why some X11 apps show blank initially (timing issue?)
-5. Consider unifying height storage to always use one type (visual or content) and convert at boundaries
+These were planned improvements for Smithay X11Wm integration. **We've now switched to xwayland-satellite**, which eliminates the need for most of these workarounds:
+
+1. ~~**Switch to xwayland-satellite** for proper X11 support (recommended)~~ **✅ IMPLEMENTED (2026-01-03)**
+2. ~~Implement frame synchronization protocol for smoother resizes~~ **No longer needed** - xwayland-satellite handles this
+3. ~~Consider using `_XWAYLAND_ALLOW_COMMITS` to gate buffer updates~~ **No longer needed**
+4. ~~Investigate why some X11 apps show blank initially~~ **No longer needed** - Wayland protocol handles timing
+5. ~~Consider unifying height storage to always use one type~~ **No longer needed** - unified to visual height only

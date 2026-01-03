@@ -37,7 +37,6 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
   - `cursor.rs`: Cursor rendering and management
   - `title_bar.rs`: Title bar rendering using fontdue
   - `ipc.rs`: IPC protocol for column-term communication
-  - `xwayland.rs`: XWayland integration for X11 clients
   - `config.rs`: Configuration file handling
 
 - **column-term**: CLI tool for spawning terminals in the compositor
@@ -91,6 +90,36 @@ The terminal has two row counts that must not be confused:
 
 The grid stays large to hold all content without scrolling. Only PTY size changes when the terminal is resized. TUI apps query PTY size via `tcgetwinsize`.
 
+## XWayland Integration (via xwayland-satellite)
+
+X11 application support uses [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite), which acts as an X11 window manager and presents X11 windows as normal Wayland `ToplevelSurface` windows.
+
+**Requirements:**
+- xwayland-satellite >= 0.7 (optional soft dependency)
+- Install: `cargo install xwayland-satellite` or via package manager
+
+**Architecture:**
+```
+X11 App <-> XWayland <-> xwayland-satellite <-> Compositor
+                         (acts as WM + Wayland client)
+```
+
+X11 windows appear as regular `ToplevelSurface` windows - no special handling needed. The compositor automatically spawns xwayland-satellite when XWayland becomes ready, and will auto-restart it if it crashes.
+
+If xwayland-satellite is not installed, the compositor continues in Wayland-only mode with a warning.
+
+**Implementation:** See `crates/compositor/src/main.rs:initialize_xwayland()` for lifecycle management and auto-restart logic.
+
+**Testing:**
+```bash
+# Integration tests (requires xwayland-satellite installed)
+cargo test -p test-harness --features gui-tests --test x11_integration
+
+# Manual testing with X11 apps
+DISPLAY=:2 xeyes &
+DISPLAY=:2 xclock &
+```
+
 ## Testing Patterns
 
 The test harness uses a mock `TestCompositor` that simulates the real compositor's coordinate calculations. Tests should:
@@ -101,4 +130,4 @@ The test harness uses a mock `TestCompositor` that simulates the real compositor
 
 ## Additional Documentation
 
-- **[X11/XWayland Integration](docs/x11-integration.md)**: Detailed notes on X11 window handling, including resize issues, Y-flip rendering, and Expose event workarounds.
+- **[X11/XWayland Integration](docs/x11-integration.md)**: Historical documentation of Smithay X11Wm integration (pre-xwayland-satellite migration). Includes detailed notes on resize issues, coordinate transforms, and protocol workarounds. Now using xwayland-satellite instead (see XWayland Integration section above).
