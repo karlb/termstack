@@ -1830,10 +1830,43 @@ fn initialize_xwayland(
 
 /// Spawn xwayland-satellite process to act as X11 window manager
 fn spawn_xwayland_satellite(display_number: u32) -> std::io::Result<std::process::Child> {
-    std::process::Command::new("xwayland-satellite")
+    // Try to find xwayland-satellite in common locations
+    let xwayland_satellite_path = find_xwayland_satellite()
+        .unwrap_or_else(|| "xwayland-satellite".to_string());
+
+    std::process::Command::new(xwayland_satellite_path)
         .arg(format!(":{}", display_number))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped()) // Capture stderr for logging
         .spawn()
+}
+
+/// Find xwayland-satellite binary in common installation locations
+fn find_xwayland_satellite() -> Option<String> {
+    // Check cargo install location first (most common for development)
+    if let Ok(home) = std::env::var("HOME") {
+        let cargo_bin = format!("{}/.cargo/bin/xwayland-satellite", home);
+        if std::path::Path::new(&cargo_bin).exists() {
+            tracing::debug!(path = %cargo_bin, "found xwayland-satellite in ~/.cargo/bin");
+            return Some(cargo_bin);
+        }
+    }
+
+    // Check system locations
+    let system_paths = [
+        "/usr/local/bin/xwayland-satellite",
+        "/usr/bin/xwayland-satellite",
+    ];
+
+    for path in &system_paths {
+        if std::path::Path::new(path).exists() {
+            tracing::debug!(path = %path, "found xwayland-satellite in system path");
+            return Some(path.to_string());
+        }
+    }
+
+    // Fall back to relying on PATH (will fail if not in PATH, but worth trying)
+    tracing::debug!("xwayland-satellite not found in known locations, trying PATH");
+    None
 }
