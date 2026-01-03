@@ -42,7 +42,6 @@ pub enum CellRenderData<'a> {
         height: i32,
         elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
         title_bar_texture: Option<&'a GlesTexture>,
-        is_x11: bool,
         uses_csd: bool,
     },
 }
@@ -187,78 +186,37 @@ pub fn collect_cell_data(
                 // Use render_elements_from_surface_tree directly on the surface
                 // instead of window.render_elements() which includes popups when PopupManager is used.
                 // This ensures popup surfaces don't affect the window's height calculation.
+                let wl_surface = entry.surface.wl_surface();
                 let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    if let Some(wl_surface) = entry.surface.wl_surface() {
-                        let elems = render_elements_from_surface_tree(
-                            renderer,
-                            &wl_surface,
-                            Point::from((0i32, 0i32)),
-                            scale,
-                            1.0,
-                            Kind::Unspecified,
-                        );
+                    render_elements_from_surface_tree(
+                        renderer,
+                        wl_surface,
+                        Point::from((0i32, 0i32)),
+                        scale,
+                        1.0,
+                        Kind::Unspecified,
+                    );
 
-                        // Debug: Log actual element sizes for X11 windows
-                        if matches!(entry.surface, crate::state::SurfaceKind::X11(_)) && !elems.is_empty() {
-                            let element_sizes: Vec<_> = elems.iter()
-                                .map(|e: &WaylandSurfaceRenderElement<GlesRenderer>| e.geometry(scale).size)
-                                .collect();
-                            tracing::debug!(
-                                ?element_sizes,
-                                configured_height = node.height,
-                                "X11 window element sizes vs configured size"
-                            );
-                        }
-
-                        elems
-                    } else {
-                        Vec::new()
-                    };
-
-                // For X11 windows: Use configured height (node.height).
-                // We send clear_area with exposures=true after configure() to trigger
-                // the X11 app to redraw at the new size. Simple apps like xeyes only
-                // redraw when they receive Expose events.
-                //
-                // For Wayland: Calculate from actual surface geometry.
+                // Calculate window height from actual surface geometry
                 // The configure/ack protocol ensures the surface matches configured size.
-                let window_height = match &entry.surface {
-                    crate::state::SurfaceKind::X11(_) => {
-                        // X11: Use configured height directly
-                        node.height
-                    }
-                    crate::state::SurfaceKind::Wayland(_) => {
-                        // Wayland: Calculate from actual surface geometry
-                        if elements.is_empty() {
-                            node.height
-                        } else {
-                            elements.iter()
-                                .map(|e: &WaylandSurfaceRenderElement<GlesRenderer>| {
-                                    let geo = e.geometry(scale);
-                                    geo.loc.y + geo.size.h
-                                })
-                                .max()
-                                .unwrap_or(node.height)
-                        }
-                    }
+                let window_height = if elements.is_empty() {
+                    node.height
+                } else {
+                    elements.iter()
+                        .map(|e: &WaylandSurfaceRenderElement<GlesRenderer>| {
+                            let geo = e.geometry(scale);
+                            geo.loc.y + geo.size.h
+                        })
+                        .max()
+                        .unwrap_or(node.height)
                 };
 
-                // For X11: node.height already includes title bar (set by configure_notify
-                // or add_x11_window), so use it directly.
-                // For Wayland: window_height is from surface elements (content only),
-                // so add title bar for SSD.
-                let actual_height = match &entry.surface {
-                    crate::state::SurfaceKind::X11(_) => {
-                        // X11: node.height is already the visual height
-                        node.height
-                    }
-                    crate::state::SurfaceKind::Wayland(_) => {
-                        if entry.uses_csd {
-                            window_height
-                        } else {
-                            window_height + TITLE_BAR_HEIGHT as i32
-                        }
-                    }
+                // window_height is from surface elements (content only),
+                // so add title bar for SSD windows.
+                let actual_height = if entry.uses_csd {
+                    window_height
+                } else {
+                    window_height + TITLE_BAR_HEIGHT as i32
                 };
 
                 heights.push(actual_height);
@@ -312,14 +270,12 @@ pub fn build_render_data<'a>(
             ColumnCell::External(entry) => {
                 let elements = std::mem::take(&mut external_elements[cell_idx]);
                 let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
-                let is_x11 = entry.surface.is_x11();
                 let uses_csd = entry.uses_csd;
                 render_data.push(CellRenderData::External {
                     y: render_y,
                     height,
                     elements,
                     title_bar_texture,
-                    is_x11,
                     uses_csd,
                 });
             }
@@ -472,7 +428,6 @@ pub fn render_external(
     _screen_size: Size<i32, Physical>,
     damage: Rectangle<i32, Physical>,
     scale: Scale<f64>,
-    is_x11: bool,
     uses_csd: bool,
 ) {
     // For SSD windows, title bar is at the top of the cell
@@ -498,57 +453,16 @@ pub fn render_external(
         let geo = element.geometry(scale);
         let src = element.src();
 
-        // Calculate dest Y position
-        // For X11 with SSD: Position content at TOP of content area (just below title bar)
-        // With Transform::Flipped180, texture top appears at dest.y + dest.height
-        // We want texture top at content_area_top = y + height - TITLE_BAR_HEIGHT
-        // So: dest.y = y + height - TITLE_BAR_HEIGHT - geo.size.h
-        let dest_y = if is_x11 && !uses_csd {
-            // X11 SSD: align content to top of content area (below our title bar)
-            y + height - TITLE_BAR_HEIGHT as i32 - geo.size.h
-        } else if is_x11 {
-            // X11 CSD: no title bar from us, align to cell top
-            y + height - geo.size.h
-        } else {
-            // Wayland: use element's natural position
-            geo.loc.y + y
-        };
+        // Calculate dest Y position using element's natural position
+        let dest_y = geo.loc.y + y;
 
         let dest = Rectangle::new(
             Point::from((geo.loc.x + FOCUS_INDICATOR_WIDTH, dest_y)),
             geo.size,
         );
 
-        if is_x11 {
-            // For X11 surfaces, we need to apply a flip transform to correct orientation.
-            // Access the texture directly and render with Transform::Flipped180.
-            match element.texture() {
-                WaylandSurfaceTexture::Texture(texture) => {
-                    // Convert source from f64 BufferCoords to the format render_texture_from_to expects
-                    let src_rect: Rectangle<f64, BufferCoords> = Rectangle::new(
-                        Point::from((src.loc.x, src.loc.y)),
-                        Size::from((src.size.w, src.size.h)),
-                    );
-                    frame.render_texture_from_to(
-                        texture,
-                        src_rect,
-                        dest,
-                        &[damage],
-                        &[],
-                        Transform::Flipped180,
-                        1.0,
-                        None,  // No custom shader program
-                        &[],   // No uniforms
-                    ).ok();
-                }
-                WaylandSurfaceTexture::SolidColor(color) => {
-                    frame.draw_solid(dest, &[damage], *color).ok();
-                }
-            }
-        } else {
-            // For Wayland surfaces, use element.draw() which respects buffer_transform
-            element.draw(frame, src, dest, &[damage], &[]).ok();
-        }
+        // Use element.draw() which respects buffer_transform
+        element.draw(frame, src, dest, &[damage], &[]).ok();
     }
 
     // Draw focus indicator on left side of cell (after content so it's visible)

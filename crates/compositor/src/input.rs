@@ -943,10 +943,8 @@ impl ColumnCompositor {
                 }
                 let window_render_top = output_height - content_y;
 
-                // Check popups for this window (only Wayland surfaces have popups)
-                let Some(wl_surface) = entry.surface.wl_surface() else {
-                    continue;
-                };
+                // Check popups for this window
+                let wl_surface = entry.surface.wl_surface();
                 for (popup_kind, popup_offset) in smithay::desktop::PopupManager::popups_for_surface(&wl_surface) {
                     let popup_surface = match &popup_kind {
                         smithay::desktop::PopupKind::Xdg(xdg_popup) => xdg_popup,

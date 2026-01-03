@@ -225,28 +225,18 @@ pub struct ColumnCompositor {
     /// App IDs that use client-side decorations (from config)
     pub csd_apps: Vec<String>,
 
-    // XWayland support
-    /// XWayland shell protocol state
+    // XWayland support (via xwayland-satellite)
+    /// XWayland shell protocol state (required for xwayland-satellite)
     pub xwayland_shell_state: Option<XWaylandShellState>,
 
-    /// X11 Window Manager (set when XWayland is ready)
-    pub x11_wm: Option<X11Wm>,
+    /// xwayland-satellite process handle (acts as X11 WM, presents X11 windows as Wayland)
+    pub xwayland_satellite: Option<std::process::Child>,
 
-    /// XWayland instance (kept alive for the compositor's lifetime)
-    pub xwayland: Option<XWayland>,
-
-    /// Override-redirect X11 windows (menus, tooltips) - rendered on top
-    pub override_redirect_windows: Vec<X11Surface>,
+    /// X11 display number (e.g., 0 for :0)
+    pub x11_display_number: Option<u32>,
 
     /// Flag to spawn initial terminal (set when XWayland is ready)
     pub spawn_initial_terminal: bool,
-
-    /// X11 connection to XWayland for sending Expose events (set when XWayland is ready)
-    /// Smithay's X11Wm doesn't expose clear_area, so we maintain our own connection.
-    pub x11_conn: Option<Arc<RustConnection>>,
-
-    /// Last time we sent an X11 configure request (for throttling during resize drag)
-    pub last_x11_configure: Option<Instant>,
 }
 
 /// A node in the column layout containing the cell and its cached height.
@@ -279,37 +269,9 @@ pub struct LayoutNode {
 }
 
 /// Surface type wrapper for Wayland vs X11 surfaces
-pub enum SurfaceKind {
-    /// Native Wayland XDG toplevel
-    Wayland(ToplevelSurface),
-    /// X11 window via XWayland
-    X11(X11Surface),
-}
-
-impl SurfaceKind {
-    /// Get the underlying wl_surface if available
-    pub fn wl_surface(&self) -> Option<WlSurface> {
-        match self {
-            SurfaceKind::Wayland(toplevel) => Some(toplevel.wl_surface().clone()),
-            SurfaceKind::X11(x11) => x11.wl_surface(),
-        }
-    }
-
-    /// Send close request to the surface
-    pub fn send_close(&self) {
-        match self {
-            SurfaceKind::Wayland(toplevel) => toplevel.send_close(),
-            SurfaceKind::X11(x11) => {
-                let _ = x11.close();
-            }
-        }
-    }
-
-    /// Check if this is an X11 surface
-    pub fn is_x11(&self) -> bool {
-        matches!(self, SurfaceKind::X11(_))
-    }
-}
+/// All external windows are now Wayland toplevels
+/// (xwayland-satellite converts X11 windows to Wayland for us)
+pub type SurfaceKind = ToplevelSurface;
 
 /// A window entry in our column
 pub struct WindowEntry {
@@ -490,12 +452,9 @@ impl ColumnCompositor {
             x11_resize_pending: None,
             csd_apps,
             xwayland_shell_state: None,
-            x11_wm: None,
-            xwayland: None,
-            override_redirect_windows: Vec::new(),
+            xwayland_satellite: None,
+            x11_display_number: None,
             spawn_initial_terminal: false,
-            x11_conn: None,
-            last_x11_configure: None,
         };
 
         (compositor, display)
@@ -587,7 +546,7 @@ impl ColumnCompositor {
         let initial_height = 200u32;
 
         let entry = WindowEntry {
-            surface: SurfaceKind::Wayland(toplevel),
+            surface: toplevel,
             window: window.clone(),
             state: WindowState::Active {
                 height: initial_height,
@@ -694,7 +653,7 @@ impl ColumnCompositor {
     /// If the window had an output terminal, it's added to pending_output_terminal_cleanup
     pub fn remove_window(&mut self, surface: &WlSurface) -> Option<TerminalId> {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
-            matches!(&node.cell, ColumnCell::External(entry) if entry.surface.wl_surface().as_ref() == Some(surface))
+            matches!(&node.cell, ColumnCell::External(entry) if entry.surface.wl_surface() == surface)
         }) {
             let (output_terminal, is_foreground_gui) = if let ColumnCell::External(entry) = &self.layout_nodes.remove(index).cell {
                 self.space.unmap_elem(&entry.window);
@@ -795,16 +754,7 @@ impl ColumnCompositor {
 
         let current = entry.state.current_height();
 
-        // For X11 SSD windows, entry.state stores content height, but new_height is visual height.
-        // Convert new_height to content height for comparison.
-        // For Wayland and X11 CSD, both are visual heights.
-        let new_height_for_comparison = if matches!(&entry.surface, SurfaceKind::X11(_)) && !entry.uses_csd {
-            new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
-        } else {
-            new_height
-        };
-
-        if current == new_height_for_comparison {
+        if current == new_height {
             tracing::trace!("request_resize: height unchanged ({})", current);
             return;
         }
@@ -813,196 +763,23 @@ impl ColumnCompositor {
             index,
             current_height = current,
             new_height,
-            new_height_for_comparison,
-            is_x11 = matches!(entry.surface, SurfaceKind::X11(_)),
             "request_resize called"
         );
 
         // Get output width
         let width = self.output_size.w as u32;
 
-        // Request the resize
-        match &entry.surface {
-            SurfaceKind::Wayland(toplevel) => {
-                toplevel.with_pending_state(|state| {
-                    state.size = Some(Size::from((width as i32, new_height as i32)));
-                });
-                toplevel.send_configure();
-            }
-            SurfaceKind::X11(x11) => {
-                // Throttle X11 configure requests to ~30fps to avoid flooding the app
-                // Skip throttle if force=true (used at end of resize drag)
-                if !force {
-                    const MIN_CONFIGURE_INTERVAL: Duration = Duration::from_millis(33);
-                    if let Some(last) = self.last_x11_configure {
-                        if last.elapsed() < MIN_CONFIGURE_INTERVAL {
-                            // Skip this configure, just update node.height for visual feedback
-                            return;
-                        }
-                    }
-                }
-                self.last_x11_configure = Some(Instant::now());
-
-                // For X11 SSD windows: new_height is visual (includes title bar),
-                // but X11 windows expect content height, so subtract title bar
-                let content_height = if entry.uses_csd {
-                    new_height
-                } else {
-                    new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
-                };
-                // Respect size hints (min/max size constraints)
-                let min_h = x11.min_size().map(|s| s.h as u32);
-                let max_h = x11.max_size().map(|s| s.h as u32);
-
-                // Check if window is reparented (has frame)
-                // mapped_window_id() returns Some(frame_id) if reparented
-                let frame_id = x11.mapped_window_id();
-
-                tracing::debug!(
-                    index,
-                    ?min_h,
-                    ?max_h,
-                    new_height,
-                    ?frame_id,
-                    "X11 window resize: sending configure"
-                );
-
-                let clamped_height = if let (Some(min), Some(max)) = (min_h, max_h) {
-                    if min == max {
-                        // Fixed size window - don't allow resize
-                        tracing::warn!(
-                            height = min,
-                            requested_height = content_height,
-                            "X11 window has FIXED SIZE (min == max), blocking resize"
-                        );
-                        return;
-                    }
-                    let clamped = content_height.clamp(min, max);
-                    if clamped != content_height {
-                        tracing::info!(
-                            requested = content_height,
-                            clamped,
-                            min,
-                            max,
-                            "X11 window resize clamped to size constraints"
-                        );
-                    }
-                    clamped
-                } else if let Some(min) = min_h {
-                    content_height.max(min)
-                } else if let Some(max) = max_h {
-                    content_height.min(max)
-                } else {
-                    content_height
-                };
-
-                // Use (0,0) for position - X11 windows in column layout are positioned via viewport
-                tracing::debug!(
-                    current_height = current,
-                    requested_visual_height = new_height,
-                    content_height,
-                    clamped_height,
-                    min_h,
-                    max_h,
-                    width,
-                    "sending X11 configure for resize"
-                );
-
-                // Diagnostic: Check window state before configure
-                let has_wl_surface = x11.wl_surface().is_some();
-                let is_mapped = x11.is_mapped();
-                let current_geo = x11.geometry();
-                let window_id = x11.window_id();
-                let mapped_window_id = x11.mapped_window_id();
-
-                tracing::info!(
-                    window_id,
-                    ?mapped_window_id,
-                    has_wl_surface,
-                    is_mapped,
-                    current_geo_w = current_geo.size.w,
-                    current_geo_h = current_geo.size.h,
-                    target_w = width,
-                    target_h = clamped_height,
-                    "X11 window state before resize"
-                );
-
-                // Try BOTH Smithay's configure AND x11rb direct configure
-                // First, try Smithay's configure
-                if let Err(e) = x11.configure(Rectangle::new(
-                    (0, 0).into(),
-                    (width as i32, clamped_height as i32).into(),
-                )) {
-                    tracing::warn!(?e, "Smithay configure failed");
-                }
-
-                // Also try x11rb directly to see if that makes a difference
-                if let Some(ref conn) = self.x11_conn {
-                    use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt as _};
-
-                    let aux = ConfigureWindowAux::new()
-                        .width(width)
-                        .height(clamped_height);
-
-                    if let Err(e) = conn.configure_window(window_id, &aux) {
-                        tracing::warn!(?e, "x11rb configure failed");
-                    } else {
-                        conn.flush().ok();
-                    }
-                }
-
-                // After configure, use ClearArea with exposures=true to trigger the X11 app to redraw.
-                // XWayland doesn't automatically send Expose events after resize, so simple X11 apps
-                // (like xeyes) won't redraw.
-                //
-                // ClearArea with exposures=true clears the window and generates Expose events,
-                // which is more reliable than manually sending Expose events.
-                //
-                // Note: This is a best-effort workaround. XWayland buffer resize is controlled by
-                // the X11 client. If the client doesn't respond to ConfigureNotify by creating a
-                // new pixmap, the buffer stays at the old size. See:
-                // https://blog.vladzahorodnii.com/2024/10/28/improving-xwayland-window-resizing/
-                if let Some(ref conn) = self.x11_conn {
-                    use x11rb::protocol::xproto::ConnectionExt as _;
-                    let window_id = x11.window_id();
-
-                    // Use ClearArea with exposures=true to generate Expose events
-                    // This clears the entire window and triggers a redraw
-                    if let Err(e) = conn.clear_area(
-                        true,  // exposures: generate Expose events
-                        window_id,
-                        0,     // x
-                        0,     // y
-                        width as u16,
-                        clamped_height as u16,
-                    ) {
-                        tracing::debug!(?e, "failed to send ClearArea");
-                    } else {
-                        if let Err(e) = conn.flush() {
-                            tracing::debug!(?e, "failed to flush X11 connection");
-                        }
-                    }
-                }
-            }
-        }
+        // Request the resize (all external windows are Wayland toplevels via xwayland-satellite)
+        entry.surface.with_pending_state(|state| {
+            state.size = Some(Size::from((width as i32, new_height as i32)));
+        });
+        entry.surface.send_configure();
 
         let serial = SERIAL_COUNTER.next_serial().into();
 
-        // For X11 SSD windows, we send content_height (without title bar) to the X11 window.
-        // We must store the ACTUAL height we sent, not the visual height, so configure_notify
-        // matching works correctly.
-        // For Wayland and X11 CSD, requested_height equals new_height.
-        let actual_requested_height = if matches!(&entry.surface, SurfaceKind::X11(_)) && !entry.uses_csd {
-            // X11 SSD: we sent content_height = new_height - TITLE_BAR_HEIGHT
-            new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
-        } else {
-            // Wayland or X11 CSD: we sent new_height as-is
-            new_height
-        };
-
         entry.state = WindowState::PendingResize {
             current_height: current,
-            requested_height: actual_requested_height,
+            requested_height: new_height,
             request_serial: serial,
             requested_at: Instant::now(),
         };
@@ -1010,8 +787,7 @@ impl ColumnCompositor {
         tracing::debug!(
             index,
             current_height = current,
-            requested_height = actual_requested_height,
-            new_height,
+            requested_height = new_height,
             "resize requested"
         );
     }
@@ -1021,21 +797,10 @@ impl ColumnCompositor {
         for node in &mut self.layout_nodes {
             if let ColumnCell::External(entry) = &mut node.cell {
                 let current_height = entry.state.current_height();
-                match &entry.surface {
-                    SurfaceKind::Wayland(toplevel) => {
-                        toplevel.with_pending_state(|state| {
-                            state.size = Some(Size::from((new_width, current_height as i32)));
-                        });
-                        toplevel.send_configure();
-                    }
-                    SurfaceKind::X11(x11) => {
-                        let geo = x11.geometry();
-                        let _ = x11.configure(Rectangle::new(
-                            geo.loc,
-                            (new_width, current_height as i32).into(),
-                        ));
-                    }
-                }
+                entry.surface.with_pending_state(|state| {
+                    state.size = Some(Size::from((new_width, current_height as i32)));
+                });
+                entry.surface.send_configure();
             }
         }
 
@@ -1048,7 +813,7 @@ impl ColumnCompositor {
     /// Handle window commit - check for resize completion
     pub fn handle_commit(&mut self, surface: &WlSurface) {
         let Some(index) = self.layout_nodes.iter().position(|node| {
-            matches!(&node.cell, ColumnCell::External(entry) if entry.surface.wl_surface().as_ref() == Some(surface))
+            matches!(&node.cell, ColumnCell::External(entry) if entry.surface.wl_surface() == surface)
         }) else {
             return;
         };
@@ -1235,16 +1000,9 @@ impl ColumnCompositor {
         let serial = SERIAL_COUNTER.next_serial();
 
         // Extract what we need before mutable operations
-        let (wl_surface, x11_surface, is_terminal) = match &node.cell {
-            ColumnCell::External(entry) => {
-                let x11 = if let SurfaceKind::X11(x11) = &entry.surface {
-                    Some(x11.clone())
-                } else {
-                    None
-                };
-                (entry.surface.wl_surface(), x11, false)
-            }
-            ColumnCell::Terminal(_) => (None, None, true),
+        let (wl_surface, is_terminal) = match &node.cell {
+            ColumnCell::External(entry) => (Some(entry.surface.wl_surface()), false),
+            ColumnCell::Terminal(_) => (None, true),
         };
 
         // Clone seat to avoid borrow conflicts when calling KeyboardTarget::enter
@@ -1256,15 +1014,9 @@ impl ColumnCompositor {
             keyboard.set_focus(self, None, serial);
             self.deactivate_all_toplevels();
         } else {
-            // Set keyboard focus on the wl_surface (for Wayland protocol)
+            // Set keyboard focus on the wl_surface
             if let Some(surface) = wl_surface {
-                keyboard.set_focus(self, Some(surface), serial);
-            }
-            // For X11 surfaces, also trigger X11 input focus
-            if let Some(x11) = x11_surface {
-                // This triggers X11 SetInputFocus - pass empty keys since
-                // the keyboard.set_focus above already handles key state
-                KeyboardTarget::enter(&x11, &seat, self, Vec::new(), serial);
+                keyboard.set_focus(self, Some(surface.clone()), serial);
             }
             self.activate_toplevel(focused_idx);
         }
@@ -1277,21 +1029,14 @@ impl ColumnCompositor {
         for (i, node) in self.layout_nodes.iter().enumerate() {
             if let ColumnCell::External(entry) = &node.cell {
                 let should_activate = i == index;
-                match &entry.surface {
-                    SurfaceKind::Wayland(toplevel) => {
-                        toplevel.with_pending_state(|state| {
-                            if should_activate {
-                                state.states.set(ToplevelState::Activated);
-                            } else {
-                                state.states.unset(ToplevelState::Activated);
-                            }
-                        });
-                        toplevel.send_pending_configure();
+                entry.surface.with_pending_state(|state| {
+                    if should_activate {
+                        state.states.set(ToplevelState::Activated);
+                    } else {
+                        state.states.unset(ToplevelState::Activated);
                     }
-                    SurfaceKind::X11(x11) => {
-                        let _ = x11.set_activated(should_activate);
-                    }
-                }
+                });
+                entry.surface.send_pending_configure();
             }
         }
     }
@@ -1300,17 +1045,10 @@ impl ColumnCompositor {
     pub fn deactivate_all_toplevels(&mut self) {
         for node in &self.layout_nodes {
             if let ColumnCell::External(entry) = &node.cell {
-                match &entry.surface {
-                    SurfaceKind::Wayland(toplevel) => {
-                        toplevel.with_pending_state(|state| {
-                            state.states.unset(ToplevelState::Activated);
-                        });
-                        toplevel.send_pending_configure();
-                    }
-                    SurfaceKind::X11(x11) => {
-                        let _ = x11.set_activated(false);
-                    }
-                }
+                entry.surface.with_pending_state(|state| {
+                    state.states.unset(ToplevelState::Activated);
+                });
+                entry.surface.send_pending_configure();
             }
         }
     }
@@ -1377,7 +1115,7 @@ impl ColumnCompositor {
         self.layout_nodes.iter().position(|node| match (&node.cell, focused) {
             (ColumnCell::Terminal(tid), FocusedCell::Terminal(focused_tid)) => tid == focused_tid,
             (ColumnCell::External(entry), FocusedCell::External(focused_id)) => {
-                entry.surface.wl_surface().map(|s| s.id()) == Some(focused_id.clone())
+                entry.surface.wl_surface().id() == *focused_id
             }
             _ => false,
         })
@@ -1391,16 +1129,8 @@ impl ColumnCompositor {
             self.focused_cell = Some(match &node.cell {
                 ColumnCell::Terminal(id) => FocusedCell::Terminal(*id),
                 ColumnCell::External(entry) => {
-                    // External windows should have a wl_surface by the time we focus them.
-                    // For X11 windows, the surface might not be ready immediately after map_window_request,
-                    // so we skip focusing if it's not ready yet. Focus will be set on the next interaction.
-                    let Some(surface) = entry.surface.wl_surface() else {
-                        tracing::warn!(
-                            index,
-                            "external window doesn't have wl_surface yet, skipping focus"
-                        );
-                        return;
-                    };
+                    // All external windows are now Wayland toplevels (via xwayland-satellite)
+                    let surface = entry.surface.wl_surface();
                     FocusedCell::External(surface.id())
                 }
             });
@@ -1602,25 +1332,6 @@ impl CompositorHandler for ColumnCompositor {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        // Check if this is an X11 surface commit (for debugging resize issues)
-        #[cfg(debug_assertions)]
-        {
-            let matched_x11 = self.layout_nodes.iter().any(|node| {
-                if let ColumnCell::External(entry) = &node.cell {
-                    if let SurfaceKind::X11(_) = &entry.surface {
-                        return entry.surface.wl_surface().as_ref() == Some(surface);
-                    }
-                }
-                false
-            });
-
-            if matched_x11 {
-                tracing::debug!(
-                    surface_id = ?surface.id(),
-                    "X11 surface commit"
-                );
-            }
-        }
 
         // Process buffer for desktop rendering abstractions
         on_commit_buffer_handler::<Self>(surface);
@@ -1691,7 +1402,7 @@ impl XdgShellHandler for ColumnCompositor {
         let parent_content_y = parent_surface.as_ref().and_then(|parent| {
             self.layout_nodes.iter().enumerate().find_map(|(idx, node)| {
                 if let ColumnCell::External(entry) = &node.cell {
-                    if entry.surface.wl_surface().as_ref() == Some(parent) {
+                    if entry.surface.wl_surface() == parent {
                         // Calculate content Y position (sum of heights above this window)
                         let content_y: i32 = self.layout_nodes[..idx]
                             .iter()
@@ -1872,7 +1583,7 @@ impl XdgShellHandler for ColumnCompositor {
         let parent_content_y = parent_surface.as_ref().and_then(|parent| {
             self.layout_nodes.iter().enumerate().find_map(|(idx, node)| {
                 if let ColumnCell::External(entry) = &node.cell {
-                    if entry.surface.wl_surface().as_ref() == Some(parent) {
+                    if entry.surface.wl_surface() == parent {
                         let content_y: i32 = self.layout_nodes[..idx]
                             .iter()
                             .map(|n| n.height)
@@ -1973,7 +1684,7 @@ impl XdgDecorationHandler for ColumnCompositor {
         let surface = toplevel.wl_surface();
         for node in &mut self.layout_nodes {
             if let ColumnCell::External(entry) = &mut node.cell {
-                if entry.surface.wl_surface().as_ref() == Some(surface) {
+                if entry.surface.wl_surface() == surface {
                     entry.uses_csd = uses_csd;
                     tracing::info!(
                         requested = ?mode,
@@ -1998,7 +1709,7 @@ impl XdgDecorationHandler for ColumnCompositor {
         let surface = toplevel.wl_surface();
         for node in &mut self.layout_nodes {
             if let ColumnCell::External(entry) = &mut node.cell {
-                if entry.surface.wl_surface().as_ref() == Some(surface) {
+                if entry.surface.wl_surface() == surface {
                     entry.uses_csd = false;
                     tracing::info!(
                         command = %entry.command,
@@ -2041,7 +1752,8 @@ delegate_seat!(ColumnCompositor);
 delegate_data_device!(ColumnCompositor);
 delegate_output!(ColumnCompositor);
 delegate_text_input_manager!(ColumnCompositor);
-delegate_xwayland_shell!(ColumnCompositor);
+// XWayland shell support will be re-added after switching to xwayland-satellite
+// delegate_xwayland_shell!(ColumnCompositor);
 
 #[cfg(test)]
 mod tests {

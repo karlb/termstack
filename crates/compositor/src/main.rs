@@ -567,10 +567,8 @@ fn main() -> anyhow::Result<()> {
                             // The geometry tells us where actual content is vs shadow/decoration areas
                             let parent_window_geo = entry.window.geometry();
 
-                            // Only Wayland surfaces have popups
-                            let Some(wl_surface) = entry.surface.wl_surface() else {
-                                continue;
-                            };
+                            // Get the wl_surface for popup handling
+                            let wl_surface = entry.surface.wl_surface();
                             for (popup_kind, popup_offset) in PopupManager::popups_for_surface(&wl_surface) {
                                 let popup_surface = match &popup_kind {
                                     PopupKind::Xdg(xdg_popup) => xdg_popup,
@@ -663,7 +661,7 @@ fn main() -> anyhow::Result<()> {
                             damage,
                         );
                     }
-                    CellRenderData::External { y, height, elements, title_bar_texture, is_x11, uses_csd } => {
+                    CellRenderData::External { y, height, elements, title_bar_texture, uses_csd } => {
                         render_external(
                             &mut frame,
                             y,
@@ -674,7 +672,6 @@ fn main() -> anyhow::Result<()> {
                             physical_size,
                             damage,
                             scale,
-                            is_x11,
                             uses_csd,
                         );
                     }
@@ -1733,6 +1730,12 @@ fn initialize_xwayland(
     display: &mut Display<ColumnCompositor>,
     loop_handle: smithay::reexports::calloop::LoopHandle<'static, ColumnCompositor>,
 ) {
+    // TODO: Replace with xwayland-satellite integration (Step 6)
+    // Temporarily disabled - old Smithay X11Wm code removed
+    tracing::warn!("XWayland support temporarily disabled during migration to xwayland-satellite");
+    return;
+
+    /* Commented out during Step 1-3 migration - will be replaced in Step 6
     // Create XWayland shell state (required for X11 surface association)
     let xwayland_shell_state = XWaylandShellState::new::<ColumnCompositor>(&display.handle());
     compositor.xwayland_shell_state = Some(xwayland_shell_state);
@@ -1809,4 +1812,5 @@ fn initialize_xwayland(
     }
 
     tracing::info!("XWayland initialization complete");
+    */
 }
