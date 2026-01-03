@@ -844,7 +844,7 @@ fn shell_terminal_with_loop_output() {
     println!("Shell is: {}", std::env::var("SHELL").unwrap_or_default());
     println!("Before command: content_rows = {}", content_before);
 
-    // Use seq directly - works in all shells (bash, zsh, fish)
+    // Use seq directly - works in fish shell
     // Use \r like the real compositor sends for Enter key
     terminal.write(b"seq 5\r").expect("write command");
 

@@ -16,7 +16,7 @@
 //!
 //! # Usage
 //!
-//! ```bash
+//! ```fish
 //! # Run a command in a new terminal
 //! column-term -c "git status"
 //!
@@ -26,34 +26,7 @@
 //!
 //! # Shell Integration
 //!
-//! Scripts are available in the `scripts/` directory of the repository.
-//!
-//! ## Zsh
-//!
-//! Add to your `~/.zshrc` (or source `scripts/integration.zsh`):
-//! ```zsh
-//! if [[ -n "$COLUMN_COMPOSITOR_SOCKET" ]]; then
-//!     column-exec() {
-//!         local cmd="$BUFFER"
-//!         [[ -z "$cmd" ]] && return
-//!
-//!         column-term -c "$cmd"
-//!         local ret=$?
-//!
-//!         if [[ $ret -eq 3 ]]; then
-//!             zle .accept-line  # Incomplete syntax
-//!             return
-//!         fi
-//!         if [[ $ret -eq 2 ]]; then
-//!             print -s "$cmd"; BUFFER=""; eval "$cmd"  # Shell builtin
-//!         else
-//!             print -s "$cmd"; BUFFER=""  # Spawned in new terminal
-//!         fi
-//!         zle reset-prompt
-//!     }
-//!     zle -N accept-line column-exec
-//! fi
-//! ```
+//! The integration script is available in the `scripts/` directory of the repository.
 //!
 //! ## Fish
 //!
@@ -235,7 +208,7 @@ pub(crate) fn normalize_fish_command(command: &str) -> String {
     result
 }
 
-/// Uses the shell's syntax check (-n flag) to determine if the command
+/// Uses fish's syntax check (-n flag) to determine if the command
 /// is complete. Returns false if incomplete (like `begin` without `end`)
 /// or if there's a syntax error.
 ///
@@ -244,33 +217,28 @@ pub(crate) fn normalize_fish_command(command: &str) -> String {
 pub(crate) fn is_syntax_complete(command: &str) -> bool {
     use std::process::Command;
 
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell = env::var("SHELL").unwrap_or_else(|_| "fish".to_string());
     let shell_name = std::path::Path::new(&shell)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("sh");
+        .unwrap_or("fish");
 
     let debug = debug_enabled();
     if debug {
         eprintln!("[column-term] syntax check: shell={}, shell_name={}", shell, shell_name);
     }
 
-    // Different shells have different syntax check flags
-    let result = match shell_name {
-        "fish" => Command::new(&shell)
-            .args(["-n", "-c", command])
-            .output(),
-        "zsh" | "bash" | "sh" | "ksh" | "dash" => Command::new(&shell)
-            .args(["-n", "-c", command])
-            .output(),
-        _ => {
-            // Unknown shell, assume syntax is complete
-            if debug {
-                eprintln!("[column-term] syntax check: unknown shell, assuming complete");
-            }
-            return true;
+    // Only support fish
+    if shell_name != "fish" {
+        if debug {
+            eprintln!("[column-term] syntax check: non-fish shell, assuming complete");
         }
-    };
+        return true;
+    }
+
+    let result = Command::new(&shell)
+        .args(["-n", "-c", command])
+        .output();
 
     match result {
         Ok(output) => {
@@ -316,7 +284,6 @@ fn main() -> Result<()> {
             println!("Shell integration should be active.");
             println!("If 'gui' command is not found, make sure to source the integration script:");
             println!("  fish: source scripts/integration.fish");
-            println!("  zsh:  source scripts/integration.zsh");
         } else {
             println!("You are NOT inside column-compositor.");
             println!("Start the compositor first, then the shell integration will activate.");

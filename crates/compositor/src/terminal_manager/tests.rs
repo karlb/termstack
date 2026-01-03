@@ -1056,8 +1056,7 @@
         // Start with a shell terminal
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        // Use bash -c with a script that waits, then draws
-        // This simulates the shell waiting for mc to start
+        // Use cat command to simulate a shell waiting for mc to start
         let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
