@@ -875,29 +875,52 @@ impl ColumnCompositor {
         });
 
         if let Some(size) = committed_size {
-            let new_height = size.h as u32;
+            let committed_surface_height = size.h as u32;
+
+            // For SSD windows, the total cell height includes the title bar
+            // For CSD windows, surface height = cell height
+            let committed_cell_height = if entry.uses_csd {
+                committed_surface_height
+            } else {
+                committed_surface_height + crate::title_bar::TITLE_BAR_HEIGHT
+            };
 
             match &entry.state {
                 WindowState::PendingResize { requested_height, .. }
-                    if new_height == *requested_height =>
+                    if committed_cell_height == *requested_height =>
                 {
-                    entry.state = WindowState::Active { height: new_height };
-                    tracing::debug!(index, height = new_height, "resize completed");
-                    self.external_window_resized = Some((index, new_height as i32));
+                    entry.state = WindowState::Active { height: committed_cell_height };
+                    tracing::debug!(
+                        index,
+                        cell_height = committed_cell_height,
+                        surface_height = committed_surface_height,
+                        "resize completed"
+                    );
+                    self.external_window_resized = Some((index, committed_cell_height as i32));
                     self.recalculate_layout();
                 }
                 WindowState::AwaitingCommit { target_height, .. }
-                    if new_height == *target_height =>
+                    if committed_cell_height == *target_height =>
                 {
-                    entry.state = WindowState::Active { height: new_height };
-                    tracing::debug!(index, height = new_height, "resize completed");
-                    self.external_window_resized = Some((index, new_height as i32));
+                    entry.state = WindowState::Active { height: committed_cell_height };
+                    tracing::debug!(
+                        index,
+                        cell_height = committed_cell_height,
+                        surface_height = committed_surface_height,
+                        "resize completed"
+                    );
+                    self.external_window_resized = Some((index, committed_cell_height as i32));
                     self.recalculate_layout();
                 }
-                WindowState::Active { height } if new_height != *height => {
-                    entry.state = WindowState::Active { height: new_height };
-                    tracing::debug!(index, height = new_height, "external window size changed");
-                    self.external_window_resized = Some((index, new_height as i32));
+                WindowState::Active { height } if committed_cell_height != *height => {
+                    entry.state = WindowState::Active { height: committed_cell_height };
+                    tracing::debug!(
+                        index,
+                        cell_height = committed_cell_height,
+                        surface_height = committed_surface_height,
+                        "external window size changed"
+                    );
+                    self.external_window_resized = Some((index, committed_cell_height as i32));
                     self.recalculate_layout();
                 }
                 _ => {}
