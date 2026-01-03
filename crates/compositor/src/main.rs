@@ -1834,8 +1834,11 @@ fn spawn_xwayland_satellite(display_number: u32) -> std::io::Result<std::process
     let xwayland_satellite_path = find_xwayland_satellite()
         .unwrap_or_else(|| "xwayland-satellite".to_string());
 
+    // xwayland-satellite needs to connect to OUR compositor's Wayland socket (wayland-1),
+    // not the host compositor's socket (wayland-0)
     std::process::Command::new(xwayland_satellite_path)
         .arg(format!(":{}", display_number))
+        .env("WAYLAND_DISPLAY", "wayland-1")  // Our compositor's socket
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped()) // Capture stderr for logging
