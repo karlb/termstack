@@ -268,8 +268,7 @@ impl ManagedTerminal {
     /// Check if terminal transitioned to alternate screen and needs auto-resize.
     ///
     /// Returns true if the terminal just entered alternate screen mode and is not
-    /// already at full height. This allows reactive resizing for TUI apps that
-    /// weren't pre-configured in tui_apps list.
+    /// already at full height. This allows reactive resizing for TUI apps.
     ///
     /// Updates internal state to track the transition. Also makes hidden terminals
     /// visible when they enter alternate screen (since TUI apps like fzf enter

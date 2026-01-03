@@ -32,9 +32,22 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
   - `input.rs`: Keyboard/pointer event handling, coordinate conversion
   - `coords.rs`: Type-safe coordinate wrappers (ScreenY, RenderY, ContentY)
   - `layout.rs`: Pure function layout calculation
-  - `terminal_manager.rs`: Manages multiple terminal instances
+  - `render.rs`: Rendering logic and damage tracking
+  - `terminal_manager/`: Manages multiple terminal instances
+  - `cursor.rs`: Cursor rendering and management
+  - `title_bar.rs`: Title bar rendering using fontdue
+  - `ipc.rs`: IPC protocol for column-term communication
+  - `xwayland.rs`: XWayland integration for X11 clients
+  - `config.rs`: Configuration file handling
+
+- **column-term**: CLI tool for spawning terminals in the compositor
+  - Shell integration for automatic command routing
+  - IPC client for communicating with compositor
+  - TUI app detection and automatic resizing
+  - GUI app output terminal spawning
 
 - **terminal**: alacritty_terminal wrapper with explicit sizing state machine
+  - `state.rs`: Terminal state and alacritty integration
   - `sizing.rs`: `TerminalSizingState` (Stable/GrowthRequested/Resizing)
   - `render.rs`: Software renderer using fontdue
   - `pty.rs`: PTY management with rustix
@@ -42,6 +55,8 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
 - **test-harness**: Testing infrastructure
   - `headless.rs`: `TestCompositor` mock for unit testing
   - `assertions.rs`: Test assertion helpers
+  - `fixtures.rs`: Test fixtures and data
+  - `live.rs`: Live testing utilities
   - Tests in `tests/` directory
 
 ### Coordinate Systems (Critical!)
@@ -75,13 +90,6 @@ The terminal has two row counts that must not be confused:
 - **PTY rows** (`dimensions()`): Actual size reported to programs, changes on resize
 
 The grid stays large to hold all content without scrolling. Only PTY size changes when the terminal is resized. TUI apps query PTY size via `tcgetwinsize`.
-
-### Key Bindings
-
-- Super+T or Ctrl+Shift+T: Spawn terminal
-- Super+J/K or Ctrl+Shift+J/K: Focus next/prev
-- Super+Q or Ctrl+Shift+Q: Quit
-- Page Up/Down: Scroll
 
 ## Testing Patterns
 

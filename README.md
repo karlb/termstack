@@ -19,11 +19,11 @@ Column Compositor is a specialized Wayland compositor designed for terminal-cent
 column-compositor/
 ├── crates/
 │   ├── compositor/     # Smithay-based Wayland compositor
+│   ├── column-term/    # CLI tool for spawning terminals
 │   ├── terminal/       # Terminal emulation using alacritty_terminal
-│   └── test-harness/   # Testing infrastructure
-└── tests/
-    ├── integration/    # Integration tests
-    └── properties/     # Property-based tests
+│   └── test-harness/   # Testing infrastructure with tests/ subdirectory
+└── scripts/
+    └── integration.fish # Fish shell integration
 ```
 
 ### Tech Stack
@@ -36,8 +36,12 @@ column-compositor/
 ## Building
 
 ```bash
-cd column-compositor
+# Build all binaries
 cargo build --release
+
+# Or build specific binary
+cargo build --release --bin column-compositor
+cargo build --release --bin column-term
 ```
 
 ### Dependencies
@@ -58,113 +62,58 @@ sudo apt install \
 
 ```bash
 # Start the compositor (opens in a winit window for development)
-cargo run --release
+cargo run --release --bin column-compositor
 
 # Or run on real hardware (requires seat access)
-SMITHAY_BACKEND=udev cargo run --release
+SMITHAY_BACKEND=udev cargo run --release --bin column-compositor
 ```
 
 ## Key Bindings
 
+All bindings support both Super and Ctrl+Shift modifiers (Ctrl+Shift works when running nested under another compositor).
+
 | Key | Action |
 |-----|--------|
-| Super+Q | Quit compositor |
-| Super+T | Spawn new terminal |
-| Super+J | Focus next window |
-| Super+K | Focus previous window |
+| Super+Q / Ctrl+Shift+Q | Quit compositor |
+| Super+T / Ctrl+Shift+T | Spawn new terminal |
+| Super+Return / Ctrl+Shift+Return | Spawn new terminal |
+| Super+J / Ctrl+Shift+J | Focus next window |
+| Super+K / Ctrl+Shift+K | Focus previous window |
+| Ctrl+Shift+Down | Focus next window |
+| Ctrl+Shift+Up | Focus previous window |
+| Ctrl+Shift+C | Copy selection |
+| Ctrl+Shift+V | Paste from clipboard |
 | Super+Down | Scroll down |
 | Super+Up | Scroll up |
 | Super+Home | Scroll to top |
 | Super+End | Scroll to bottom |
-| Page Up | Scroll up one page |
-| Page Down | Scroll down one page |
+| Page Up / Ctrl+Shift+Page Up | Scroll up one page |
+| Page Down / Ctrl+Shift+Page Down | Scroll down one page |
 
-## Shell Integration
+### Fish Shell Integration
 
-For the full column-compositor experience, add shell integration so commands automatically spawn in new terminals while TUI apps run in the current terminal at full height.
-
-### Installation
-
-First, ensure `column-term` is in your PATH:
-
-```bash
-cargo install --path crates/column-term
-# Or copy target/release/column-term to ~/.local/bin/
-```
-
-### Zsh
-
-Add to `~/.zshrc`:
-
-```zsh
-# Column-compositor shell integration
-if [[ -n "$COLUMN_COMPOSITOR_SOCKET" ]]; then
-    column-exec() {
-        local cmd="$BUFFER"
-        [[ -z "$cmd" ]] && return
-        BUFFER=""
-        column-term -c "$cmd"
-        local ret=$?
-        if [[ $ret -eq 2 ]]; then
-            # Shell builtin - run in current shell
-            eval "$cmd"
-        elif [[ $ret -eq 3 ]]; then
-            # TUI app - resize to full height, run, resize back
-            column-term --resize full
-            eval "$cmd"
-            column-term --resize content
-        fi
-        zle reset-prompt
-    }
-    zle -N accept-line column-exec
-fi
-```
-
-### Bash
-
-Add to `~/.bashrc`:
-
-```bash
-# Column-compositor shell integration
-if [[ -n "$COLUMN_COMPOSITOR_SOCKET" ]]; then
-    column_prompt_command() {
-        # Reset to content size after each command (in case a TUI app ran)
-        column-term --resize content 2>/dev/null
-    }
-    PROMPT_COMMAND="column_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
-fi
-```
-
-Note: Full bash integration requires a custom readline wrapper. The above provides basic TUI resize support.
-
-### Fish
-
-Add to `~/.config/fish/config.fish`:
-
-```fish
-# Column-compositor shell integration
-if set -q COLUMN_COMPOSITOR_SOCKET
-    function column_postexec --on-event fish_postexec
-        column-term --resize content 2>/dev/null
-    end
-end
-```
+The built-in integration enables automatic command routing:
+- **Regular commands** spawn in new terminals above the current one
+- **Shell builtins** run in the current shell
+- **GUI apps** (via `gui` command) get an output terminal when they produce stderr
 
 ### Configuration
 
-Create `~/.config/column-compositor/config.toml` to configure TUI apps:
+Optional: Create `~/.config/column-compositor/config.toml`:
 
 ```toml
-# Apps that should run in current terminal at full height
-tui_apps = ["vim", "nvim", "mc", "htop", "top", "fzf", "less", "man", "nano"]
+# Color theme
+theme = "dark"  # or "light"
+
+# Window settings
+window_gap = 0
+min_window_height = 50
+scroll_speed = 1.0
+auto_scroll = true
+
+# Apps that use client-side decorations (skip compositor title bar)
+csd_apps = ["firefox", "org.gnome.*"]
 ```
-
-### How It Works
-
-- **Regular commands** (`ls`, `git status`): Spawn in a new terminal above current
-- **Shell builtins** (`cd`, `export`): Run in current shell
-- **TUI apps** (`vim`, `mc`, `fzf`): Resize terminal to full height, run, resize back
-- **GUI apps**: Get an output terminal that appears when stderr is produced
 
 ## Testing
 
@@ -172,11 +121,12 @@ tui_apps = ["vim", "nvim", "mc", "htop", "top", "fzf", "less", "man", "nano"]
 # Run all tests
 cargo test
 
-# Run property-based tests
-cargo test --test properties
+# Run specific test file
+cargo test --test window_positioning
+cargo test --test layout_properties
 
-# Run integration tests
-cargo test --test integration
+# Run with nextest (faster)
+cargo nextest run
 ```
 
 ## Design Decisions
