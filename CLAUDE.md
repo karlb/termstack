@@ -2,29 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build Commands
+## Development Commands
 
 ```bash
-cargo build --release           # Build for release
-cargo test                      # Run all tests
-cargo test --package compositor # Run compositor crate tests only
-cargo test --package test-harness --test coordinate_accuracy  # Run specific test file
-cargo test some_test_name       # Run tests matching name
-cargo clippy                    # linting
+cargo +nightly build -Zchecksum-freshness                    # Debug build (fast compile)
+cargo +nightly nextest run -Zchecksum-freshness              # Run tests with nextest
+cargo +nightly clippy -Zchecksum-freshness                   # Linting
+cargo +nightly run -Zchecksum-freshness --bin column-compositor  # Run compositor
+RUST_LOG=column_compositor=debug cargo +nightly run -Zchecksum-freshness    # With debug logging
 ```
 
-## Running the Compositor
-
-```bash
-cargo run --release --bin column-compositor   # Winit backend (development)
-WINIT_UNIX_BACKEND=x11 cargo run --release    # Force X11 backend
-RUST_LOG=column_compositor=debug cargo run    # With debug logging
-```
+Note: Using -Zchecksum-freshness to avoid mtime race conditions with automated edits.
 
 ## Development approach
 
 - Before fixing bugs, reproduce them inside the test suite.
 - Prefer improving the test suite to writing one-off tests.
+- When done, check for linting errors
 
 ## Architecture
 
