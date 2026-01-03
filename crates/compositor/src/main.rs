@@ -390,21 +390,26 @@ fn main() -> anyhow::Result<()> {
         if let Some(ref mut child) = compositor.xwayland_satellite {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    tracing::warn!(?status, "xwayland-satellite exited, restarting");
+                    // Try to read stderr to see why it crashed
+                    let stderr_output = if let Some(ref mut stderr) = child.stderr {
+                        use std::io::Read;
+                        let mut buf = String::new();
+                        stderr.read_to_string(&mut buf).ok();
+                        buf
+                    } else {
+                        String::new()
+                    };
 
-                    // Auto-restart xwayland-satellite
-                    if let Some(display_num) = compositor.x11_display_number {
-                        match spawn_xwayland_satellite(display_num) {
-                            Ok(new_child) => {
-                                compositor.xwayland_satellite = Some(new_child);
-                                tracing::info!("xwayland-satellite restarted successfully");
-                            }
-                            Err(e) => {
-                                tracing::error!(?e, "Failed to restart xwayland-satellite");
-                                compositor.xwayland_satellite = None;
-                            }
-                        }
+                    if !stderr_output.is_empty() {
+                        tracing::error!(?status, stderr = %stderr_output, "xwayland-satellite crashed");
+                    } else {
+                        tracing::warn!(?status, "xwayland-satellite exited");
                     }
+
+                    // Don't auto-restart if it's crashing immediately
+                    // (prevents infinite restart loop)
+                    tracing::warn!("xwayland-satellite crashed - X11 apps will not work");
+                    compositor.xwayland_satellite = None;
                 }
                 Ok(None) => {
                     // Still running, no action needed
