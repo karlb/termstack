@@ -27,8 +27,6 @@ use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as
 use smithay::reexports::wayland_server::{Display, Resource};
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
-use smithay::wayland::xwayland_shell::XWaylandShellState;
-use smithay::xwayland::{X11Wm, XWayland, XWaylandEvent};
 
 use compositor::config::Config;
 use compositor::cursor::CursorManager;
@@ -1769,7 +1767,7 @@ fn cleanup_and_sync_focus(
 /// xwayland-satellite acts as the X11 window manager and presents X11 windows as
 /// normal Wayland toplevels to the compositor.
 fn initialize_xwayland(
-    compositor: &mut ColumnCompositor,
+    _compositor: &mut ColumnCompositor,
     display: &mut Display<ColumnCompositor>,
     loop_handle: smithay::reexports::calloop::LoopHandle<'static, ColumnCompositor>,
 ) {

@@ -15,7 +15,6 @@ use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::output::OutputHandler;
 use smithay::desktop::{PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Space, Window};
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::input::keyboard::KeyboardTarget;
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
@@ -41,9 +40,6 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::Sta
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
-use smithay::delegate_xwayland_shell;
-use smithay::xwayland::{X11Surface, X11Wm, XWayland};
-use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
@@ -733,7 +729,7 @@ impl ColumnCompositor {
     ///
     /// If `force` is true, bypasses throttling to ensure the resize is sent immediately.
     /// Use force=true at the end of a resize drag to guarantee the final size is applied.
-    pub fn request_resize(&mut self, index: usize, new_height: u32, force: bool) {
+    pub fn request_resize(&mut self, index: usize, new_height: u32, _force: bool) {
         let Some(node) = self.layout_nodes.get_mut(index) else {
             tracing::warn!("request_resize: node not found at index {}", index);
             return;

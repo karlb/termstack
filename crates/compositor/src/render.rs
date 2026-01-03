@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
-use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, WaylandSurfaceTexture, render_elements_from_surface_tree};
+use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree};
 use smithay::backend::renderer::element::{Element, Kind, RenderElement};
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Color32F, Frame, ImportMem, Texture};
-use smithay::utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 
 use crate::state::{ColumnCell, LayoutNode};
 use crate::terminal_manager::{TerminalId, TerminalManager};
@@ -428,7 +428,7 @@ pub fn render_external(
     _screen_size: Size<i32, Physical>,
     damage: Rectangle<i32, Physical>,
     scale: Scale<f64>,
-    uses_csd: bool,
+    _uses_csd: bool,
 ) {
     // For SSD windows, title bar is at the top of the cell
     // For CSD windows, there's no title bar from us
