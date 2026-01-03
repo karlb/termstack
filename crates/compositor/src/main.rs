@@ -663,7 +663,7 @@ fn main() -> anyhow::Result<()> {
                             damage,
                         );
                     }
-                    CellRenderData::External { y, height, elements, title_bar_texture, is_x11 } => {
+                    CellRenderData::External { y, height, elements, title_bar_texture, is_x11, uses_csd } => {
                         render_external(
                             &mut frame,
                             y,
@@ -675,6 +675,7 @@ fn main() -> anyhow::Result<()> {
                             damage,
                             scale,
                             is_x11,
+                            uses_csd,
                         );
                     }
                 }

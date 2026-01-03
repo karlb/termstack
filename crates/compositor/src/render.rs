@@ -43,6 +43,7 @@ pub enum CellRenderData<'a> {
         elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
         title_bar_texture: Option<&'a GlesTexture>,
         is_x11: bool,
+        uses_csd: bool,
     },
 }
 
@@ -242,10 +243,22 @@ pub fn collect_cell_data(
                     }
                 };
 
-                let actual_height = if entry.uses_csd {
-                    window_height
-                } else {
-                    window_height + TITLE_BAR_HEIGHT as i32
+                // For X11: node.height already includes title bar (set by configure_notify
+                // or add_x11_window), so use it directly.
+                // For Wayland: window_height is from surface elements (content only),
+                // so add title bar for SSD.
+                let actual_height = match &entry.surface {
+                    crate::state::SurfaceKind::X11(_) => {
+                        // X11: node.height is already the visual height
+                        node.height
+                    }
+                    crate::state::SurfaceKind::Wayland(_) => {
+                        if entry.uses_csd {
+                            window_height
+                        } else {
+                            window_height + TITLE_BAR_HEIGHT as i32
+                        }
+                    }
                 };
 
                 heights.push(actual_height);
@@ -300,12 +313,14 @@ pub fn build_render_data<'a>(
                 let elements = std::mem::take(&mut external_elements[cell_idx]);
                 let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
                 let is_x11 = entry.surface.is_x11();
+                let uses_csd = entry.uses_csd;
                 render_data.push(CellRenderData::External {
                     y: render_y,
                     height,
                     elements,
                     title_bar_texture,
                     is_x11,
+                    uses_csd,
                 });
             }
         }
@@ -458,7 +473,10 @@ pub fn render_external(
     damage: Rectangle<i32, Physical>,
     scale: Scale<f64>,
     is_x11: bool,
+    uses_csd: bool,
 ) {
+    // For SSD windows, title bar is at the top of the cell
+    // For CSD windows, there's no title bar from us
     let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
 
     // Render title bar
@@ -480,8 +498,24 @@ pub fn render_external(
         let geo = element.geometry(scale);
         let src = element.src();
 
+        // Calculate dest Y position
+        // For X11 with SSD: Position content at TOP of content area (just below title bar)
+        // With Transform::Flipped180, texture top appears at dest.y + dest.height
+        // We want texture top at content_area_top = y + height - TITLE_BAR_HEIGHT
+        // So: dest.y = y + height - TITLE_BAR_HEIGHT - geo.size.h
+        let dest_y = if is_x11 && !uses_csd {
+            // X11 SSD: align content to top of content area (below our title bar)
+            y + height - TITLE_BAR_HEIGHT as i32 - geo.size.h
+        } else if is_x11 {
+            // X11 CSD: no title bar from us, align to cell top
+            y + height - geo.size.h
+        } else {
+            // Wayland: use element's natural position
+            geo.loc.y + y
+        };
+
         let dest = Rectangle::new(
-            Point::from((geo.loc.x + FOCUS_INDICATOR_WIDTH, geo.loc.y + y)),
+            Point::from((geo.loc.x + FOCUS_INDICATOR_WIDTH, dest_y)),
             geo.size,
         );
 

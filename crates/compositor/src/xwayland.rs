@@ -287,9 +287,15 @@ impl ColumnCompositor {
             self.focused_index().unwrap_or(self.layout_nodes.len())
         };
 
+        // Visual height includes title bar for SSD windows (consistent with configure_notify)
+        let visual_height = if uses_csd {
+            initial_height as i32
+        } else {
+            initial_height as i32 + crate::title_bar::TITLE_BAR_HEIGHT as i32
+        };
         self.layout_nodes.insert(insert_index, LayoutNode {
             cell: ColumnCell::External(Box::new(entry)),
-            height: initial_height as i32,
+            height: visual_height,
         });
 
         // For foreground GUI windows, focus the new window

@@ -542,15 +542,14 @@ impl ColumnCompositor {
                     }
                 }
                 None => {
-                    // External window - request resize through the state
-                    tracing::info!(
+                    // External window - don't send resize during drag, only update visual height
+                    // Final resize will be sent on button release with force=true
+                    tracing::debug!(
                         cell_index,
-                        delta,
                         new_height,
-                        "EXTERNAL WINDOW RESIZE: calling request_resize"
+                        "EXTERNAL WINDOW RESIZE: updating visual height (no configure during drag)"
                     );
-                    self.request_resize(cell_index, new_height as u32);
-                    // Update cached height
+                    // Update cached height for visual feedback
                     if let Some(node) = self.layout_nodes.get_mut(cell_index) {
                         node.height = new_height;
                     }
@@ -624,9 +623,16 @@ impl ColumnCompositor {
 
         // Handle left mouse button release
         if button == BTN_LEFT && state == ButtonState::Released {
-            // End resize drag
-            if self.resizing.is_some() {
-                self.resizing = None;
+            // End resize drag - send final resize to ensure X11 apps get the final size
+            if let Some(drag) = self.resizing.take() {
+                // Get the final height from the cached layout
+                let final_height = self.layout_nodes.get(drag.cell_index)
+                    .map(|n| n.height as u32)
+                    .unwrap_or(0);
+                if final_height > 0 {
+                    // Send with force=true to bypass throttle
+                    self.request_resize(drag.cell_index, final_height, true);
+                }
                 return; // Don't process further
             }
 

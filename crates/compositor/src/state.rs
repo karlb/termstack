@@ -780,7 +780,10 @@ impl ColumnCompositor {
     }
 
     /// Request an external window resize (by cell index)
-    pub fn request_resize(&mut self, index: usize, new_height: u32) {
+    ///
+    /// If `force` is true, bypasses throttling to ensure the resize is sent immediately.
+    /// Use force=true at the end of a resize drag to guarantee the final size is applied.
+    pub fn request_resize(&mut self, index: usize, new_height: u32, force: bool) {
         let Some(node) = self.layout_nodes.get_mut(index) else {
             tracing::warn!("request_resize: node not found at index {}", index);
             return;
@@ -791,7 +794,17 @@ impl ColumnCompositor {
         };
 
         let current = entry.state.current_height();
-        if current == new_height {
+
+        // For X11 SSD windows, entry.state stores content height, but new_height is visual height.
+        // Convert new_height to content height for comparison.
+        // For Wayland and X11 CSD, both are visual heights.
+        let new_height_for_comparison = if matches!(&entry.surface, SurfaceKind::X11(_)) && !entry.uses_csd {
+            new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
+        } else {
+            new_height
+        };
+
+        if current == new_height_for_comparison {
             tracing::trace!("request_resize: height unchanged ({})", current);
             return;
         }
@@ -800,6 +813,7 @@ impl ColumnCompositor {
             index,
             current_height = current,
             new_height,
+            new_height_for_comparison,
             is_x11 = matches!(entry.surface, SurfaceKind::X11(_)),
             "request_resize called"
         );
@@ -817,11 +831,14 @@ impl ColumnCompositor {
             }
             SurfaceKind::X11(x11) => {
                 // Throttle X11 configure requests to ~30fps to avoid flooding the app
-                const MIN_CONFIGURE_INTERVAL: Duration = Duration::from_millis(33);
-                if let Some(last) = self.last_x11_configure {
-                    if last.elapsed() < MIN_CONFIGURE_INTERVAL {
-                        // Skip this configure, just update node.height for visual feedback
-                        return;
+                // Skip throttle if force=true (used at end of resize drag)
+                if !force {
+                    const MIN_CONFIGURE_INTERVAL: Duration = Duration::from_millis(33);
+                    if let Some(last) = self.last_x11_configure {
+                        if last.elapsed() < MIN_CONFIGURE_INTERVAL {
+                            // Skip this configure, just update node.height for visual feedback
+                            return;
+                        }
                     }
                 }
                 self.last_x11_configure = Some(Instant::now());
@@ -890,50 +907,80 @@ impl ColumnCompositor {
                     width,
                     "sending X11 configure for resize"
                 );
+
+                // Diagnostic: Check window state before configure
+                let has_wl_surface = x11.wl_surface().is_some();
+                let is_mapped = x11.is_mapped();
+                let current_geo = x11.geometry();
+                let window_id = x11.window_id();
+                let mapped_window_id = x11.mapped_window_id();
+
+                tracing::info!(
+                    window_id,
+                    ?mapped_window_id,
+                    has_wl_surface,
+                    is_mapped,
+                    current_geo_w = current_geo.size.w,
+                    current_geo_h = current_geo.size.h,
+                    target_w = width,
+                    target_h = clamped_height,
+                    "X11 window state before resize"
+                );
+
+                // Try BOTH Smithay's configure AND x11rb direct configure
+                // First, try Smithay's configure
                 if let Err(e) = x11.configure(Rectangle::new(
                     (0, 0).into(),
                     (width as i32, clamped_height as i32).into(),
                 )) {
-                    tracing::warn!(?e, "failed to configure X11 window during resize");
+                    tracing::warn!(?e, "Smithay configure failed");
                 }
 
-                // After configure, send an Expose event to trigger the X11 app to redraw.
+                // Also try x11rb directly to see if that makes a difference
+                if let Some(ref conn) = self.x11_conn {
+                    use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt as _};
+
+                    let aux = ConfigureWindowAux::new()
+                        .width(width)
+                        .height(clamped_height);
+
+                    if let Err(e) = conn.configure_window(window_id, &aux) {
+                        tracing::warn!(?e, "x11rb configure failed");
+                    } else {
+                        conn.flush().ok();
+                    }
+                }
+
+                // After configure, use ClearArea with exposures=true to trigger the X11 app to redraw.
                 // XWayland doesn't automatically send Expose events after resize, so simple X11 apps
                 // (like xeyes) won't redraw.
+                //
+                // ClearArea with exposures=true clears the window and generates Expose events,
+                // which is more reliable than manually sending Expose events.
                 //
                 // Note: This is a best-effort workaround. XWayland buffer resize is controlled by
                 // the X11 client. If the client doesn't respond to ConfigureNotify by creating a
                 // new pixmap, the buffer stays at the old size. See:
                 // https://blog.vladzahorodnii.com/2024/10/28/improving-xwayland-window-resizing/
                 if let Some(ref conn) = self.x11_conn {
+                    use x11rb::protocol::xproto::ConnectionExt as _;
                     let window_id = x11.window_id();
 
-                    // Create and send an Expose event to trigger redraw
-                    let expose_event = x11rb::protocol::xproto::ExposeEvent {
-                        response_type: x11rb::protocol::xproto::EXPOSE_EVENT,
-                        sequence: 0,
-                        window: window_id,
-                        x: 0,
-                        y: 0,
-                        width: width as u16,
-                        height: clamped_height as u16,
-                        count: 0,
-                    };
-
-                    // X11 events must be 32 bytes, pad the serialized event
-                    let serialized = expose_event.serialize();
-                    let mut event_bytes = [0u8; 32];
-                    event_bytes[..serialized.len()].copy_from_slice(&serialized);
-
-                    if let Err(e) = conn.send_event(
-                        false,
+                    // Use ClearArea with exposures=true to generate Expose events
+                    // This clears the entire window and triggers a redraw
+                    if let Err(e) = conn.clear_area(
+                        true,  // exposures: generate Expose events
                         window_id,
-                        x11rb::protocol::xproto::EventMask::EXPOSURE,
-                        event_bytes,
+                        0,     // x
+                        0,     // y
+                        width as u16,
+                        clamped_height as u16,
                     ) {
-                        tracing::debug!(?e, "failed to send Expose event");
+                        tracing::debug!(?e, "failed to send ClearArea");
                     } else {
-                        conn.flush().ok();
+                        if let Err(e) = conn.flush() {
+                            tracing::debug!(?e, "failed to flush X11 connection");
+                        }
                     }
                 }
             }
@@ -941,9 +988,21 @@ impl ColumnCompositor {
 
         let serial = SERIAL_COUNTER.next_serial().into();
 
+        // For X11 SSD windows, we send content_height (without title bar) to the X11 window.
+        // We must store the ACTUAL height we sent, not the visual height, so configure_notify
+        // matching works correctly.
+        // For Wayland and X11 CSD, requested_height equals new_height.
+        let actual_requested_height = if matches!(&entry.surface, SurfaceKind::X11(_)) && !entry.uses_csd {
+            // X11 SSD: we sent content_height = new_height - TITLE_BAR_HEIGHT
+            new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
+        } else {
+            // Wayland or X11 CSD: we sent new_height as-is
+            new_height
+        };
+
         entry.state = WindowState::PendingResize {
             current_height: current,
-            requested_height: new_height,
+            requested_height: actual_requested_height,
             request_serial: serial,
             requested_at: Instant::now(),
         };
@@ -951,7 +1010,8 @@ impl ColumnCompositor {
         tracing::debug!(
             index,
             current_height = current,
-            requested_height = new_height,
+            requested_height = actual_requested_height,
+            new_height,
             "resize requested"
         );
     }
@@ -1331,9 +1391,16 @@ impl ColumnCompositor {
             self.focused_cell = Some(match &node.cell {
                 ColumnCell::Terminal(id) => FocusedCell::Terminal(*id),
                 ColumnCell::External(entry) => {
-                    // External windows should have a wl_surface by the time we focus them
-                    let surface = entry.surface.wl_surface()
-                        .expect("external window should have wl_surface when focused");
+                    // External windows should have a wl_surface by the time we focus them.
+                    // For X11 windows, the surface might not be ready immediately after map_window_request,
+                    // so we skip focusing if it's not ready yet. Focus will be set on the next interaction.
+                    let Some(surface) = entry.surface.wl_surface() else {
+                        tracing::warn!(
+                            index,
+                            "external window doesn't have wl_surface yet, skipping focus"
+                        );
+                        return;
+                    };
                     FocusedCell::External(surface.id())
                 }
             });
