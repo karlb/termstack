@@ -543,6 +543,12 @@ impl ColumnCompositor {
                 }
                 None => {
                     // External window - request resize through the state
+                    tracing::info!(
+                        cell_index,
+                        delta,
+                        new_height,
+                        "EXTERNAL WINDOW RESIZE: calling request_resize"
+                    );
                     self.request_resize(cell_index, new_height as u32);
                     // Update cached height
                     if let Some(node) = self.layout_nodes.get_mut(cell_index) {
@@ -646,6 +652,12 @@ impl ColumnCompositor {
                 if let Some(cell_index) = self.find_resize_handle_at(screen_location.y as i32) {
                     // Start resize drag
                     let start_height = self.get_cell_height(cell_index).unwrap_or(100);
+                    tracing::info!(
+                        cell_index,
+                        screen_y = screen_location.y,
+                        start_height,
+                        "RESIZE DRAG STARTED"
+                    );
                     self.resizing = Some(ResizeDrag {
                         cell_index,
                         start_screen_y: screen_location.y as i32,

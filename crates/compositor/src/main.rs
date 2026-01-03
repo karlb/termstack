@@ -663,7 +663,7 @@ fn main() -> anyhow::Result<()> {
                             damage,
                         );
                     }
-                    CellRenderData::External { y, height, elements, title_bar_texture } => {
+                    CellRenderData::External { y, height, elements, title_bar_texture, is_x11 } => {
                         render_external(
                             &mut frame,
                             y,
@@ -674,6 +674,7 @@ fn main() -> anyhow::Result<()> {
                             physical_size,
                             damage,
                             scale,
+                            is_x11,
                         );
                     }
                 }
@@ -1776,6 +1777,20 @@ fn initialize_xwayland(
                     Ok(wm) => {
                         tracing::info!("X11 Window Manager started");
                         compositor.x11_wm = Some(wm);
+
+                        // Create our own X11 connection for sending clear_area/Expose events.
+                        // Smithay's X11Wm doesn't expose this functionality.
+                        let display = format!(":{}", display_number);
+                        match x11rb::connect(Some(&display)) {
+                            Ok((conn, _screen)) => {
+                                tracing::info!("X11 connection established for Expose events");
+                                compositor.x11_conn = Some(std::sync::Arc::new(conn));
+                            }
+                            Err(e) => {
+                                tracing::warn!(?e, "Failed to create X11 connection for Expose events");
+                            }
+                        }
+
                         // Now spawn initial terminal with DISPLAY set
                         compositor.spawn_initial_terminal = true;
                     }

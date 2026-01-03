@@ -45,8 +45,13 @@ use smithay::delegate_xwayland_shell;
 use smithay::xwayland::{X11Surface, X11Wm, XWayland};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 
+use std::sync::Arc;
 use std::os::unix::net::UnixStream;
-use std::time::Instant;
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::ConnectionExt as XprotoConnectionExt;
+use x11rb::rust_connection::RustConnection;
+use x11rb::x11_utils::Serialize;
+use std::time::{Duration, Instant};
 
 use std::collections::HashMap;
 use crate::ipc::{GuiSpawnRequest, ResizeMode, SpawnRequest};
@@ -235,6 +240,13 @@ pub struct ColumnCompositor {
 
     /// Flag to spawn initial terminal (set when XWayland is ready)
     pub spawn_initial_terminal: bool,
+
+    /// X11 connection to XWayland for sending Expose events (set when XWayland is ready)
+    /// Smithay's X11Wm doesn't expose clear_area, so we maintain our own connection.
+    pub x11_conn: Option<Arc<RustConnection>>,
+
+    /// Last time we sent an X11 configure request (for throttling during resize drag)
+    pub last_x11_configure: Option<Instant>,
 }
 
 /// A node in the column layout containing the cell and its cached height.
@@ -482,6 +494,8 @@ impl ColumnCompositor {
             xwayland: None,
             override_redirect_windows: Vec::new(),
             spawn_initial_terminal: false,
+            x11_conn: None,
+            last_x11_configure: None,
         };
 
         (compositor, display)
@@ -802,6 +816,16 @@ impl ColumnCompositor {
                 toplevel.send_configure();
             }
             SurfaceKind::X11(x11) => {
+                // Throttle X11 configure requests to ~30fps to avoid flooding the app
+                const MIN_CONFIGURE_INTERVAL: Duration = Duration::from_millis(33);
+                if let Some(last) = self.last_x11_configure {
+                    if last.elapsed() < MIN_CONFIGURE_INTERVAL {
+                        // Skip this configure, just update node.height for visual feedback
+                        return;
+                    }
+                }
+                self.last_x11_configure = Some(Instant::now());
+
                 // For X11 SSD windows: new_height is visual (includes title bar),
                 // but X11 windows expect content height, so subtract title bar
                 let content_height = if entry.uses_csd {
@@ -809,10 +833,22 @@ impl ColumnCompositor {
                 } else {
                     new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
                 };
-
                 // Respect size hints (min/max size constraints)
                 let min_h = x11.min_size().map(|s| s.h as u32);
                 let max_h = x11.max_size().map(|s| s.h as u32);
+
+                // Check if window is reparented (has frame)
+                // mapped_window_id() returns Some(frame_id) if reparented
+                let frame_id = x11.mapped_window_id();
+
+                tracing::debug!(
+                    index,
+                    ?min_h,
+                    ?max_h,
+                    new_height,
+                    ?frame_id,
+                    "X11 window resize: sending configure"
+                );
 
                 let clamped_height = if let (Some(min), Some(max)) = (min_h, max_h) {
                     if min == max {
@@ -859,6 +895,46 @@ impl ColumnCompositor {
                     (width as i32, clamped_height as i32).into(),
                 )) {
                     tracing::warn!(?e, "failed to configure X11 window during resize");
+                }
+
+                // After configure, send an Expose event to trigger the X11 app to redraw.
+                // XWayland doesn't automatically send Expose events after resize, so simple X11 apps
+                // (like xeyes) won't redraw.
+                //
+                // Note: This is a best-effort workaround. XWayland buffer resize is controlled by
+                // the X11 client. If the client doesn't respond to ConfigureNotify by creating a
+                // new pixmap, the buffer stays at the old size. See:
+                // https://blog.vladzahorodnii.com/2024/10/28/improving-xwayland-window-resizing/
+                if let Some(ref conn) = self.x11_conn {
+                    let window_id = x11.window_id();
+
+                    // Create and send an Expose event to trigger redraw
+                    let expose_event = x11rb::protocol::xproto::ExposeEvent {
+                        response_type: x11rb::protocol::xproto::EXPOSE_EVENT,
+                        sequence: 0,
+                        window: window_id,
+                        x: 0,
+                        y: 0,
+                        width: width as u16,
+                        height: clamped_height as u16,
+                        count: 0,
+                    };
+
+                    // X11 events must be 32 bytes, pad the serialized event
+                    let serialized = expose_event.serialize();
+                    let mut event_bytes = [0u8; 32];
+                    event_bytes[..serialized.len()].copy_from_slice(&serialized);
+
+                    if let Err(e) = conn.send_event(
+                        false,
+                        window_id,
+                        x11rb::protocol::xproto::EventMask::EXPOSURE,
+                        event_bytes,
+                    ) {
+                        tracing::debug!(?e, "failed to send Expose event");
+                    } else {
+                        conn.flush().ok();
+                    }
                 }
             }
         }
@@ -1382,15 +1458,40 @@ impl ColumnCompositor {
     pub fn find_resize_handle_at(&self, screen_y: i32) -> Option<usize> {
         // Don't allow resizing the last cell (no border below it)
         if self.layout_nodes.len() < 2 {
+            tracing::debug!(
+                screen_y,
+                cells = self.layout_nodes.len(),
+                "find_resize_handle_at: too few cells"
+            );
             return None;
         }
 
         let mut content_y = -(self.scroll_offset as i32);
         let half_handle = RESIZE_HANDLE_SIZE / 2;
 
+        tracing::debug!(
+            screen_y,
+            scroll_offset = self.scroll_offset,
+            initial_content_y = content_y,
+            half_handle,
+            "find_resize_handle_at: starting search"
+        );
+
         for i in 0..self.layout_nodes.len() {
             let height = self.layout_nodes[i].height;
             let bottom_y = content_y + height;
+
+            tracing::debug!(
+                i,
+                height,
+                content_y,
+                bottom_y,
+                handle_min = bottom_y - half_handle,
+                handle_max = bottom_y + half_handle,
+                screen_y,
+                in_range = (screen_y >= bottom_y - half_handle && screen_y <= bottom_y + half_handle),
+                "find_resize_handle_at: checking cell"
+            );
 
             // Check if screen_y is in the handle zone around this cell's bottom edge
             // But not for the last cell (nothing below to resize into)
@@ -1398,11 +1499,19 @@ impl ColumnCompositor {
                 && screen_y >= bottom_y - half_handle
                 && screen_y <= bottom_y + half_handle
             {
+                tracing::info!(
+                    i,
+                    screen_y,
+                    bottom_y,
+                    "RESIZE HANDLE FOUND at cell index"
+                );
                 return Some(i);
             }
 
             content_y = bottom_y;
         }
+
+        tracing::debug!(screen_y, "find_resize_handle_at: no handle found");
         None
     }
 }
@@ -1426,6 +1535,26 @@ impl CompositorHandler for ColumnCompositor {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // Check if this is an X11 surface commit (for debugging resize issues)
+        #[cfg(debug_assertions)]
+        {
+            let matched_x11 = self.layout_nodes.iter().any(|node| {
+                if let ColumnCell::External(entry) = &node.cell {
+                    if let SurfaceKind::X11(_) = &entry.surface {
+                        return entry.surface.wl_surface().as_ref() == Some(surface);
+                    }
+                }
+                false
+            });
+
+            if matched_x11 {
+                tracing::debug!(
+                    surface_id = ?surface.id(),
+                    "X11 surface commit"
+                );
+            }
+        }
+
         // Process buffer for desktop rendering abstractions
         on_commit_buffer_handler::<Self>(surface);
         // Update popup manager state (moves unmapped popups to mapped when committed)

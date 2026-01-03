@@ -98,3 +98,7 @@ The test harness uses a mock `TestCompositor` that simulates the real compositor
 1. Use `simulate_click(screen_x, screen_y)` with screen coordinates
 2. Use `render_positions()` to get where windows actually render
 3. Verify click detection matches render positions
+
+## Additional Documentation
+
+- **[X11/XWayland Integration](docs/x11-integration.md)**: Detailed notes on X11 window handling, including resize issues, Y-flip rendering, and Expose event workarounds.

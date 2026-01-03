@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
-use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree};
+use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, WaylandSurfaceTexture, render_elements_from_surface_tree};
 use smithay::backend::renderer::element::{Element, Kind, RenderElement};
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Color32F, Frame, ImportMem, Texture};
-use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use crate::state::{ColumnCell, LayoutNode};
 use crate::terminal_manager::{TerminalId, TerminalManager};
@@ -42,6 +42,7 @@ pub enum CellRenderData<'a> {
         height: i32,
         elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
         title_bar_texture: Option<&'a GlesTexture>,
+        is_x11: bool,
     },
 }
 
@@ -187,24 +188,38 @@ pub fn collect_cell_data(
                 // This ensures popup surfaces don't affect the window's height calculation.
                 let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     if let Some(wl_surface) = entry.surface.wl_surface() {
-                        render_elements_from_surface_tree(
+                        let elems = render_elements_from_surface_tree(
                             renderer,
                             &wl_surface,
                             Point::from((0i32, 0i32)),
                             scale,
                             1.0,
                             Kind::Unspecified,
-                        )
+                        );
+
+                        // Debug: Log actual element sizes for X11 windows
+                        if matches!(entry.surface, crate::state::SurfaceKind::X11(_)) && !elems.is_empty() {
+                            let element_sizes: Vec<_> = elems.iter()
+                                .map(|e: &WaylandSurfaceRenderElement<GlesRenderer>| e.geometry(scale).size)
+                                .collect();
+                            tracing::debug!(
+                                ?element_sizes,
+                                configured_height = node.height,
+                                "X11 window element sizes vs configured size"
+                            );
+                        }
+
+                        elems
                     } else {
                         Vec::new()
                     };
 
-                // For X11 windows: Always use node.height (configured height)
-                // X11 apps lag in resizing buffers. We trust our configured size
-                // which is set by resize drag (input.rs) and configure_notify (xwayland.rs).
-                // This also avoids feedback loops through check_and_handle_height_changes.
+                // For X11 windows: Use configured height (node.height).
+                // We send clear_area with exposures=true after configure() to trigger
+                // the X11 app to redraw at the new size. Simple apps like xeyes only
+                // redraw when they receive Expose events.
                 //
-                // For Wayland: Calculate from actual surface geometry
+                // For Wayland: Calculate from actual surface geometry.
                 // The configure/ack protocol ensures the surface matches configured size.
                 let window_height = match &entry.surface {
                     crate::state::SurfaceKind::X11(_) => {
@@ -217,7 +232,7 @@ pub fn collect_cell_data(
                             node.height
                         } else {
                             elements.iter()
-                                .map(|e| {
+                                .map(|e: &WaylandSurfaceRenderElement<GlesRenderer>| {
                                     let geo = e.geometry(scale);
                                     geo.loc.y + geo.size.h
                                 })
@@ -281,14 +296,16 @@ pub fn build_render_data<'a>(
                     title_bar_texture,
                 });
             }
-            ColumnCell::External(_entry) => {
+            ColumnCell::External(entry) => {
                 let elements = std::mem::take(&mut external_elements[cell_idx]);
                 let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
+                let is_x11 = entry.surface.is_x11();
                 render_data.push(CellRenderData::External {
                     y: render_y,
                     height,
                     elements,
                     title_bar_texture,
+                    is_x11,
                 });
             }
         }
@@ -440,6 +457,7 @@ pub fn render_external(
     _screen_size: Size<i32, Physical>,
     damage: Rectangle<i32, Physical>,
     scale: Scale<f64>,
+    is_x11: bool,
 ) {
     let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
 
@@ -467,12 +485,36 @@ pub fn render_external(
             geo.size,
         );
 
-        let flipped_src = Rectangle::new(
-            Point::from((src.loc.x, src.loc.y + src.size.h)),
-            Size::from((src.size.w, -src.size.h)),
-        );
-
-        element.draw(frame, flipped_src, dest, &[damage], &[]).ok();
+        if is_x11 {
+            // For X11 surfaces, we need to apply a flip transform to correct orientation.
+            // Access the texture directly and render with Transform::Flipped180.
+            match element.texture() {
+                WaylandSurfaceTexture::Texture(texture) => {
+                    // Convert source from f64 BufferCoords to the format render_texture_from_to expects
+                    let src_rect: Rectangle<f64, BufferCoords> = Rectangle::new(
+                        Point::from((src.loc.x, src.loc.y)),
+                        Size::from((src.size.w, src.size.h)),
+                    );
+                    frame.render_texture_from_to(
+                        texture,
+                        src_rect,
+                        dest,
+                        &[damage],
+                        &[],
+                        Transform::Flipped180,
+                        1.0,
+                        None,  // No custom shader program
+                        &[],   // No uniforms
+                    ).ok();
+                }
+                WaylandSurfaceTexture::SolidColor(color) => {
+                    frame.draw_solid(dest, &[damage], *color).ok();
+                }
+            }
+        } else {
+            // For Wayland surfaces, use element.draw() which respects buffer_transform
+            element.draw(frame, src, dest, &[damage], &[]).ok();
+        }
     }
 
     // Draw focus indicator on left side of cell (after content so it's visible)

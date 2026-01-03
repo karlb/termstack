@@ -35,9 +35,14 @@ impl XwmHandler for ColumnCompositor {
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         // This is where we add normal windows to the column layout
+        // Check reparent status BEFORE and AFTER mapping
+        // mapped_window_id() returns Some(frame_id) if reparented, None if not
+        let frame_before = window.mapped_window_id();
+
         tracing::info!(
             class = %window.class(),
             instance = %window.instance(),
+            ?frame_before,
             "X11 window map request"
         );
 
@@ -53,6 +58,13 @@ impl XwmHandler for ColumnCompositor {
         if let Err(e) = window.set_mapped(true) {
             tracing::warn!(?e, "failed to set X11 window as mapped");
         }
+
+        // Check if reparenting happened
+        let frame_after = window.mapped_window_id();
+        tracing::info!(
+            ?frame_after,
+            "X11 window after set_mapped"
+        );
 
         // Add to layout with the configured height (not surface.geometry() which may lag)
         self.add_x11_window(window, initial_height as u32);
@@ -107,10 +119,15 @@ impl XwmHandler for ColumnCompositor {
         geometry: Rectangle<i32, Logical>,
         _above: Option<u32>,
     ) {
+        // Get window's current geometry to see if it matches what we configured
+        let window_geo = window.geometry();
+
         tracing::info!(
             geometry_w = geometry.size.w,
             geometry_h = geometry.size.h,
-            "configure_notify called for X11 window"
+            window_geo_w = window_geo.size.w,
+            window_geo_h = window_geo.size.h,
+            "configure_notify: reported geometry vs window.geometry()"
         );
 
         // Update stored height for layout and window state
