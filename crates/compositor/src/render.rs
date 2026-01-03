@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree};
-use smithay::backend::renderer::element::{Element, Kind, RenderElement};
+use smithay::backend::renderer::element::surface::{WaylandSurfaceRenderElement, WaylandSurfaceTexture, render_elements_from_surface_tree};
+use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Color32F, Frame, ImportMem, Texture};
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
@@ -449,6 +449,8 @@ pub fn render_external(
     }
 
     // Render external window elements
+    // All external windows need Transform::Flipped180 to match the frame's flip
+    // (OpenGL frame is rendered with Transform::Flipped180, so content needs counter-flip)
     for element in elements {
         let geo = element.geometry(scale);
         let src = element.src();
@@ -461,8 +463,27 @@ pub fn render_external(
             geo.size,
         );
 
-        // Use element.draw() which respects buffer_transform
-        element.draw(frame, src, dest, &[damage], &[]).ok();
+        // Render texture directly with Transform::Flipped180 to counter the frame flip
+        // This matches how we render terminal content (same approach as old X11Wm integration)
+        match element.texture() {
+            WaylandSurfaceTexture::Texture(texture) => {
+                frame.render_texture_from_to(
+                    texture,
+                    src,
+                    dest,
+                    &[damage],
+                    &[],
+                    Transform::Flipped180,
+                    1.0,
+                    None,  // program
+                    &[],   // uniforms
+                ).ok();
+            }
+            WaylandSurfaceTexture::SolidColor(color) => {
+                // Solid color surface (e.g., blank or placeholder)
+                frame.draw_solid(dest, &[damage], *color).ok();
+            }
+        }
     }
 
     // Draw focus indicator on left side of cell (after content so it's visible)

@@ -760,11 +760,27 @@ impl ColumnCompositor {
         // Get output width
         let width = self.output_size.w as u32;
 
+        // For SSD windows, subtract title bar height from the total cell height
+        // to get the actual surface content height
+        let surface_height = if entry.uses_csd {
+            new_height
+        } else {
+            new_height.saturating_sub(crate::title_bar::TITLE_BAR_HEIGHT)
+        };
+
         // Request the resize (all external windows are Wayland toplevels via xwayland-satellite)
         entry.surface.with_pending_state(|state| {
-            state.size = Some(Size::from((width as i32, new_height as i32)));
+            state.size = Some(Size::from((width as i32, surface_height as i32)));
         });
         entry.surface.send_configure();
+
+        tracing::debug!(
+            index,
+            total_height = new_height,
+            surface_height,
+            uses_csd = entry.uses_csd,
+            "sending configure with surface height"
+        );
 
         let serial = SERIAL_COUNTER.next_serial().into();
 
