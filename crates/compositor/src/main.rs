@@ -388,6 +388,35 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // Monitor xwayland-satellite health and auto-restart on crash
+        if let Some(ref mut child) = compositor.xwayland_satellite {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    tracing::warn!(?status, "xwayland-satellite exited, restarting");
+
+                    // Auto-restart xwayland-satellite
+                    if let Some(display_num) = compositor.x11_display_number {
+                        match spawn_xwayland_satellite(display_num) {
+                            Ok(new_child) => {
+                                compositor.xwayland_satellite = Some(new_child);
+                                tracing::info!("xwayland-satellite restarted successfully");
+                            }
+                            Err(e) => {
+                                tracing::error!(?e, "Failed to restart xwayland-satellite");
+                                compositor.xwayland_satellite = None;
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Still running, no action needed
+                }
+                Err(e) => {
+                    tracing::debug!(?e, "Error checking xwayland-satellite status");
+                }
+            }
+        }
+
         // Handle external window insert/resize events
         handle_external_window_events(&mut compositor, &mut terminal_manager);
 
@@ -756,6 +785,17 @@ fn main() -> anyhow::Result<()> {
         event_loop
             .dispatch(Some(Duration::from_millis(16)), &mut compositor)
             .map_err(|e| anyhow::anyhow!("event loop error: {e}"))?;
+    }
+
+    // Terminate xwayland-satellite on compositor shutdown
+    if let Some(mut child) = compositor.xwayland_satellite.take() {
+        if let Err(e) = child.kill() {
+            tracing::warn!(?e, "Failed to kill xwayland-satellite");
+        }
+        if let Err(e) = child.wait() {
+            tracing::warn!(?e, "Failed to wait for xwayland-satellite");
+        }
+        tracing::info!("xwayland-satellite terminated");
     }
 
     tracing::info!("compositor shutting down");
@@ -1724,28 +1764,23 @@ fn cleanup_and_sync_focus(
     false
 }
 
-/// Initialize XWayland support for running X11 applications
+/// Initialize XWayland support with xwayland-satellite for running X11 applications
+///
+/// xwayland-satellite acts as the X11 window manager and presents X11 windows as
+/// normal Wayland toplevels to the compositor.
 fn initialize_xwayland(
     compositor: &mut ColumnCompositor,
     display: &mut Display<ColumnCompositor>,
     loop_handle: smithay::reexports::calloop::LoopHandle<'static, ColumnCompositor>,
 ) {
-    // TODO: Replace with xwayland-satellite integration (Step 6)
-    // Temporarily disabled - old Smithay X11Wm code removed
-    tracing::warn!("XWayland support temporarily disabled during migration to xwayland-satellite");
-    return;
+    // Spawn XWayland without a window manager (xwayland-satellite will be the WM)
+    use smithay::xwayland::{XWayland, XWaylandEvent};
 
-    /* Commented out during Step 1-3 migration - will be replaced in Step 6
-    // Create XWayland shell state (required for X11 surface association)
-    let xwayland_shell_state = XWaylandShellState::new::<ColumnCompositor>(&display.handle());
-    compositor.xwayland_shell_state = Some(xwayland_shell_state);
-
-    // Try to spawn XWayland
-    let (xwayland, xwayland_client) = match XWayland::spawn(
+    let (xwayland, _client) = match XWayland::spawn(
         &display.handle(),
         None, // Let XWayland pick display number
         std::iter::empty::<(String, String)>(),
-        true,  // Use abstract socket
+        false, // Use on-disk socket (not abstract) so xwayland-satellite can connect
         std::process::Stdio::null(),
         std::process::Stdio::null(),
         |_| (),
@@ -1757,51 +1792,34 @@ fn initialize_xwayland(
         }
     };
 
-    // Clone handle for use inside the closure
-    let wm_handle = loop_handle.clone();
-
     // Insert XWayland event source to handle Ready/Error events
     if let Err(e) = loop_handle.insert_source(xwayland, move |event, _, compositor| {
         match event {
-            XWaylandEvent::Ready {
-                x11_socket,
-                display_number,
-            } => {
-                tracing::info!(display_number, "XWayland ready");
+            XWaylandEvent::Ready { display_number, .. } => {
+                tracing::info!(display_number, "XWayland ready, spawning xwayland-satellite");
 
                 // Set DISPLAY for child processes
                 std::env::set_var("DISPLAY", format!(":{}", display_number));
+                compositor.x11_display_number = Some(display_number);
 
-                // Start the X11 Window Manager
-                match X11Wm::start_wm(
-                    wm_handle.clone(),
-                    x11_socket,
-                    xwayland_client.clone(),
-                ) {
-                    Ok(wm) => {
-                        tracing::info!("X11 Window Manager started");
-                        compositor.x11_wm = Some(wm);
-
-                        // Create our own X11 connection for sending clear_area/Expose events.
-                        // Smithay's X11Wm doesn't expose this functionality.
-                        let display = format!(":{}", display_number);
-                        match x11rb::connect(Some(&display)) {
-                            Ok((conn, _screen)) => {
-                                tracing::info!("X11 connection established for Expose events");
-                                compositor.x11_conn = Some(std::sync::Arc::new(conn));
-                            }
-                            Err(e) => {
-                                tracing::warn!(?e, "Failed to create X11 connection for Expose events");
-                            }
-                        }
-
-                        // Now spawn initial terminal with DISPLAY set
-                        compositor.spawn_initial_terminal = true;
+                // Spawn xwayland-satellite (acts as X11 WM, presents windows as Wayland toplevels)
+                match spawn_xwayland_satellite(display_number) {
+                    Ok(child) => {
+                        tracing::info!("xwayland-satellite launched successfully");
+                        compositor.xwayland_satellite = Some(child);
                     }
                     Err(e) => {
-                        tracing::error!(?e, "Failed to start X11 Window Manager");
+                        // Soft dependency: warn but continue
+                        tracing::warn!(
+                            ?e,
+                            "Failed to spawn xwayland-satellite - X11 apps will not work. \
+                             Install with: cargo install xwayland-satellite"
+                        );
                     }
                 }
+
+                // Spawn initial terminal now that DISPLAY is set
+                compositor.spawn_initial_terminal = true;
             }
             XWaylandEvent::Error => {
                 tracing::error!("XWayland failed");
@@ -1810,7 +1828,14 @@ fn initialize_xwayland(
     }) {
         tracing::warn!(?e, "Failed to insert XWayland event source");
     }
+}
 
-    tracing::info!("XWayland initialization complete");
-    */
+/// Spawn xwayland-satellite process to act as X11 window manager
+fn spawn_xwayland_satellite(display_number: u32) -> std::io::Result<std::process::Child> {
+    std::process::Command::new("xwayland-satellite")
+        .arg(format!(":{}", display_number))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped()) // Capture stderr for logging
+        .spawn()
 }

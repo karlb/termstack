@@ -226,9 +226,6 @@ pub struct ColumnCompositor {
     pub csd_apps: Vec<String>,
 
     // XWayland support (via xwayland-satellite)
-    /// XWayland shell protocol state (required for xwayland-satellite)
-    pub xwayland_shell_state: Option<XWaylandShellState>,
-
     /// xwayland-satellite process handle (acts as X11 WM, presents X11 windows as Wayland)
     pub xwayland_satellite: Option<std::process::Child>,
 
@@ -451,7 +448,6 @@ impl ColumnCompositor {
             pointer_buttons_pressed: 0,
             x11_resize_pending: None,
             csd_apps,
-            xwayland_shell_state: None,
             xwayland_satellite: None,
             x11_display_number: None,
             spawn_initial_terminal: false,
@@ -1738,12 +1734,7 @@ impl ClientData for ClientState {
 }
 
 // Delegate macros
-impl XWaylandShellHandler for ColumnCompositor {
-    fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
-        self.xwayland_shell_state.as_mut().expect("XWaylandShellState should be set")
-    }
-}
-
+// Note: XWaylandShellHandler not needed - xwayland-satellite handles X11 WM duties
 delegate_compositor!(ColumnCompositor);
 delegate_shm!(ColumnCompositor);
 delegate_xdg_shell!(ColumnCompositor);
