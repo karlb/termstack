@@ -70,10 +70,25 @@ pub struct ResizeDrag {
     pub start_screen_y: i32,
     /// Cell height when drag started
     pub start_height: i32,
+    /// Last time we sent a configure request (for throttling)
+    pub last_configure_time: std::time::Instant,
+    /// Current drag target height (may differ from committed height)
+    pub target_height: i32,
+    /// Last height we sent in configure (for deduplication)
+    pub last_sent_height: Option<u32>,
 }
 
 /// Size of the resize handle zone at cell borders (pixels)
 pub const RESIZE_HANDLE_SIZE: i32 = 8;
+
+/// Minimum time between configure requests during resize (milliseconds)
+/// This prevents overwhelming windows with too many resize requests
+pub const MIN_CONFIGURE_INTERVAL_MS: u64 = 16; // ~60fps
+
+/// Maximum time to wait for a window commit before sending next configure (milliseconds)
+/// If window doesn't commit within this timeout, we send another configure anyway
+/// This balances responsiveness (avoid >1s lag) with preventing window thrashing
+pub const CONFIGURE_COMMIT_TIMEOUT_MS: u64 = 100;
 
 /// Minimum cell height (pixels)
 pub const MIN_CELL_HEIGHT: i32 = 50;
@@ -740,8 +755,7 @@ impl ColumnCompositor {
 
     /// Request an external window resize (by cell index)
     ///
-    /// If `force` is true, bypasses throttling to ensure the resize is sent immediately.
-    /// Use force=true at the end of a resize drag to guarantee the final size is applied.
+    /// The `force` parameter is kept for compatibility but no longer used (we always send configures).
     pub fn request_resize(&mut self, index: usize, new_height: u32, _force: bool) {
         let Some(node) = self.layout_nodes.get_mut(index) else {
             tracing::warn!("request_resize: node not found at index {}", index);
@@ -914,6 +928,33 @@ impl ColumnCompositor {
                     );
                     self.external_window_resized = Some((index, committed_cell_height as i32));
                     self.recalculate_layout();
+
+                    // Reset throttle for catch-up (don't send immediately - give window breathing room)
+                    if let Some(drag) = &self.resizing {
+                        if drag.cell_index == index {
+                            let current_target = drag.target_height as u32;
+                            if current_target != committed_cell_height {
+                                // User continued dragging while commit was pending
+                                // Reset throttle timer so next configure will be sent after standard delay
+                                // This gives the window breathing room after commit instead of immediately
+                                // sending another configure
+                                tracing::debug!(
+                                    index,
+                                    committed = committed_cell_height,
+                                    target = current_target,
+                                    "drag moved during commit - will catch up on next motion event"
+                                );
+
+                                if let Some(drag_mut) = self.resizing.as_mut() {
+                                    // Clear last_sent_height so next motion event sees height changed
+                                    drag_mut.last_sent_height = None;
+                                    // Set time far in past so throttle allows immediate send on next motion
+                                    drag_mut.last_configure_time =
+                                        Instant::now() - std::time::Duration::from_millis(MIN_CONFIGURE_INTERVAL_MS);
+                                }
+                            }
+                        }
+                    }
                 }
                 WindowState::PendingResize { requested_height, current_height, .. } => {
                     // Resize pending but committed height doesn't match - log mismatch

@@ -602,10 +602,31 @@ fn main() -> anyhow::Result<()> {
                 scale,
             );
 
+            // Build heights for positioning:
+            // - Terminals: use actual_heights (includes title bar height from collect_cell_data)
+            // - External windows during resize: use node.height (drag target)
+            // - External windows not resizing: use actual_heights
+            let layout_heights: Vec<i32> = compositor.layout_nodes
+                .iter()
+                .enumerate()
+                .map(|(i, node)| {
+                    match &node.cell {
+                        ColumnCell::Terminal(_) => {
+                            // Terminals: use actual_heights which includes title bar
+                            actual_heights[i]
+                        }
+                        ColumnCell::External(_) => {
+                            // External windows: use layout height (drag target during resize)
+                            node.height
+                        }
+                    }
+                })
+                .collect();
+
             // Build render data with computed Y positions
             let render_data = build_render_data(
                 &compositor.layout_nodes,
-                &actual_heights,
+                &layout_heights,
                 &mut external_elements,
                 &title_bar_textures,
                 compositor.scroll_offset,
@@ -1319,13 +1340,35 @@ fn check_and_handle_height_changes(
     compositor: &mut ColumnCompositor,
     actual_heights: Vec<i32>,
 ) {
-    // Skip all height updates during active resize drag
-    // (the resize handler updates heights, and we don't want actual rendered heights
-    // to overwrite the user's drag updates)
-    if compositor.resizing.is_some() {
-        tracing::debug!("skipping height update during active resize drag");
-        return;
-    }
+    let is_resizing = compositor.resizing.is_some();
+
+    // During resize: update layout positions to show target state for visual feedback
+    // - Terminals: instant resize (drag-updated height)
+    // - External windows being resized: use TARGET height for layout (shows final positions)
+    // - External windows NOT being resized: use committed height
+    // The resizing window will render at committed size but be positioned at target size,
+    // giving visual feedback without flickering
+    let heights_to_apply: Vec<i32> = compositor.layout_nodes.iter().enumerate().map(|(i, node)| {
+        match &node.cell {
+            ColumnCell::Terminal(_) => {
+                // Terminals: always use drag-updated height (instant resize)
+                node.height
+            }
+            ColumnCell::External(entry) => {
+                // Check if this is the window being resized
+                if let Some(drag) = &compositor.resizing {
+                    if i == drag.cell_index {
+                        // Resizing window: use TARGET height for layout positioning
+                        // (content still renders at committed size, but positioned at target)
+                        return drag.target_height;
+                    }
+                }
+                // Non-resizing external windows: use committed height from WindowState
+                // This prevents flickering (no partial buffers) and jumping (no frame delay)
+                entry.state.current_height() as i32
+            }
+        }
+    }).collect();
 
     let current_heights: Vec<i32> = compositor
         .layout_nodes
@@ -1335,13 +1378,12 @@ fn check_and_handle_height_changes(
 
     let heights_changed = heights_changed_significantly(
         &current_heights,
-        &actual_heights,
+        &heights_to_apply,
         compositor.focused_index(),
     );
 
-    // Before updating heights, check if focused cell bottom is visible
-    // This prevents autoscroll when user has scrolled up to view earlier content
-    let should_autoscroll = if heights_changed {
+    // Skip autoscroll during resize to avoid disrupting drag
+    let should_autoscroll = if heights_changed && !is_resizing {
         if let Some(focused_idx) = compositor.focused_index() {
             is_cell_bottom_visible(compositor, focused_idx)
         } else {
@@ -1351,7 +1393,7 @@ fn check_and_handle_height_changes(
         false
     };
 
-    compositor.update_layout_heights(actual_heights);
+    compositor.update_layout_heights(heights_to_apply);
 
     // Adjust scroll if heights changed AND focused cell bottom was visible
     // This allows users to scroll up while content continues to flow in

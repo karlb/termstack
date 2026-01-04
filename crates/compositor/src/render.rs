@@ -271,9 +271,21 @@ pub fn build_render_data<'a>(
                 let elements = std::mem::take(&mut external_elements[cell_idx]);
                 let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
                 let uses_csd = entry.uses_csd;
+
+                // For external windows, check if height differs from committed
+                // (happens during resize drag when using target height for layout)
+                let committed_height = entry.state.current_height() as i32;
+                let adjusted_render_y = if committed_height != height {
+                    // Top-align content: shift render_y up by the height difference
+                    // (in OpenGL coords, Y=0 at bottom, so adding moves content up on screen)
+                    render_y + (height - committed_height)
+                } else {
+                    render_y
+                };
+
                 render_data.push(CellRenderData::External {
-                    y: render_y,
-                    height,
+                    y: adjusted_render_y,
+                    height: committed_height,  // Use committed height for rendering
                     elements,
                     title_bar_texture,
                     uses_csd,

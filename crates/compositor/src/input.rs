@@ -542,20 +542,25 @@ impl ColumnCompositor {
                     }
                 }
                 None => {
-                    // External window - don't send resize during drag, only update visual height
-                    // Final resize will be sent on button release with force=true
-                    let before_height = self.layout_nodes.get(cell_index).map(|n| n.height);
-                    // Update cached height for visual feedback
+                    // External window - Niri-style approach: no configures during drag
+                    // Only send configure when drag ends to prevent overwhelming window
+                    // But DO update layout positions for visual feedback
+
+                    // Update drag target for final resize
+                    if let Some(drag) = &mut self.resizing {
+                        drag.target_height = new_height;
+                    }
+
+                    // Update cached height for layout positioning (visual feedback)
+                    // Window will render at committed size but be positioned at target size
                     if let Some(node) = self.layout_nodes.get_mut(cell_index) {
                         node.height = new_height;
                     }
-                    let after_height = self.layout_nodes.get(cell_index).map(|n| n.height);
-                    tracing::info!(
+
+                    tracing::trace!(
                         cell_index,
                         new_height,
-                        before_height,
-                        after_height,
-                        "EXTERNAL WINDOW RESIZE: updated visual height"
+                        "drag motion - updating layout positions"
                     );
                 }
             }
@@ -627,23 +632,19 @@ impl ColumnCompositor {
 
         // Handle left mouse button release
         if button == BTN_LEFT && state == ButtonState::Released {
-            // End resize drag - send final resize to ensure X11 apps get the final size
+            // End resize drag - send final configure at drag target
             if let Some(drag) = self.resizing.take() {
-                // Get the final height from the cached layout
-                let final_height = self.layout_nodes.get(drag.cell_index)
-                    .map(|n| n.height as u32)
-                    .unwrap_or(0);
+                let final_target = drag.target_height as u32;
+
                 tracing::info!(
                     cell_index = drag.cell_index,
-                    final_height,
-                    node_count = self.layout_nodes.len(),
-                    "RESIZE DRAG ENDED"
+                    final_target,
+                    "RESIZE DRAG ENDED - sending final configure"
                 );
-                if final_height > 0 {
-                    // Send with force=true to bypass throttle
-                    self.request_resize(drag.cell_index, final_height, true);
-                } else {
-                    tracing::warn!(cell_index = drag.cell_index, "final_height is 0, not calling request_resize");
+
+                if final_target > 0 {
+                    // Use force=true to bypass pending check
+                    self.request_resize(drag.cell_index, final_target, true);
                 }
                 return; // Don't process further
             }
@@ -680,6 +681,9 @@ impl ColumnCompositor {
                         cell_index,
                         start_screen_y: screen_y.value() as i32,
                         start_height,
+                        last_configure_time: std::time::Instant::now(),
+                        target_height: start_height,
+                        last_sent_height: None,
                     });
                     // Clear any pending external_window_resized for this cell
                     // to prevent stale resize events from overwriting our drag updates
