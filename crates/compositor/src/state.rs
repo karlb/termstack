@@ -601,10 +601,10 @@ impl TermStack {
                     terminal_id = term_id.0,
                     "output terminal not found in layout, using focused index"
                 );
-                self.focused_index().unwrap_or(self.layout_nodes.len())
+                self.focused_or_last()
             }
         } else {
-            self.focused_index().unwrap_or(self.layout_nodes.len())
+            self.focused_or_last()
         };
 
         self.layout_nodes.insert(insert_index, LayoutNode {
@@ -644,7 +644,7 @@ impl TermStack {
     pub fn add_terminal(&mut self, id: TerminalId) {
         // Insert at focused index to appear ABOVE the focused cell
         // (lower index = higher on screen after Y-flip)
-        let insert_index = self.focused_index().unwrap_or(self.layout_nodes.len());
+        let insert_index = self.focused_or_last();
 
         // Insert with placeholder height 0, will be updated in next frame
         self.layout_nodes.insert(insert_index, LayoutNode {
@@ -1260,6 +1260,14 @@ impl TermStack {
             }
             _ => false,
         })
+    }
+
+    /// Get the focused index or fallback to the end of the list.
+    ///
+    /// This is a convenience method for the common pattern of inserting new windows
+    /// at the focused position, or at the end if nothing is focused.
+    fn focused_or_last(&self) -> usize {
+        self.focused_index().unwrap_or(self.layout_nodes.len())
     }
 
     /// Set focus to the cell at the given index.
