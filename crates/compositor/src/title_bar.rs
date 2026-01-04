@@ -85,38 +85,46 @@ struct GlyphData {
 }
 
 impl TitleBarRenderer {
+    /// Common font search paths
+    const FONT_SEARCH_PATHS: &'static [&'static str] = &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+        "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
+        "/usr/share/fonts/noto/NotoMono-Regular.ttf",
+    ];
+
+    /// Try to find and load a font from common system locations
+    fn find_font() -> Option<(fontdue::Font, &'static str)> {
+        Self::FONT_SEARCH_PATHS.iter().find_map(|&path| {
+            let data = std::fs::read(path).ok()?;
+            let font = fontdue::Font::from_bytes(
+                data.as_slice(),
+                fontdue::FontSettings::default(),
+            ).ok()?;
+            Some((font, path))
+        })
+    }
+
     /// Create a new title bar renderer with theme
     pub fn new(theme: Theme) -> Option<Self> {
-        // Try to load a font from common locations
-        let font_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-            "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
-            "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
-            "/usr/share/fonts/noto/NotoMono-Regular.ttf",
-        ];
-
-        for path in &font_paths {
-            if let Ok(data) = std::fs::read(path) {
-                if let Ok(font) = fontdue::Font::from_bytes(
-                    data.as_slice(),
-                    fontdue::FontSettings::default(),
-                ) {
-                    tracing::info!("TitleBarRenderer: loaded font from {}", path);
-                    return Some(Self {
-                        font,
-                        font_size: 14.0,
-                        glyph_cache: HashMap::new(),
-                        theme,
-                    });
-                }
+        match Self::find_font() {
+            Some((font, path)) => {
+                tracing::info!("TitleBarRenderer: loaded font from {}", path);
+                Some(Self {
+                    font,
+                    font_size: 14.0,
+                    glyph_cache: HashMap::new(),
+                    theme,
+                })
+            }
+            None => {
+                tracing::warn!("TitleBarRenderer: no font found");
+                None
             }
         }
-
-        tracing::warn!("TitleBarRenderer: no font found");
-        None
     }
 
     /// Render a title bar to a pixel buffer (ARGB32)
