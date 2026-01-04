@@ -109,6 +109,11 @@ impl VisibilityState {
 }
 
 /// A managed internal terminal
+///
+/// INVARIANT: Terminal grid is always 1000 rows (internal alacritty storage),
+/// PTY size changes independently via resize operations.
+/// Never confuse terminal.grid_rows() with terminal.dimensions().rows.
+/// Programs query PTY size via tcgetwinsize, not grid size.
 pub struct ManagedTerminal {
     /// The terminal instance
     pub terminal: Terminal,

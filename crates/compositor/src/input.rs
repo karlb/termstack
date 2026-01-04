@@ -519,7 +519,9 @@ impl TermStack {
     ) {
         let output_size = self.output_size;
 
-        // Input from Winit is in screen coordinates (Y=0 at top)
+        // INVARIANT: Mouse events arrive in screen coordinates (Y=0 at top).
+        // Must convert to render coordinates (Y=0 at bottom) before any layout operations.
+        // The Y-flip formula is: render_y = screen_height - screen_y
         let screen_x = event.x_transformed(output_size.w);
         let screen_y = ScreenY::new(event.y_transformed(output_size.h));
 

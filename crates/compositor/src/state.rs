@@ -145,6 +145,9 @@ pub struct TermStack {
     pub popup_manager: PopupManager,
 
     /// All cells in column order (terminals and external windows unified)
+    ///
+    /// INVARIANT: layout_nodes[0] renders at highest Y (top of screen after Y-flip).
+    /// After any mutation (insert/remove), must call recalculate_layout() to update positions.
     pub layout_nodes: Vec<LayoutNode>,
 
     /// Current scroll offset (pixels from top)
