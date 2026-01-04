@@ -286,13 +286,13 @@ pub fn run_compositor() -> anyhow::Result<()> {
                                 tracing::debug!("IPC received empty message");
                             }
                             Err(e) => {
-                                tracing::warn!("IPC request error: {}", e);
+                                tracing::warn!(error = ?e, "IPC request parsing failed");
                             }
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
-                        tracing::warn!("IPC accept error: {}", e);
+                        tracing::warn!(error = ?e, "IPC accept error");
                         break;
                     }
                 }
@@ -383,7 +383,7 @@ pub fn run_compositor() -> anyhow::Result<()> {
                     tracing::info!(id = id.0, "spawned initial terminal (XWayland ready)");
                 }
                 Err(e) => {
-                    tracing::error!("failed to spawn initial terminal: {}", e);
+                    tracing::error!(error = ?e, "failed to spawn initial terminal");
                 }
             }
         }
@@ -561,7 +561,7 @@ pub fn run_compositor() -> anyhow::Result<()> {
         let (mut buffer, _buffer_age) = match x11_surface.buffer() {
             Ok(buf) => buf,
             Err(e) => {
-                tracing::warn!("Failed to get X11 surface buffer: {:?}", e);
+                tracing::warn!(error = ?e, "Failed to get X11 surface buffer");
                 continue;
             }
         };
@@ -571,7 +571,7 @@ pub fn run_compositor() -> anyhow::Result<()> {
             let mut framebuffer = match renderer.bind(&mut buffer) {
                 Ok(fb) => fb,
                 Err(e) => {
-                    tracing::warn!("Failed to bind buffer: {:?}", e);
+                    tracing::warn!(error = ?e, "Failed to bind buffer");
                     continue;
                 }
             };
@@ -827,7 +827,7 @@ pub fn run_compositor() -> anyhow::Result<()> {
 
         // Submit the rendered buffer to X11
         if let Err(e) = x11_surface.submit() {
-            tracing::warn!("Failed to submit X11 surface: {:?}", e);
+            tracing::warn!(error = ?e, "Failed to submit X11 surface");
         }
 
         // Send frame callbacks to all toplevel surfaces and their popups
@@ -1073,7 +1073,7 @@ fn handle_terminal_spawn(
             }
         }
         Err(e) => {
-            tracing::error!("failed to spawn terminal: {}", e);
+            tracing::error!(error = ?e, "failed to spawn terminal");
         }
     }
 }
@@ -1210,7 +1210,7 @@ fn handle_gui_spawn_requests(
                 }
             }
             Err(e) => {
-                tracing::error!(command = %request.command, "failed to spawn GUI command: {}", e);
+                tracing::error!(command = %request.command, error = ?e, "failed to spawn GUI command");
             }
         }
     }
@@ -1519,7 +1519,7 @@ fn process_spawn_request(
             Some(id)
         }
         Err(e) => {
-            tracing::error!("failed to spawn command terminal: {}", e);
+            tracing::error!(error = ?e, "failed to spawn command terminal");
             None
         }
     }
