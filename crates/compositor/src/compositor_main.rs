@@ -43,6 +43,9 @@ use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 /// Minimum terminal height in rows.
 const MIN_TERMINAL_ROWS: u16 = 1;
 
+/// Default terminal height in pixels (fallback when terminal doesn't exist)
+const DEFAULT_TERMINAL_HEIGHT: i32 = 200;
+
 /// Popup render data: (x, y, geo_offset_x, geo_offset_y, elements)
 type PopupRenderData = Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)>;
 
@@ -1018,7 +1021,7 @@ fn calculate_window_heights(
                             content
                         }
                     })
-                    .unwrap_or(200)
+                    .unwrap_or(DEFAULT_TERMINAL_HEIGHT)
             }
             StackWindow::External(entry) => {
                 // Use cached visual height if available
