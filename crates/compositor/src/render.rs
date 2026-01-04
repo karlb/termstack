@@ -463,8 +463,7 @@ pub fn render_external(
             geo.size,
         );
 
-        // Render texture directly with Transform::Flipped180 to counter the frame flip
-        // This matches how we render terminal content (same approach as old X11Wm integration)
+        // Render texture with Transform::Flipped180 to counter the OpenGL Y-flip
         match element.texture() {
             WaylandSurfaceTexture::Texture(texture) => {
                 frame.render_texture_from_to(

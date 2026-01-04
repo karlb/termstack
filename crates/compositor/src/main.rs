@@ -36,7 +36,7 @@ use compositor::render::{
     heights_changed_significantly, render_terminal, render_external,
     TitleBarCache,
 };
-use compositor::state::{ClientState, ColumnCell, ColumnCompositor};
+use compositor::state::{ClientState, ColumnCell, ColumnCompositor, XWaylandSatelliteMonitor};
 use compositor::terminal_manager::{TerminalId, TerminalManager};
 use compositor::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
@@ -314,7 +314,7 @@ fn main() -> anyhow::Result<()> {
                 let _ = x11_event_tx.send(input_event);
             }
             X11Event::Resized { new_size, .. } => {
-                state.x11_resize_pending = Some((new_size.w, new_size.h));
+                state.compositor_window_resize_pending = Some((new_size.w, new_size.h));
             }
             X11Event::CloseRequested { .. } => {
                 state.running = false;
@@ -386,12 +386,12 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Monitor xwayland-satellite health and auto-restart on crash
-        if let Some(ref mut child) = compositor.xwayland_satellite {
-            match child.try_wait() {
+        // Monitor xwayland-satellite health and auto-restart on crash with backoff
+        if let Some(mut monitor) = compositor.xwayland_satellite.take() {
+            match monitor.child.try_wait() {
                 Ok(Some(status)) => {
-                    // Try to read stderr to see why it crashed
-                    let stderr_output = if let Some(ref mut stderr) = child.stderr {
+                    // xwayland-satellite crashed! Try to read stderr to see why
+                    let stderr_output = if let Some(ref mut stderr) = monitor.child.stderr {
                         use std::io::Read;
                         let mut buf = String::new();
                         stderr.read_to_string(&mut buf).ok();
@@ -406,16 +406,56 @@ fn main() -> anyhow::Result<()> {
                         tracing::warn!(?status, "xwayland-satellite exited");
                     }
 
-                    // Don't auto-restart if it's crashing immediately
-                    // (prevents infinite restart loop)
-                    tracing::warn!("xwayland-satellite crashed - X11 apps will not work");
-                    compositor.xwayland_satellite = None;
+                    // Determine if this is a rapid crash (within 10s of last crash)
+                    let now = std::time::Instant::now();
+                    let time_since_last = monitor.last_crash_time.map(|t| now.duration_since(t));
+                    let is_rapid_crash = time_since_last.is_some_and(|d| d < Duration::from_secs(10));
+
+                    if is_rapid_crash {
+                        monitor.crash_count += 1;
+                    } else {
+                        // Ran for a while before crashing, reset counter
+                        monitor.crash_count = 1;
+                    }
+
+                    monitor.last_crash_time = Some(now);
+
+                    if monitor.crash_count <= 3 {
+                        tracing::warn!(
+                            attempt = monitor.crash_count,
+                            "xwayland-satellite crashed, restarting (attempt {}/3)",
+                            monitor.crash_count
+                        );
+
+                        // Attempt restart
+                        match spawn_xwayland_satellite(compositor.x11_display_number.unwrap()) {
+                            Ok(mut new_monitor) => {
+                                // Preserve crash tracking from old monitor
+                                new_monitor.crash_count = monitor.crash_count;
+                                new_monitor.last_crash_time = monitor.last_crash_time;
+                                compositor.xwayland_satellite = Some(new_monitor);
+                            }
+                            Err(e) => {
+                                tracing::error!(?e, "Failed to restart xwayland-satellite");
+                            }
+                        }
+                    } else {
+                        tracing::error!(
+                            "xwayland-satellite crashed {} times in rapid succession, giving up",
+                            monitor.crash_count
+                        );
+                        tracing::warn!("X11 apps will not work for the rest of this session");
+                        // Don't put monitor back - X11 support disabled for session
+                    }
                 }
                 Ok(None) => {
-                    // Still running, no action needed
+                    // Still running, put monitor back
+                    compositor.xwayland_satellite = Some(monitor);
                 }
                 Err(e) => {
                     tracing::debug!(?e, "Error checking xwayland-satellite status");
+                    // Put monitor back even on error
+                    compositor.xwayland_satellite = Some(monitor);
                 }
             }
         }
@@ -442,7 +482,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         // Handle X11 resize events
-        if let Some((new_w, new_h)) = compositor.x11_resize_pending.take() {
+        if let Some((new_w, new_h)) = compositor.compositor_window_resize_pending.take() {
             let new_size: Size<i32, Physical> = (new_w as i32, new_h as i32).into();
             // Update Smithay output mode
             output.change_current_state(
@@ -791,11 +831,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Terminate xwayland-satellite on compositor shutdown
-    if let Some(mut child) = compositor.xwayland_satellite.take() {
-        if let Err(e) = child.kill() {
+    if let Some(mut monitor) = compositor.xwayland_satellite.take() {
+        if let Err(e) = monitor.child.kill() {
             tracing::warn!(?e, "Failed to kill xwayland-satellite");
         }
-        if let Err(e) = child.wait() {
+        if let Err(e) = monitor.child.wait() {
             tracing::warn!(?e, "Failed to wait for xwayland-satellite");
         }
         tracing::info!("xwayland-satellite terminated");
@@ -1834,10 +1874,16 @@ fn initialize_xwayland(
                     }
                     Err(e) => {
                         // Soft dependency: warn but continue
+                        // Print to stderr for visibility (only shown once at startup)
+                        eprintln!();
+                        eprintln!("⚠️  WARNING: xwayland-satellite not found");
+                        eprintln!("   X11 applications will not work (Wayland apps only)");
+                        eprintln!("   Install: cargo install xwayland-satellite");
+                        eprintln!();
+
                         tracing::warn!(
                             ?e,
-                            "Failed to spawn xwayland-satellite - X11 apps will not work. \
-                             Install with: cargo install xwayland-satellite"
+                            "Failed to spawn xwayland-satellite - continuing in Wayland-only mode"
                         );
                     }
                 }
@@ -1855,20 +1901,28 @@ fn initialize_xwayland(
 }
 
 /// Spawn xwayland-satellite process to act as X11 window manager
-fn spawn_xwayland_satellite(display_number: u32) -> std::io::Result<std::process::Child> {
+fn spawn_xwayland_satellite(display_number: u32) -> std::io::Result<XWaylandSatelliteMonitor> {
     // Try to find xwayland-satellite in common locations
     let xwayland_satellite_path = find_xwayland_satellite()
         .unwrap_or_else(|| "xwayland-satellite".to_string());
 
     // xwayland-satellite needs to connect to OUR compositor's Wayland socket (wayland-1),
     // not the host compositor's socket (wayland-0)
-    std::process::Command::new(xwayland_satellite_path)
+    let child = std::process::Command::new(xwayland_satellite_path)
         .arg(format!(":{}", display_number))
-        .env("WAYLAND_DISPLAY", "wayland-1")  // Our compositor's socket
+        // In nested setup: host is wayland-0, our compositor is wayland-1
+        // xwayland-satellite MUST connect to our compositor, not the host
+        .env("WAYLAND_DISPLAY", "wayland-1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped()) // Capture stderr for logging
-        .spawn()
+        .spawn()?;
+
+    Ok(XWaylandSatelliteMonitor {
+        child,
+        last_crash_time: None,
+        crash_count: 0,
+    })
 }
 
 /// Find xwayland-satellite binary in common installation locations

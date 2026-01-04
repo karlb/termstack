@@ -114,7 +114,7 @@ X11 App <-> XWayland <-> xwayland-satellite <-> Compositor
                          (acts as WM + Wayland client)
 ```
 
-X11 windows appear as regular `ToplevelSurface` windows - no special handling needed. The compositor automatically spawns xwayland-satellite when XWayland becomes ready, and will auto-restart it if it crashes.
+X11 windows appear as regular `ToplevelSurface` windows - no special handling needed. The compositor automatically spawns xwayland-satellite when XWayland becomes ready. If xwayland-satellite crashes, it will auto-restart up to 3 times (with 10-second backoff window) before giving up for the session.
 
 If xwayland-satellite is not installed, the compositor continues in Wayland-only mode with a warning.
 

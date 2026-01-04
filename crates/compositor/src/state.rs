@@ -78,6 +78,16 @@ pub const RESIZE_HANDLE_SIZE: i32 = 8;
 /// Minimum cell height (pixels)
 pub const MIN_CELL_HEIGHT: i32 = 50;
 
+/// xwayland-satellite process monitor with crash tracking
+pub struct XWaylandSatelliteMonitor {
+    /// The xwayland-satellite process handle
+    pub child: std::process::Child,
+    /// Timestamp of last crash (for detecting rapid crash loops)
+    pub last_crash_time: Option<Instant>,
+    /// Number of rapid crashes (within 10s window)
+    pub crash_count: u32,
+}
+
 /// Main compositor state
 pub struct ColumnCompositor {
     /// Wayland display handle
@@ -211,16 +221,17 @@ pub struct ColumnCompositor {
     /// Used to detect and clear stale drag state when focus is lost
     pub pointer_buttons_pressed: u32,
 
-    /// Pending X11 resize event (new width, height)
-    /// Set by X11 backend callback, processed in main loop
-    pub x11_resize_pending: Option<(u16, u16)>,
+    /// Pending compositor window resize event (new width, height)
+    /// Set when the compositor's own window is resized (X11Event::Resized), processed in main loop
+    pub compositor_window_resize_pending: Option<(u16, u16)>,
 
     /// App IDs that use client-side decorations (from config)
     pub csd_apps: Vec<String>,
 
     // XWayland support (via xwayland-satellite)
-    /// xwayland-satellite process handle (acts as X11 WM, presents X11 windows as Wayland)
-    pub xwayland_satellite: Option<std::process::Child>,
+    /// xwayland-satellite process monitor (acts as X11 WM, presents X11 windows as Wayland)
+    /// Includes crash tracking for auto-restart with backoff
+    pub xwayland_satellite: Option<XWaylandSatelliteMonitor>,
 
     /// X11 display number (e.g., 0 for :0)
     pub x11_display_number: Option<u32>,
@@ -258,9 +269,7 @@ pub struct LayoutNode {
     pub height: i32,
 }
 
-/// Surface type wrapper for Wayland vs X11 surfaces
-/// All external windows are now Wayland toplevels
-/// (xwayland-satellite converts X11 windows to Wayland for us)
+/// All external windows (including X11 apps via xwayland-satellite)
 pub type SurfaceKind = ToplevelSurface;
 
 /// A window entry in our column
@@ -441,7 +450,7 @@ impl ColumnCompositor {
             pointer_position: Point::from((0.0, 0.0)),
             cursor_on_resize_handle: false,
             pointer_buttons_pressed: 0,
-            x11_resize_pending: None,
+            compositor_window_resize_pending: None,
             csd_apps,
             xwayland_satellite: None,
             x11_display_number: None,
@@ -1799,8 +1808,6 @@ delegate_data_device!(ColumnCompositor);
 delegate_output!(ColumnCompositor);
 delegate_text_input_manager!(ColumnCompositor);
 delegate_viewporter!(ColumnCompositor);
-// XWayland shell support will be re-added after switching to xwayland-satellite
-// delegate_xwayland_shell!(ColumnCompositor);
 
 #[cfg(test)]
 mod tests {
