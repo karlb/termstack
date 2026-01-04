@@ -325,7 +325,7 @@ pub fn log_frame_state(
     let window_info: Vec<String> = layout_nodes.iter().enumerate().map(|(i, node)| {
         match &node.cell {
             StackWindow::Terminal(id) => {
-                let visible = terminal_manager.get(*id).map(|t| t.is_visible()).unwrap_or(true);
+                let visible = terminal_manager.is_terminal_visible(*id);
                 format!("[{}]Term({})h={}{}",
                     i, id.0,
                     node.height,

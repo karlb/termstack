@@ -1001,7 +1001,7 @@ fn calculate_window_heights(
         match &node.cell {
             StackWindow::Terminal(tid) => {
                 // Hidden terminals always get 0 height
-                if terminal_manager.get(*tid).map(|t| !t.is_visible()).unwrap_or(false) {
+                if !terminal_manager.is_terminal_visible(*tid) {
                     return 0;
                 }
                 // Use cached visual height if available
@@ -1283,12 +1283,7 @@ fn handle_focus_and_scroll_requests(
     // Handle focus change requests
     if compositor.focus_change_requested != 0 {
         // Create visibility checker closure
-        let is_terminal_visible = |id| {
-            terminal_manager
-                .get(id)
-                .map(|t| t.is_visible())
-                .unwrap_or(false) // Treat missing terminals as not visible
-        };
+        let is_terminal_visible = |id| terminal_manager.is_terminal_visible(id);
 
         if compositor.focus_change_requested > 0 {
             compositor.focus_next(is_terminal_visible);

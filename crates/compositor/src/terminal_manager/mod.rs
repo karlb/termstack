@@ -663,6 +663,15 @@ impl TerminalManager {
         self.terminals.get_mut(&id)
     }
 
+    /// Check if a terminal is visible
+    ///
+    /// Returns false if the terminal doesn't exist or is hidden.
+    /// This is a convenience method to avoid the repetitive
+    /// `.get(id).map(|t| t.is_visible()).unwrap_or(false)` pattern.
+    pub fn is_terminal_visible(&self, id: TerminalId) -> bool {
+        self.get(id).map(|t| t.is_visible()).unwrap_or(false)
+    }
+
     /// Remove a terminal
     pub fn remove(&mut self, id: TerminalId) -> Option<ManagedTerminal> {
         self.terminals.remove(&id)
