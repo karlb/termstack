@@ -1462,6 +1462,25 @@ fn process_spawn_request(
         env.insert("SHELL".to_string(), shell);
     }
 
+    // Add scripts directory to PATH so helper scripts (like 'gui') are available
+    // Scripts are extracted from embedded content at runtime
+    match get_or_create_scripts_dir() {
+        Ok(scripts_dir) => {
+            let scripts_dir_str = scripts_dir.display().to_string();
+            if let Some(current_path) = env.get("PATH") {
+                // Prepend scripts directory to existing PATH
+                env.insert("PATH".to_string(), format!("{}:{}", scripts_dir_str, current_path));
+            } else {
+                // No PATH set, create one with just scripts directory
+                env.insert("PATH".to_string(), scripts_dir_str);
+            }
+        }
+        Err(e) => {
+            // Log warning but don't fail spawn - terminal will work, just without helper scripts
+            tracing::warn!(?e, "failed to create scripts directory, helper scripts unavailable");
+        }
+    }
+
     use crate::state::FocusedWindow;
     let parent = compositor.focused_window.as_ref().and_then(|cell| match cell {
         FocusedWindow::Terminal(id) => Some(*id),
@@ -2033,4 +2052,52 @@ fn find_xwayland_satellite() -> Option<String> {
     // Fall back to relying on PATH (will fail if not in PATH, but worth trying)
     tracing::debug!("xwayland-satellite not found in known locations, trying PATH");
     None
+}
+
+/// Get or create the termstack scripts directory and extract embedded scripts
+///
+/// Scripts are extracted from `scripts/bin/*` (embedded at compile time) and written
+/// to a runtime directory. This directory should be added to PATH for spawned terminals.
+///
+/// Returns the PathBuf to the scripts directory that should be added to PATH.
+fn get_or_create_scripts_dir() -> Result<std::path::PathBuf, std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Determine runtime directory: Try XDG_RUNTIME_DIR first, fall back to /tmp
+    let base_dir = if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+        std::path::PathBuf::from(xdg)
+    } else {
+        // Fall back to /tmp with user ID for isolation
+        let uid = rustix::process::getuid().as_raw();
+        std::path::PathBuf::from(format!("/tmp/termstack-{}", uid))
+    };
+
+    let scripts_dir = base_dir.join("termstack").join("bin");
+
+    // Create directory if it doesn't exist
+    std::fs::create_dir_all(&scripts_dir)?;
+
+    // Extract and write all scripts from scripts/bin/*
+    // Currently we have: gui
+    // Future scripts can be added here as additional include_str! calls
+    let scripts = vec![
+        ("gui", include_str!("../../../scripts/bin/gui")),
+    ];
+
+    for (name, content) in scripts {
+        let script_path = scripts_dir.join(name);
+
+        // Always write to ensure script is up-to-date with current version
+        std::fs::write(&script_path, content)?;
+
+        // Make executable (0o755 = rwxr-xr-x)
+        let mut perms = std::fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms)?;
+
+        tracing::debug!(path = ?script_path, "extracted script");
+    }
+
+    tracing::debug!(scripts_dir = ?scripts_dir, "scripts directory initialized");
+    Ok(scripts_dir)
 }

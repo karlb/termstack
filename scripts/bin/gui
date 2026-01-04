@@ -1,0 +1,59 @@
+#!/bin/sh
+# gui - Launch GUI apps in termstack
+# Usage: gui [-b|--background] <command> [args...]
+#
+# This script wraps 'termstack gui' to provide a convenient interface for
+# launching GUI applications from any language (Python, Ruby, Bash, etc.)
+
+set -e
+
+background=0
+args=""
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -b|--background)
+            background=1
+            shift
+            ;;
+        *)
+            # Collect remaining arguments
+            # Important: We accumulate args as a single string because
+            # 'termstack gui' expects a command string, not separate args
+            if [ -z "$args" ]; then
+                args="$1"
+            else
+                args="$args $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate we have a command
+if [ -z "$args" ]; then
+    echo "Usage: gui [-b|--background] <command> [args...]" >&2
+    echo "  -b, --background  Keep launching terminal visible" >&2
+    exit 1
+fi
+
+# Debug output if enabled
+if [ -n "$TERMSTACK_DEBUG" ]; then
+    echo "[gui] calling: termstack gui $args" >&2
+fi
+
+# Call termstack gui with appropriate environment
+if [ "$background" -eq 1 ]; then
+    TERMSTACK_GUI_BACKGROUND=1 termstack gui $args
+else
+    termstack gui $args
+fi
+
+exit_code=$?
+
+if [ -n "$TERMSTACK_DEBUG" ]; then
+    echo "[gui] termstack exit code: $exit_code" >&2
+fi
+
+exit $exit_code
