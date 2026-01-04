@@ -21,6 +21,7 @@
 //! - Input event handling (see `input.rs` - keyboard/pointer events)
 
 mod core;
+mod external;
 mod focus;
 mod resize;
 
@@ -58,7 +59,6 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
     XdgShellState,
 };
-use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
@@ -503,17 +503,6 @@ impl TermStack {
         (compositor, display)
     }
 
-    /// Check if an app_id matches the CSD apps patterns from config
-    pub fn is_csd_app(&self, app_id: &str) -> bool {
-        self.csd_apps.iter().any(|pattern| {
-            if let Some(prefix) = pattern.strip_suffix('*') {
-                app_id.starts_with(prefix)
-            } else {
-                app_id == pattern
-            }
-        })
-    }
-
     /// Recalculate layout after any change
     pub fn recalculate_layout(&mut self) {
         // Use cached heights for layout calculation
@@ -613,37 +602,6 @@ impl TermStack {
         }
     }
 
-    /// Set the activated state on a toplevel window at the given index.
-    /// Also clears the activated state from all other toplevels.
-    /// This is required for GTK apps to run animations and handle input properly.
-    pub fn activate_toplevel(&mut self, index: usize) {
-        for (i, node) in self.layout_nodes.iter().enumerate() {
-            if let StackWindow::External(entry) = &node.cell {
-                let should_activate = i == index;
-                entry.surface.with_pending_state(|state| {
-                    if should_activate {
-                        state.states.set(ToplevelState::Activated);
-                    } else {
-                        state.states.unset(ToplevelState::Activated);
-                    }
-                });
-                entry.surface.send_pending_configure();
-            }
-        }
-    }
-
-    /// Deactivate all toplevel windows (e.g., when focusing a terminal)
-    pub fn deactivate_all_toplevels(&mut self) {
-        for node in &self.layout_nodes {
-            if let StackWindow::External(entry) = &node.cell {
-                entry.surface.with_pending_state(|state| {
-                    state.states.unset(ToplevelState::Activated);
-                });
-                entry.surface.send_pending_configure();
-            }
-        }
-    }
-
     /// Update cached cell heights from actual render heights.
     ///
     /// Called at the start of each frame with heights from the previous frame's
@@ -723,14 +681,6 @@ impl TermStack {
             content_y += window_height;
         }
         None
-    }
-
-    /// Get the external window under a point (returns None for terminals)
-    /// This is for compatibility with existing code that only cares about external windows
-    pub fn external_window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
-        self.window_at(point).filter(|&i| {
-            matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, StackWindow::External(_)))
-        })
     }
 
     /// Check if a point is on a terminal cell
