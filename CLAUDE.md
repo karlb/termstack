@@ -15,14 +15,14 @@ cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland
 ## Development Commands
 
 ```bash
-cargo +nightly build -Zchecksum-freshness                    # Debug build (fast compile)
-cargo +nightly nextest run -Zchecksum-freshness              # Run tests with nextest
-cargo +nightly clippy -Zchecksum-freshness                   # Linting
-cargo +nightly run -Zchecksum-freshness --bin termstack-compositor  # Run compositor
-RUST_LOG=termstack_compositor=debug cargo +nightly run -Zchecksum-freshness    # With debug logging
+cargo b                              # Build (alias for: cargo build -Zchecksum-freshness)
+cargo t                              # Test (alias for: cargo nextest run -Zchecksum-freshness)
+cargo l                              # Lint (alias for: cargo clippy -Zchecksum-freshness)
+cargo r                              # Run compositor (alias for: cargo run -Zchecksum-freshness --bin termstack-compositor)
+RUST_LOG=termstack_compositor=debug cargo r    # Run with debug logging
 ```
 
-Note: Using -Zchecksum-freshness to avoid mtime race conditions with automated edits.
+Configuration is in `.cargo/config.toml` and `rust-toolchain.toml`. The nightly toolchain and `-Zchecksum-freshness` flag (to avoid mtime race conditions) are applied automatically.
 
 ## Development approach
 

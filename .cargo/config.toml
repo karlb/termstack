@@ -1,0 +1,6 @@
+[alias]
+# Convenience aliases (with -Zchecksum-freshness to avoid mtime race conditions)
+b = "build -Zchecksum-freshness"
+t = "nextest run -Zchecksum-freshness"
+l = "clippy -Zchecksum-freshness"
+r = "run -Zchecksum-freshness --bin termstack-compositor"
