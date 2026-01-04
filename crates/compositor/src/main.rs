@@ -662,7 +662,7 @@ fn main() -> anyhow::Result<()> {
 
                             // Get the wl_surface for popup handling
                             let wl_surface = entry.surface.wl_surface();
-                            for (popup_kind, popup_offset) in PopupManager::popups_for_surface(&wl_surface) {
+                            for (popup_kind, popup_offset) in PopupManager::popups_for_surface(wl_surface) {
                                 let popup_surface = match &popup_kind {
                                     PopupKind::Xdg(xdg_popup) => xdg_popup,
                                     _ => continue,
@@ -1338,7 +1338,7 @@ fn is_cell_bottom_visible(compositor: &ColumnCompositor, cell_idx: usize) -> boo
 /// manual resize to avoid overwriting the user's drag updates.
 fn check_and_handle_height_changes(
     compositor: &mut ColumnCompositor,
-    actual_heights: Vec<i32>,
+    _actual_heights: Vec<i32>,
 ) {
     let is_resizing = compositor.resizing.is_some();
 

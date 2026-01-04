@@ -967,7 +967,7 @@ impl ColumnCompositor {
 
                 // Check popups for this window
                 let wl_surface = entry.surface.wl_surface();
-                for (popup_kind, popup_offset) in smithay::desktop::PopupManager::popups_for_surface(&wl_surface) {
+                for (popup_kind, popup_offset) in smithay::desktop::PopupManager::popups_for_surface(wl_surface) {
                     let popup_surface = match &popup_kind {
                         smithay::desktop::PopupKind::Xdg(xdg_popup) => xdg_popup,
                         _ => continue,
