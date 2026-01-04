@@ -315,15 +315,32 @@ impl ManagedTerminal {
     /// Resize to a specific pixel height (used for manual drag resize)
     /// Also sets `manually_sized` to disable auto-growth
     pub fn resize_to_height(&mut self, height_px: u32, cell_height: u32) {
-        let rows = (height_px / cell_height).max(1) as u16;
-        self.resize(rows, cell_height);
-        self.manually_sized = true;
-        tracing::info!(
-            id = self.id.0,
-            height_px,
-            rows,
-            "terminal manually resized, auto-growth disabled"
-        );
+        // Always update visual height immediately for smooth drag feedback
+        self.height = height_px;
+        self.dirty = true;
+
+        let target_rows = (height_px / cell_height).max(1) as u16;
+        let (_, current_rows) = self.terminal.dimensions();
+
+        // Only resize PTY if row count actually changed
+        if target_rows != current_rows {
+            let action = self.terminal.configure(target_rows);
+
+            if let SizingAction::ApplyResize { .. } = action {
+                self.terminal.complete_resize();
+            }
+
+            self.manually_sized = true;
+            tracing::debug!(
+                id = self.id.0,
+                height_px,
+                rows = target_rows,
+                "terminal PTY resized during drag"
+            );
+        } else {
+            // Still set manually_sized even if row count didn't change
+            self.manually_sized = true;
+        }
     }
 
     /// Resize columns (width change from compositor resize)

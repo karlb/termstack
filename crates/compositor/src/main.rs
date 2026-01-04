@@ -606,22 +606,34 @@ fn main() -> anyhow::Result<()> {
             compositor.cached_actual_heights = actual_heights.clone();
 
             // Build heights for positioning:
-            // - Terminals: use actual_heights (includes title bar height from collect_window_data)
+            // - Terminals being resized: use node.height for instant visual feedback
+            // - Terminals NOT resizing: use actual_heights (includes title bar from collect_window_data)
             // - External windows being resized: use drag target height
             // - External windows NOT resizing: use committed height from WindowState
             let layout_heights: Vec<i32> = compositor.layout_nodes
                 .iter()
                 .enumerate()
                 .map(|(i, node)| {
+                    // Check if this window is being resized
+                    let is_resizing = compositor.resizing
+                        .as_ref()
+                        .map(|drag| drag.window_index == i)
+                        .unwrap_or(false);
+
                     match &node.cell {
                         StackWindow::Terminal(_) => {
-                            // Terminals: use actual_heights which includes title bar
-                            actual_heights[i]
+                            if is_resizing {
+                                // Being resized: use node.height for instant visual feedback
+                                // (avoids lag from texture rendering)
+                                node.height
+                            } else {
+                                // Not resizing: use actual_heights which includes title bar
+                                actual_heights[i]
+                            }
                         }
                         StackWindow::External(entry) => {
-                            // Check if this window is being resized
-                            if let Some(drag) = &compositor.resizing {
-                                if i == drag.window_index {
+                            if is_resizing {
+                                if let Some(drag) = &compositor.resizing {
                                     // Being resized: use drag target for visual feedback
                                     return drag.target_height;
                                 }

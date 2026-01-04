@@ -521,6 +521,14 @@ impl TermStack {
             let delta = screen_y.value() as i32 - drag.start_screen_y;
             let new_height = (drag.start_height + delta).max(MIN_WINDOW_HEIGHT);
 
+            tracing::trace!(
+                cell_index,
+                screen_y = screen_y.value(),
+                delta,
+                new_height,
+                "resize motion"
+            );
+
             // Get the cell type to determine how to resize
             let window_type = self.layout_nodes.get(window_index).and_then(|node| {
                 match &node.cell {
