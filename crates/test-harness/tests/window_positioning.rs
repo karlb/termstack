@@ -2146,3 +2146,81 @@ fn fix_external_window_resize_updates_scroll() {
     assert_eq!(parent_bottom_after, viewport_bottom_after,
         "parent bottom now visible at viewport bottom");
 }
+
+/// Test positioning with extremely small window (1px height)
+#[test]
+fn single_pixel_height_window() {
+    let mut tc = TestCompositor::new_headless(800, 600);
+    tc.add_external_window(1);  // 1px height window
+
+    let positions = tc.render_positions();
+    assert_eq!(positions.len(), 1);
+
+    // Should be positioned at top of screen despite being tiny
+    assert_eq!(positions[0].1, 1, "1px window should report 1px height");
+
+    // Should be clickable despite being tiny
+    tc.simulate_click(400.0, 0.0);
+    assert_eq!(tc.snapshot().focused_index, Some(0), "1px window should be focusable");
+}
+
+/// Test positioning when window height exceeds screen height
+#[test]
+fn window_height_exceeds_screen() {
+    let mut tc = TestCompositor::new_headless(800, 600);
+    tc.add_external_window(1000);  // Window taller than 600px screen
+
+    let positions = tc.render_positions();
+    assert_eq!(positions.len(), 1);
+    assert_eq!(positions[0].1, 1000, "tall window should report full height");
+
+    // Window should be clickable at top
+    tc.simulate_click(400.0, 0.0);
+    assert_eq!(tc.snapshot().focused_index, Some(0), "tall window clickable at top");
+
+    // Scroll to bottom to see rest of window
+    tc.simulate_scroll(500.0);
+    assert_eq!(tc.scroll_offset(), 400.0, "max scroll = 1000 - 600 = 400");
+
+    // Should still be focused after scrolling
+    assert_eq!(tc.snapshot().focused_index, Some(0), "focus persists after scroll");
+}
+
+/// Test positioning when all windows are scrolled offscreen
+#[test]
+fn all_windows_offscreen_after_scroll() {
+    let mut tc = TestCompositor::new_headless(800, 600);
+
+    // Add windows at top (total 400px of content)
+    tc.add_external_window(200);
+    tc.add_external_window(200);
+
+    // Scroll past all content (max scroll would be 0 since 400 < 600)
+    tc.simulate_scroll(1000.0);
+
+    // Should clamp to 0 (can't scroll when content fits in viewport)
+    assert_eq!(tc.scroll_offset(), 0.0, "scroll clamped when content < viewport");
+
+    // Now make content taller than viewport
+    tc.add_external_window(500);  // Now total = 900px, viewport = 600px
+
+    // Scroll to max
+    tc.simulate_scroll(1000.0);
+    assert_eq!(tc.scroll_offset(), 300.0, "max scroll = 900 - 600 = 300");
+
+    // All windows are partially or fully offscreen
+    // First window (200px) is at content_y=0, completely above viewport (viewport starts at scroll=300)
+    // Second window (200px) is at content_y=200, completely above viewport
+    // Third window (500px) is at content_y=400, partially visible (100px showing at bottom)
+
+    let positions = tc.render_positions();
+
+    // With scroll=300, render positions (Y=0 at bottom):
+    // Window 0: content_y=0 -> render_y = 600 - (0-300) - 200 = 700 (offscreen above)
+    // Window 1: content_y=200 -> render_y = 600 - (200-300) - 200 = 500
+    // Window 2: content_y=400 -> render_y = 600 - (400-300) - 500 = 0
+
+    assert_eq!(positions[0].0, 700, "window 0 rendered above screen");
+    assert_eq!(positions[1].0, 500, "window 1 partially visible at top");
+    assert_eq!(positions[2].0, 0, "window 2 at bottom of screen");
+}

@@ -266,3 +266,113 @@ mod meaningful_content_tests {
         );
     }
 }
+
+// Edge case tests for terminal sizing state machine
+#[cfg(test)]
+mod sizing_edge_cases {
+    use terminal::sizing::TerminalSizingState;
+
+    #[test]
+    fn rapid_resize_requests() {
+        let mut state = TerminalSizingState::new(10);
+
+        // Fill to trigger growth
+        for _ in 0..11 {
+            state.on_new_line();
+        }
+
+        // Rapid resize requests (simulating fast window resizing)
+        state.request_growth(20);
+        state.request_growth(30);
+        state.request_growth(40);
+
+        // Only the last request should matter
+        state.on_configure(40);
+        let action = state.on_resize_complete();
+
+        // Should restore any scrollback that accumulated during resize
+        assert!(matches!(
+            action,
+            terminal::sizing::SizingAction::RestoreScrollback { .. }
+                | terminal::sizing::SizingAction::None
+        ));
+    }
+
+    #[test]
+    fn resize_during_growth() {
+        let mut state = TerminalSizingState::new(10);
+
+        // Fill to trigger growth
+        for _ in 0..11 {
+            state.on_new_line();
+        }
+
+        state.request_growth(20);
+
+        // New lines arrive while waiting for resize
+        for _ in 0..5 {
+            state.on_new_line();
+        }
+
+        // Another resize is requested before the first completes
+        state.request_growth(30);
+
+        // More lines during second resize
+        for _ in 0..3 {
+            state.on_new_line();
+        }
+
+        state.on_configure(30);
+        let action = state.on_resize_complete();
+
+        // Should handle accumulated scrollback correctly
+        if let terminal::sizing::SizingAction::RestoreScrollback { lines } = action {
+            assert_eq!(lines, 8, "should restore all lines during both resizes");
+        } else {
+            panic!("expected RestoreScrollback action");
+        }
+    }
+
+    #[test]
+    fn resize_to_same_size() {
+        let mut state = TerminalSizingState::new(10);
+
+        // Request "resize" to current size
+        state.request_growth(10);
+        state.on_configure(10);
+        let action = state.on_resize_complete();
+
+        // Should be a no-op
+        assert!(matches!(
+            action,
+            terminal::sizing::SizingAction::None
+        ));
+    }
+
+    #[test]
+    fn many_lines_during_resize() {
+        let mut state = TerminalSizingState::new(10);
+
+        // Trigger growth
+        for _ in 0..11 {
+            state.on_new_line();
+        }
+
+        state.request_growth(20);
+
+        // Many lines arrive during resize (e.g., large file output)
+        for _ in 0..100 {
+            state.on_new_line();
+        }
+
+        state.on_configure(20);
+        let action = state.on_resize_complete();
+
+        // Should restore all 100 lines
+        if let terminal::sizing::SizingAction::RestoreScrollback { lines } = action {
+            assert_eq!(lines, 100, "should restore all lines added during resize");
+        } else {
+            panic!("expected RestoreScrollback action");
+        }
+    }
+}

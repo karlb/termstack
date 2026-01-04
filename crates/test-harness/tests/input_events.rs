@@ -317,3 +317,58 @@ fn surface_local_coordinates_correct() {
     let _ = tc;
     let _ = cell_height;
 }
+
+/// Test clicking at screen boundaries (edges and corners)
+#[test]
+fn click_at_screen_boundaries() {
+    let mut tc = TestCompositor::new_headless(800, 600);
+    tc.add_external_window(600);
+
+    // Click at top-left corner (0, 0)
+    tc.simulate_click(0.0, 0.0);
+    assert_eq!(tc.snapshot().focused_index, Some(0), "top-left corner should focus window");
+
+    // Click at top-right corner (800, 0)
+    tc.simulate_click(800.0, 0.0);
+    assert_eq!(tc.snapshot().focused_index, Some(0), "top-right corner should focus window");
+
+    // Click at bottom-left corner (0, 600)
+    tc.simulate_click(0.0, 600.0);
+    assert_eq!(tc.snapshot().focused_index, Some(0), "bottom-left corner should focus window");
+
+    // Click at bottom-right corner (800, 600)
+    tc.simulate_click(800.0, 600.0);
+    assert_eq!(tc.snapshot().focused_index, Some(0), "bottom-right corner should focus window");
+}
+
+/// Test scroll behavior with zero content height
+#[test]
+fn scroll_with_zero_content_height() {
+    let mut tc = TestCompositor::new_headless(800, 600);
+    // No windows = zero content height
+
+    // Scroll down should have no effect
+    let initial_scroll = tc.scroll_offset();
+    assert_eq!(initial_scroll, 0.0, "should start at scroll=0");
+
+    // Scrolling shouldn't crash or change offset
+    tc.simulate_scroll(100.0);
+    assert_eq!(tc.scroll_offset(), 0.0, "scroll should stay at 0 with no content");
+
+    tc.simulate_scroll(-50.0);
+    assert_eq!(tc.scroll_offset(), 0.0, "scroll should stay at 0 with no content");
+}
+
+/// Test focus behavior with no windows
+#[test]
+fn focus_with_no_windows() {
+    let mut tc = TestCompositor::new_headless(800, 600);
+    // No windows added
+
+    // focused_index should be None
+    assert_eq!(tc.snapshot().focused_index, None, "should have no focus with no windows");
+
+    // Clicking anywhere shouldn't crash
+    tc.simulate_click(400.0, 300.0);
+    assert_eq!(tc.snapshot().focused_index, None, "should still have no focus after click");
+}
