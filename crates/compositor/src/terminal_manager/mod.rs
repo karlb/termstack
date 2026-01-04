@@ -355,6 +355,11 @@ impl ManagedTerminal {
         self.exited = true;
     }
 
+    /// Check if terminal process has exited
+    pub fn has_exited(&self) -> bool {
+        self.exited
+    }
+
     /// Get content row count
     pub fn content_rows(&self) -> u32 {
         self.terminal.content_rows()

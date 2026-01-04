@@ -759,6 +759,11 @@ fn main() -> anyhow::Result<()> {
 
                 match data {
                     CellRenderData::Terminal { id, y, height, title_bar_texture } => {
+                        // Check if terminal is still running (for indicator)
+                        let is_running = terminal_manager.get(id)
+                            .map(|t| !t.has_exited())
+                            .unwrap_or(false);
+
                         render_terminal(
                             &mut frame,
                             &terminal_manager,
@@ -767,6 +772,7 @@ fn main() -> anyhow::Result<()> {
                             height,
                             title_bar_texture,
                             is_focused,
+                            is_running,
                             physical_size,
                             damage,
                         );

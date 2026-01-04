@@ -322,7 +322,10 @@ impl TermStack {
             if let Some((handled, Some(bytes))) = result {
                 if !handled {
                     if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
-                        if let Err(e) = terminal.write(&bytes) {
+                        // Only write if terminal process is still running
+                        if terminal.has_exited() {
+                            tracing::debug!("ignoring input to exited terminal");
+                        } else if let Err(e) = terminal.write(&bytes) {
                             tracing::error!(?e, "failed to write to terminal");
                         } else {
                             // Set up key repeat for this key
@@ -343,7 +346,10 @@ impl TermStack {
                     match clipboard.get_text() {
                         Ok(text) => {
                             if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
-                                if let Err(e) = terminal.write(text.as_bytes()) {
+                                // Only paste if terminal process is still running
+                                if terminal.has_exited() {
+                                    tracing::debug!("ignoring paste to exited terminal");
+                                } else if let Err(e) = terminal.write(text.as_bytes()) {
                                     tracing::error!(?e, "failed to paste to terminal");
                                 } else {
                                     tracing::debug!(len = text.len(), "pasted text to terminal");

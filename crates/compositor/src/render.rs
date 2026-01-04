@@ -29,6 +29,15 @@ fn draw_focus_indicator(frame: &mut GlesFrame<'_, '_>, y: i32, height: i32) {
     frame.clear(Color32F::new(0.0, 0.8, 0.0, 1.0), &[focus_rect]).ok();
 }
 
+/// Draw running indicator on left side of cell (light blue)
+fn draw_running_indicator(frame: &mut GlesFrame<'_, '_>, y: i32, height: i32) {
+    let running_rect = Rectangle::new(
+        (0, y).into(),
+        (FOCUS_INDICATOR_WIDTH, height).into(),
+    );
+    frame.clear(Color32F::new(0.3, 0.6, 1.0, 1.0), &[running_rect]).ok();
+}
+
 /// Data needed to render a single cell
 pub enum CellRenderData<'a> {
     Terminal {
@@ -378,6 +387,7 @@ pub fn render_terminal(
     height: i32,
     title_bar_texture: Option<&GlesTexture>,
     is_focused: bool,
+    is_running: bool,
     screen_size: Size<i32, Physical>,
     damage: Rectangle<i32, Physical>,
 ) {
@@ -429,8 +439,11 @@ pub fn render_terminal(
     ).ok();
 
     // Draw focus indicator on left side of cell (after content so it's visible)
+    // Focus indicator takes precedence over running indicator
     if is_focused {
         draw_focus_indicator(frame, y, height);
+    } else if is_running {
+        draw_running_indicator(frame, y, height);
     }
 }
 
@@ -504,7 +517,11 @@ pub fn render_external(
     }
 
     // Draw focus indicator on left side of cell (after content so it's visible)
+    // Focus indicator takes precedence over running indicator
+    // External windows are always running (blue) when not focused
     if is_focused {
         draw_focus_indicator(frame, y, height);
+    } else {
+        draw_running_indicator(frame, y, height);
     }
 }
