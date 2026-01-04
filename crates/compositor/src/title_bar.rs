@@ -11,6 +11,9 @@ pub const TITLE_BAR_HEIGHT: u32 = 24;
 /// Close button width in pixels (square button)
 pub const CLOSE_BUTTON_WIDTH: u32 = 24;
 
+/// Height of gradient transition zone (pixels)
+pub const GRADIENT_HEIGHT: u32 = 24;
+
 /// Theme-specific colors for title bar
 struct TitleBarColors {
     /// Background color (RGBA bytes)
@@ -46,6 +49,13 @@ impl TitleBarColors {
                 btn_bg_r: 0xD0, btn_bg_g: 0xD0, btn_bg_b: 0xD0, // #D0D0D0
                 btn_fg_r: 0x1A, btn_fg_g: 0x1A, btn_fg_b: 0x1A, // Dark
             },
+        }
+    }
+
+    fn content_background(&self, theme: Theme) -> (u8, u8, u8) {
+        match theme {
+            Theme::Dark => (0x1A, 0x1A, 0x1A),  // Terminal dark bg
+            Theme::Light => (0xFF, 0xFF, 0xFF), // Terminal light bg
         }
     }
 }
@@ -133,7 +143,7 @@ impl TitleBarRenderer {
         let fg_g = colors.fg_g;
         let fg_b = colors.fg_b;
 
-        let display_text = text.to_string();
+        let display_text = format!("> {}", text);
 
         // Starting position with padding
         let padding = 8u32;
@@ -202,6 +212,38 @@ impl TitleBarRenderer {
 
         // Draw close button on the right side
         self.render_close_button(&mut buffer, width, height);
+
+        // Render gradient at bottom of title bar (blends into content below)
+        // In buffer coords: higher Y = bottom of title bar (closer to content)
+        let content_bg = colors.content_background(self.theme);
+        let gradient_pixels = GRADIENT_HEIGHT.min(height);
+        let gradient_start_y = height - gradient_pixels;  // Start N pixels from bottom
+
+        for y_offset in gradient_start_y..height {
+            let distance_from_start = y_offset - gradient_start_y;
+            let blend = distance_from_start as f32 / gradient_pixels as f32;
+
+            // Interpolate from title bg to content bg (downward)
+            let r = (colors.bg_r as f32 * (1.0 - blend) + content_bg.0 as f32 * blend) as u8;
+            let g = (colors.bg_g as f32 * (1.0 - blend) + content_bg.1 as f32 * blend) as u8;
+            let b = (colors.bg_b as f32 * (1.0 - blend) + content_bg.2 as f32 * blend) as u8;
+
+            for x in 0..width {
+                let idx = ((y_offset * width + x) * 4) as usize;
+                // Only overwrite background, preserve text/close button pixels if already rendered
+                // Check if pixel is still background color before overwriting
+                let is_background = buffer[idx] == colors.bg_b
+                    && buffer[idx + 1] == colors.bg_g
+                    && buffer[idx + 2] == colors.bg_r;
+
+                if is_background {
+                    buffer[idx] = b;
+                    buffer[idx + 1] = g;
+                    buffer[idx + 2] = r;
+                    buffer[idx + 3] = 0xFF;
+                }
+            }
+        }
 
         (buffer, width, height)
     }
