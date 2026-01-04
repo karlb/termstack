@@ -1006,9 +1006,13 @@ impl ColumnCompositor {
 
     /// Calculate maximum scroll offset based on content height
     fn max_scroll(&self) -> f64 {
-        let total_height: i32 = self.layout_nodes.iter()
-            .map(|node| node.height)
-            .sum();
+        // Use cached_actual_heights which includes title bars for terminals
+        let total_height: i32 = if !self.cached_actual_heights.is_empty() {
+            self.cached_actual_heights.iter().sum()
+        } else {
+            // Fallback to node.height if cache not populated yet (shouldn't happen in practice)
+            self.layout_nodes.iter().map(|node| node.height).sum()
+        };
         (total_height as f64 - self.output_size.h as f64).max(0.0)
     }
 
