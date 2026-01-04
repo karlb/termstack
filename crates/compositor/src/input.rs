@@ -697,7 +697,39 @@ impl TermStack {
             if button == BTN_LEFT {
                 if let Some(window_index) = self.find_resize_handle_at(screen_y.value() as i32, &self.cached_actual_heights) {
                     // Start resize drag
-                    let start_height = self.get_window_height(window_index).unwrap_or(100);
+                    let raw_height = self.get_window_height(window_index).unwrap_or(100);
+
+                    // For terminals, snap start_height to row boundary to prevent jump
+                    let start_height = if let Some(node) = self.layout_nodes.get(window_index) {
+                        if let StackWindow::Terminal(id) = &node.cell {
+                            if let Some(ref mut tm) = terminals {
+                                let char_height = tm.cell_height;
+                                if let Some(term) = tm.get_mut(*id) {
+                                    let title_bar = if term.show_title_bar { TITLE_BAR_HEIGHT } else { 0 };
+                                    let content = (raw_height as u32).saturating_sub(title_bar);
+                                    let rows = (content / char_height).max(1);
+                                    let snapped_content = rows * char_height;
+                                    let snapped_total = (snapped_content + title_bar) as i32;
+
+                                    // Apply snap to terminal immediately
+                                    if snapped_total != raw_height {
+                                        term.resize_to_height(snapped_content, char_height);
+                                    }
+
+                                    snapped_total
+                                } else {
+                                    raw_height
+                                }
+                            } else {
+                                raw_height
+                            }
+                        } else {
+                            raw_height
+                        }
+                    } else {
+                        raw_height
+                    };
+
                     tracing::info!(
                         window_index,
                         screen_y = screen_y.value(),
@@ -712,6 +744,14 @@ impl TermStack {
                         target_height: start_height,
                         last_sent_height: None,
                     });
+
+                    // Update node.height immediately if we snapped (for terminals)
+                    if start_height != raw_height {
+                        if let Some(node) = self.layout_nodes.get_mut(window_index) {
+                            node.height = start_height;
+                        }
+                    }
+
                     // Clear any pending external_window_resized for this cell
                     // to prevent stale resize events from overwriting our drag updates
                     if self.external_window_resized.as_ref().map(|(idx, _)| *idx) == Some(window_index) {

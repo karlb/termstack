@@ -364,14 +364,7 @@ fn main() -> anyhow::Result<()> {
     // This ensures DISPLAY is set correctly for X11 app support
 
     // Main event loop
-    let mut frame_start = std::time::Instant::now();
     while compositor.running {
-        let frame_elapsed = frame_start.elapsed();
-        frame_start = std::time::Instant::now();
-        if compositor.resizing.is_some() && frame_elapsed.as_millis() > 20 {
-            tracing::warn!(frame_ms = frame_elapsed.as_millis(), "resize: slow frame");
-        }
-
         // Clear stale drag state if no pointer buttons are pressed
         // This handles lost release events when window loses focus mid-drag
         compositor.clear_stale_drag_state(compositor.pointer_buttons_pressed > 0);
@@ -479,19 +472,8 @@ fn main() -> anyhow::Result<()> {
         compositor.recalculate_layout();
 
         // Process X11 input events from channel
-        let mut event_count = 0;
-        let input_start = std::time::Instant::now();
         while let Ok(input_event) = x11_event_rx.try_recv() {
-            event_count += 1;
             compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
-        }
-        let input_elapsed = input_start.elapsed();
-        if event_count > 0 && compositor.resizing.is_some() {
-            tracing::info!(
-                event_count,
-                input_ms = input_elapsed.as_millis(),
-                "resize: processed input events"
-            );
         }
 
         // Handle X11 resize events
@@ -595,12 +577,7 @@ fn main() -> anyhow::Result<()> {
             let scale = Scale::from(1.0);
 
             // Pre-render all terminal textures
-            let prerender_start = std::time::Instant::now();
             prerender_terminals(&mut terminal_manager, &mut renderer);
-            let prerender_elapsed = prerender_start.elapsed();
-            if compositor.resizing.is_some() && prerender_elapsed.as_millis() > 5 {
-                tracing::warn!(prerender_ms = prerender_elapsed.as_millis(), "resize: slow prerender");
-            }
 
             // Pre-render title bar textures for all cells with SSD
             let title_bar_textures = prerender_title_bars(
@@ -1040,9 +1017,16 @@ fn calculate_window_heights(
                 if node.height > 0 {
                     return node.height;
                 }
-                // Fallback for new cells: terminal.height already includes title bar
+                // Fallback for new cells: terminal.height is content height, add title bar if needed
                 terminal_manager.get(*tid)
-                    .map(|t| t.height as i32)
+                    .map(|t| {
+                        let content = t.height as i32;
+                        if t.show_title_bar {
+                            content + TITLE_BAR_HEIGHT as i32
+                        } else {
+                            content
+                        }
+                    })
                     .unwrap_or(200)
             }
             StackWindow::External(entry) => {
@@ -1564,7 +1548,12 @@ fn process_terminal_output(
 
                     if let Some(term) = terminal_manager.get(id) {
                         if let Some(node) = compositor.layout_nodes.get_mut(idx) {
-                            node.height = term.height as i32;
+                            let content = term.height as i32;
+                            node.height = if term.show_title_bar {
+                                content + TITLE_BAR_HEIGHT as i32
+                            } else {
+                                content
+                            };
                         }
                     }
 
@@ -1702,10 +1691,16 @@ fn handle_ipc_resize_request(
         term.resize(new_rows, char_height);
 
         // Update cached height
+        let content = term.height as i32;
+        let total_height = if term.show_title_bar {
+            content + TITLE_BAR_HEIGHT as i32
+        } else {
+            content
+        };
         for node in compositor.layout_nodes.iter_mut() {
             if let StackWindow::Terminal(tid) = node.cell {
                 if tid == focused_id {
-                    node.height = term.height as i32;
+                    node.height = total_height;
                     break;
                 }
             }
@@ -1761,9 +1756,16 @@ fn promote_output_terminals(
         let insert_idx = window_idx + 1;
         
         let height = terminal_manager.get(term_id)
-            .map(|t| t.height as i32)
+            .map(|t| {
+                let content = t.height as i32;
+                if t.show_title_bar {
+                    content + TITLE_BAR_HEIGHT as i32
+                } else {
+                    content
+                }
+            })
             .unwrap_or(0);
-            
+
         compositor.layout_nodes.insert(insert_idx, compositor::state::LayoutNode {
             cell: StackWindow::Terminal(term_id),
             height,
@@ -1886,7 +1888,12 @@ fn cleanup_and_sync_focus(
             // Update cached height for unhidden terminal (was 0 when hidden)
             if let Some(term) = terminal_manager.get(new_focus_id) {
                 if let Some(node) = compositor.layout_nodes.get_mut(idx) {
-                    node.height = term.height as i32;
+                    let content = term.height as i32;
+                    node.height = if term.show_title_bar {
+                        content + TITLE_BAR_HEIGHT as i32
+                    } else {
+                        content
+                    };
                 }
             }
 
