@@ -1,4 +1,19 @@
 //! Input handling for keyboard and scroll events
+//!
+//! # Responsibilities
+//!
+//! - Keyboard event processing (keybindings, focus, terminal input)
+//! - Pointer event handling (clicks, scrolling, dragging)
+//! - Coordinate conversion from screen to render space (Y-flip)
+//! - Window hit testing and click detection
+//! - Resize drag state management
+//! - Text selection in terminals
+//!
+//! # NOT Responsible For
+//!
+//! - State mutations (delegates to `state.rs` methods)
+//! - Layout calculation (uses `layout.rs` for positions)
+//! - Terminal content (delegates to `terminal_manager/`)
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, ButtonState, Event, InputBackend, InputEvent,

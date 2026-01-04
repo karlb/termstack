@@ -2,6 +2,23 @@
 //!
 //! This module contains the main compositor state, implementing explicit state
 //! tracking to prevent the bugs encountered in v1.
+//!
+//! # Responsibilities
+//!
+//! - Window lifecycle management (add/remove windows)
+//! - Focus tracking and focus change handling
+//! - Scroll state management
+//! - External window integration (Wayland clients)
+//! - Popup management and grab state
+//! - Wayland protocol handler implementations
+//!
+//! # NOT Responsible For
+//!
+//! - Layout calculation (see `layout.rs` - pure functions)
+//! - Coordinate system conversions (see `coords.rs` - type-safe wrappers)
+//! - Rendering operations (see `render.rs` - rendering helpers)
+//! - Terminal content management (see `terminal_manager/` - terminal lifecycle)
+//! - Input event handling (see `input.rs` - keyboard/pointer events)
 
 use smithay::delegate_compositor;
 use smithay::delegate_data_device;

@@ -1,6 +1,22 @@
 //! Render loop helpers
 //!
 //! Extracted from main.rs to reduce complexity of the main render loop.
+//!
+//! # Responsibilities
+//!
+//! - Terminal texture rendering and caching
+//! - Title bar rendering
+//! - Focus indicator rendering
+//! - External window (Wayland client) rendering
+//! - Damage tracking and optimization
+//! - Debug overlay rendering
+//!
+//! # NOT Responsible For
+//!
+//! - Window positioning (uses `layout.rs` calculations)
+//! - State management (uses `state.rs` data)
+//! - Terminal content (uses `terminal_manager/` textures)
+//! - Coordinate transforms (uses `coords.rs` types)
 
 use std::collections::HashMap;
 

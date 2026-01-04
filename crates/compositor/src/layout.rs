@@ -2,6 +2,25 @@
 //!
 //! Pure functions for calculating window positions in a vertical column.
 //! Key learning from v1: keep layout calculation pure with no side effects.
+//!
+//! # Responsibilities
+//!
+//! - Pure layout calculation (window positions from heights)
+//! - Visibility detection (which windows are in viewport)
+//! - Scroll offset calculations
+//! - Total height computation
+//!
+//! # Design Contract
+//!
+//! - All functions are **pure** - no side effects, no state mutation
+//! - Deterministic - same inputs always produce same outputs
+//! - Testable with property-based testing
+//!
+//! # NOT Responsible For
+//!
+//! - Window state (see `state.rs`)
+//! - Terminal dimensions (see `terminal_manager/`)
+//! - Rendering (see `render.rs`)
 
 use std::ops::Range;
 
