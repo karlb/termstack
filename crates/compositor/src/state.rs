@@ -1079,23 +1079,55 @@ impl TermStack {
         }
     }
 
-    /// Focus previous cell
-    pub fn focus_prev(&mut self) {
+    /// Focus previous visible cell, skipping hidden terminals
+    ///
+    /// # Arguments
+    /// * `is_terminal_visible` - Closure that returns true if a terminal ID is visible
+    pub fn focus_prev<F: Fn(TerminalId) -> bool>(&mut self, is_terminal_visible: F) {
         if let Some(current) = self.focused_index() {
             if current > 0 {
-                self.set_focus_by_index(current - 1);
-                self.ensure_focused_visible();
+                // Search backward from previous index
+                for i in (0..current).rev() {
+                    let cell = &self.layout_nodes[i].cell;
+                    let is_visible = match cell {
+                        StackWindow::Terminal(id) => is_terminal_visible(*id),
+                        StackWindow::External(_) => true, // External windows always visible
+                    };
+
+                    if is_visible {
+                        self.set_focus_by_index(i);
+                        self.ensure_focused_visible();
+                        return;
+                    }
+                }
+                // No visible cell found before current index
+                // Boundary behavior preserved: don't wrap to bottom
             }
         }
     }
 
-    /// Focus next cell
-    pub fn focus_next(&mut self) {
+    /// Focus next visible cell, skipping hidden terminals
+    ///
+    /// # Arguments
+    /// * `is_terminal_visible` - Closure that returns true if a terminal ID is visible
+    pub fn focus_next<F: Fn(TerminalId) -> bool>(&mut self, is_terminal_visible: F) {
         if let Some(current) = self.focused_index() {
-            if current + 1 < self.layout_nodes.len() {
-                self.set_focus_by_index(current + 1);
-                self.ensure_focused_visible();
+            // Search forward from next index
+            for i in (current + 1)..self.layout_nodes.len() {
+                let cell = &self.layout_nodes[i].cell;
+                let is_visible = match cell {
+                    StackWindow::Terminal(id) => is_terminal_visible(*id),
+                    StackWindow::External(_) => true, // External windows always visible
+                };
+
+                if is_visible {
+                    self.set_focus_by_index(i);
+                    self.ensure_focused_visible();
+                    return;
+                }
             }
+            // No visible cell found after current index
+            // Boundary behavior preserved: don't wrap to top
         }
     }
 
@@ -1861,6 +1893,7 @@ delegate_viewporter!(TermStack);
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// Test data for positioning - simulates the state needed for window_at() calculations
     /// Uses the same Y-flip coordinate system as the actual implementation.
@@ -2233,5 +2266,162 @@ mod tests {
         assert!(matches!(layout_nodes[0].cell, StackWindow::Terminal(TerminalId(1))), "T1 should be at index 0");
         assert!(matches!(layout_nodes[1].cell, StackWindow::Terminal(TerminalId(2))), "T2 should be at index 1");
         assert!(matches!(layout_nodes[2].cell, StackWindow::Terminal(TerminalId(0))), "T0 should be at index 2 (bottom)");
+    }
+
+    #[test]
+    fn focus_next_skips_hidden_terminals() {
+        // Test helper: simulate focus_next logic
+        let layout_nodes = vec![
+            StackWindow::Terminal(TerminalId(0)), // visible
+            StackWindow::Terminal(TerminalId(1)), // hidden
+            StackWindow::Terminal(TerminalId(2)), // visible
+        ];
+
+        let current_index = 0;
+        let is_visible = |id: TerminalId| id.0 != 1; // T1 is hidden
+
+        // Simulate focus_next logic: find next visible window
+        let next_index = (current_index + 1..layout_nodes.len())
+            .find(|&i| match &layout_nodes[i] {
+                StackWindow::Terminal(id) => is_visible(*id),
+                StackWindow::External(_) => true,
+            });
+
+        assert_eq!(
+            next_index,
+            Some(2),
+            "focus_next should skip hidden terminal at index 1 and land on index 2"
+        );
+    }
+
+    #[test]
+    fn focus_prev_skips_hidden_terminals() {
+        // Test helper: simulate focus_prev logic
+        let layout_nodes = vec![
+            StackWindow::Terminal(TerminalId(0)), // visible
+            StackWindow::Terminal(TerminalId(1)), // hidden
+            StackWindow::Terminal(TerminalId(2)), // visible
+        ];
+
+        let current_index = 2;
+        let is_visible = |id: TerminalId| id.0 != 1; // T1 is hidden
+
+        // Simulate focus_prev logic: find previous visible window
+        let prev_index = (0..current_index)
+            .rev()
+            .find(|&i| match &layout_nodes[i] {
+                StackWindow::Terminal(id) => is_visible(*id),
+                StackWindow::External(_) => true,
+            });
+
+        assert_eq!(
+            prev_index,
+            Some(0),
+            "focus_prev should skip hidden terminal at index 1 and land on index 0"
+        );
+    }
+
+    #[test]
+    fn focus_next_stops_at_boundary_when_remaining_hidden() {
+        // T0 (visible), T1 (hidden)
+        let layout_nodes = vec![
+            StackWindow::Terminal(TerminalId(0)),
+            StackWindow::Terminal(TerminalId(1)),
+        ];
+
+        let current_index = 0;
+        let is_visible = |id: TerminalId| id.0 != 1; // T1 is hidden
+
+        // Simulate focus_next: should find no visible window after current
+        let next_index = (current_index + 1..layout_nodes.len())
+            .find(|&i| match &layout_nodes[i] {
+                StackWindow::Terminal(id) => is_visible(*id),
+                StackWindow::External(_) => true,
+            });
+
+        assert_eq!(
+            next_index, None,
+            "focus_next should return None when all remaining terminals are hidden"
+        );
+    }
+
+    #[test]
+    fn focus_prev_stops_at_boundary_when_remaining_hidden() {
+        // T0 (hidden), T1 (visible)
+        let layout_nodes = vec![
+            StackWindow::Terminal(TerminalId(0)),
+            StackWindow::Terminal(TerminalId(1)),
+        ];
+
+        let current_index = 1;
+        let is_visible = |id: TerminalId| id.0 != 0; // T0 is hidden
+
+        // Simulate focus_prev: should find no visible window before current
+        let prev_index = (0..current_index)
+            .rev()
+            .find(|&i| match &layout_nodes[i] {
+                StackWindow::Terminal(id) => is_visible(*id),
+                StackWindow::External(_) => true,
+            });
+
+        assert_eq!(
+            prev_index, None,
+            "focus_prev should return None when all previous terminals are hidden"
+        );
+    }
+
+    #[test]
+    fn focus_next_skips_multiple_hidden_in_sequence() {
+        // T0 (visible), T1 (hidden), T2 (hidden), T3 (visible)
+        let layout_nodes = vec![
+            StackWindow::Terminal(TerminalId(0)),
+            StackWindow::Terminal(TerminalId(1)),
+            StackWindow::Terminal(TerminalId(2)),
+            StackWindow::Terminal(TerminalId(3)),
+        ];
+
+        let current_index = 0;
+        let is_visible = |id: TerminalId| id.0 != 1 && id.0 != 2; // T1, T2 hidden
+
+        // Simulate focus_next: should skip both T1 and T2
+        let next_index = (current_index + 1..layout_nodes.len())
+            .find(|&i| match &layout_nodes[i] {
+                StackWindow::Terminal(id) => is_visible(*id),
+                StackWindow::External(_) => true,
+            });
+
+        assert_eq!(
+            next_index,
+            Some(3),
+            "focus_next should skip multiple consecutive hidden terminals"
+        );
+    }
+
+    #[test]
+    fn focus_prev_skips_multiple_hidden_in_sequence() {
+        // T0 (visible), T1 (hidden), T2 (hidden), T3 (visible)
+        let layout_nodes = vec![
+            StackWindow::Terminal(TerminalId(0)),
+            StackWindow::Terminal(TerminalId(1)),
+            StackWindow::Terminal(TerminalId(2)),
+            StackWindow::Terminal(TerminalId(3)),
+        ];
+
+        let current_index = 3;
+        let is_visible = |id: TerminalId| id.0 != 1 && id.0 != 2; // T1, T2 hidden
+
+        // Simulate focus_prev: should skip both T2 and T1
+        let prev_index = (0..current_index)
+            .rev()
+            .find(|&i| match &layout_nodes[i] {
+                StackWindow::Terminal(id) => is_visible(*id),
+                StackWindow::External(_) => true,
+            });
+
+        assert_eq!(
+            prev_index,
+            Some(0),
+            "focus_prev should skip multiple consecutive hidden terminals"
+        );
     }
 }

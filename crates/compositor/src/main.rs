@@ -1299,14 +1299,22 @@ fn handle_compositor_resize(
 /// set by the input handler, applying the changes to compositor state.
 fn handle_focus_and_scroll_requests(
     compositor: &mut TermStack,
-    _terminal_manager: &mut TerminalManager,
+    terminal_manager: &mut TerminalManager,
 ) {
     // Handle focus change requests
     if compositor.focus_change_requested != 0 {
+        // Create visibility checker closure
+        let is_terminal_visible = |id| {
+            terminal_manager
+                .get(id)
+                .map(|t| t.is_visible())
+                .unwrap_or(false) // Treat missing terminals as not visible
+        };
+
         if compositor.focus_change_requested > 0 {
-            compositor.focus_next();
+            compositor.focus_next(is_terminal_visible);
         } else {
-            compositor.focus_prev();
+            compositor.focus_prev(is_terminal_visible);
         }
         compositor.focus_change_requested = 0;
 

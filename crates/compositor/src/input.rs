@@ -478,14 +478,12 @@ impl TermStack {
                 self.spawn_terminal_requested = true;
             }
             CompositorAction::FocusNext => {
-                tracing::debug!("focus next");
-                self.focus_next();
-                self.update_keyboard_focus_for_focused_window();
+                tracing::debug!("focus next requested");
+                self.focus_change_requested = 1;
             }
             CompositorAction::FocusPrev => {
-                tracing::debug!("focus prev");
-                self.focus_prev();
-                self.update_keyboard_focus_for_focused_window();
+                tracing::debug!("focus prev requested");
+                self.focus_change_requested = -1;
             }
             // Other actions not used in global bindings
             _ => return false,
