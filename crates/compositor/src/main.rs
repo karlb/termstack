@@ -604,8 +604,8 @@ fn main() -> anyhow::Result<()> {
 
             // Build heights for positioning:
             // - Terminals: use actual_heights (includes title bar height from collect_cell_data)
-            // - External windows during resize: use node.height (drag target)
-            // - External windows not resizing: use actual_heights
+            // - External windows being resized: use drag target height
+            // - External windows NOT resizing: use committed height from WindowState
             let layout_heights: Vec<i32> = compositor.layout_nodes
                 .iter()
                 .enumerate()
@@ -615,9 +615,16 @@ fn main() -> anyhow::Result<()> {
                             // Terminals: use actual_heights which includes title bar
                             actual_heights[i]
                         }
-                        ColumnCell::External(_) => {
-                            // External windows: use layout height (drag target during resize)
-                            node.height
+                        ColumnCell::External(entry) => {
+                            // Check if this window is being resized
+                            if let Some(drag) = &compositor.resizing {
+                                if i == drag.cell_index {
+                                    // Being resized: use drag target for visual feedback
+                                    return drag.target_height;
+                                }
+                            }
+                            // Not being resized: use committed height from WindowState
+                            entry.state.current_height() as i32
                         }
                     }
                 })
