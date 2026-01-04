@@ -963,13 +963,6 @@ fn handle_external_window_events(
                 "SKIPPING external_window_resized processing during active resize drag"
             );
         } else {
-            tracing::info!(
-                resized_idx,
-                new_height,
-                is_resizing = ?is_resizing,
-                "handling external window resize"
-            );
-
             // Check if focused cell bottom is visible before resize
             let should_autoscroll = if let Some(focused_idx) = compositor.focused_index() {
                 focused_idx >= resized_idx && is_window_bottom_visible(compositor, focused_idx)
@@ -984,14 +977,7 @@ fn handle_external_window_events(
             // Only autoscroll if focused cell is at/below resized window AND bottom was visible
             if should_autoscroll {
                 if let Some(focused_idx) = compositor.focused_index() {
-                    if let Some(new_scroll) = compositor.scroll_to_show_window_bottom(focused_idx) {
-                        tracing::info!(
-                            resized_idx,
-                            focused_idx,
-                            new_scroll,
-                            "scrolled to show focused cell after external window resize (bottom was visible)"
-                        );
-                    }
+                    compositor.scroll_to_show_window_bottom(focused_idx);
                 }
             }
         }
@@ -1285,12 +1271,6 @@ fn handle_compositor_resize(
     compositor.resize_all_external_windows(new_size.w);
 
     compositor.recalculate_layout();
-
-    tracing::info!(
-        width = new_size.w,
-        height = new_size.h,
-        "compositor window resized, content updated"
-    );
 }
 
 /// Handle focus change and scroll requests from input handlers.
@@ -1727,7 +1707,6 @@ fn handle_ipc_resize_request(
     }
 
     compositor::ipc::send_ack(ack_stream);
-    tracing::info!("resize ACK sent");
 }
 
 

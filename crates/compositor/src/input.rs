@@ -734,12 +734,6 @@ impl TermStack {
                         raw_height
                     };
 
-                    tracing::info!(
-                        window_index,
-                        screen_y = screen_y.value(),
-                        start_height,
-                        "RESIZE DRAG STARTED"
-                    );
                     self.resizing = Some(ResizeDrag {
                         window_index,
                         start_screen_y: screen_y.value() as i32,
