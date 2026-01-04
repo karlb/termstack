@@ -202,3 +202,67 @@ proptest! {
         );
     }
 }
+
+// Unit tests for has_meaningful_content()
+#[cfg(test)]
+mod meaningful_content_tests {
+    use terminal::Terminal;
+
+    #[test]
+    fn terminal_with_only_newlines_has_no_meaningful_content() {
+        let mut terminal = Terminal::new(80, 24).expect("spawn terminal");
+        terminal.inject_bytes(b"\n\n\n");
+
+        assert!(terminal.content_rows() > 0, "cursor should have moved");
+        assert!(
+            !terminal.has_meaningful_content(),
+            "newlines alone are not meaningful content"
+        );
+    }
+
+    #[test]
+    fn terminal_with_spaces_has_no_meaningful_content() {
+        let mut terminal = Terminal::new(80, 24).expect("spawn terminal");
+        terminal.inject_bytes(b"   \n  \n    \n");
+
+        assert!(terminal.content_rows() > 0);
+        assert!(
+            !terminal.has_meaningful_content(),
+            "spaces alone are not meaningful content"
+        );
+    }
+
+    #[test]
+    fn terminal_with_actual_text_has_meaningful_content() {
+        let mut terminal = Terminal::new(80, 24).expect("spawn terminal");
+        terminal.inject_bytes(b"hello\n");
+
+        assert!(terminal.content_rows() > 0);
+        assert!(
+            terminal.has_meaningful_content(),
+            "text should be meaningful content"
+        );
+    }
+
+    #[test]
+    fn terminal_with_special_characters_has_meaningful_content() {
+        let mut terminal = Terminal::new(80, 24).expect("spawn terminal");
+        terminal.inject_bytes(b"$\n");
+
+        assert!(
+            terminal.has_meaningful_content(),
+            "special characters should be meaningful content"
+        );
+    }
+
+    #[test]
+    fn empty_terminal_has_no_meaningful_content() {
+        let terminal = Terminal::new(80, 24).expect("spawn terminal");
+
+        assert_eq!(terminal.content_rows(), 0);
+        assert!(
+            !terminal.has_meaningful_content(),
+            "empty terminal has no meaningful content"
+        );
+    }
+}

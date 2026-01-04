@@ -477,6 +477,32 @@ impl Terminal {
         0
     }
 
+    /// Check if terminal has any meaningful (non-whitespace) content.
+    ///
+    /// This is different from content_rows() > 0 because a terminal can have
+    /// cursor movement (e.g., just newlines) without any visible characters.
+    /// Used for visibility decisions: we only want to show output terminals
+    /// that have actual content to display.
+    pub fn has_meaningful_content(&self) -> bool {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let cursor_line = grid.cursor.point.line.0 as u16;
+
+        // Check all lines from 0 to cursor for any non-whitespace character
+        for line_idx in 0..=cursor_line {
+            let line = &grid[alacritty_terminal::index::Line(line_idx as i32)];
+            let has_content = line.into_iter().any(|cell| {
+                let c = cell.c;
+                c != ' ' && c != '\0'
+            });
+            if has_content {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Get content row count
     pub fn content_rows(&self) -> u32 {
         self.sizing.content_rows()

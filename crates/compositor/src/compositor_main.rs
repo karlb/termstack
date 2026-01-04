@@ -1749,8 +1749,8 @@ fn promote_output_terminals(
 
                 if !already_cell {
                     if let Some(term) = terminal_manager.get(term_id) {
-                        // Promote if terminal has any content
-                        if term.content_rows() > 0 {
+                        // Promote if terminal has meaningful content (not just newlines)
+                        if term.terminal.has_meaningful_content() {
                             to_promote.push((window_idx, term_id));
                         }
                     }

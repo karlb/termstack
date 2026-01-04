@@ -243,9 +243,9 @@ impl ManagedTerminal {
         }
 
         // If terminal has output for the first time, transition visibility state
-        if self.visibility == VisibilityState::WaitingForOutput && self.content_rows() > 0 {
+        if self.visibility == VisibilityState::WaitingForOutput && self.terminal.has_meaningful_content() {
             self.visibility = self.visibility.on_output();
-            tracing::info!(id = self.id.0, "terminal has output, now permanently visible");
+            tracing::info!(id = self.id.0, "terminal has meaningful output, now permanently visible");
         }
 
         (actions, bytes_read)
