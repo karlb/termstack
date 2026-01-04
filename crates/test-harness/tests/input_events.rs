@@ -3,7 +3,7 @@
 //! These tests verify that input events (pointer motion, clicks, scroll)
 //! are handled correctly, particularly the coordinate system conversions.
 
-use test_harness::TestCompositor;
+use test_harness::{TestCompositor, fixtures};
 
 /// Verify that pointer motion correctly converts screen to render coordinates
 ///
@@ -70,14 +70,7 @@ fn pointer_motion_roundtrip() {
 /// Verify scroll direction is correct
 #[test]
 fn scroll_direction_correct() {
-    let mut tc = TestCompositor::new_headless(800, 600);
-
-    // Add some windows to create scrollable content
-    tc.add_external_window(400);
-    tc.add_external_window(400);
-    tc.add_external_window(400);
-
-    // Total content: 1200px, viewport: 600px, should be scrollable
+    let mut tc = fixtures::compositor_with_scrollable_content();
 
     let initial_scroll = tc.scroll_offset();
     assert_eq!(initial_scroll, 0.0, "should start at scroll=0");
@@ -97,8 +90,8 @@ fn scroll_direction_correct() {
     // Scroll down to max
     tc.simulate_scroll(1000.0);
     let max_scroll = tc.scroll_offset();
-    // Max scroll is total_height - viewport_height = 1200 - 600 = 600
-    assert_eq!(max_scroll, 600.0, "scroll should clamp to max");
+    // Max scroll is total_height - viewport_height = 1200 - 720 = 480
+    assert_eq!(max_scroll, 480.0, "scroll should clamp to max");
 }
 
 /// Verify that clicks at screen coordinates correctly identify windows
