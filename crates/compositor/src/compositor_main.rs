@@ -28,17 +28,17 @@ use smithay::reexports::wayland_server::{Display, Resource};
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
-use compositor::config::Config;
-use compositor::cursor::CursorManager;
-use compositor::render::{
+use crate::config::Config;
+use crate::cursor::CursorManager;
+use crate::render::{
     CellRenderData, prerender_terminals, prerender_title_bars,
     collect_window_data, build_render_data, log_frame_state,
     heights_changed_significantly, render_terminal, render_external,
     TitleBarCache,
 };
-use compositor::state::{ClientState, StackWindow, TermStack, XWaylandSatelliteMonitor};
-use compositor::terminal_manager::{TerminalId, TerminalManager};
-use compositor::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
+use crate::state::{ClientState, StackWindow, TermStack, XWaylandSatelliteMonitor};
+use crate::terminal_manager::{TerminalId, TerminalManager};
+use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
 /// Minimum terminal height in rows.
 const MIN_TERMINAL_ROWS: u16 = 1;
@@ -46,9 +46,8 @@ const MIN_TERMINAL_ROWS: u16 = 1;
 /// Popup render data: (x, y, geo_offset_x, geo_offset_y, elements)
 type PopupRenderData = Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)>;
 
-fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    setup_logging();
+pub fn run_compositor() -> anyhow::Result<()> {
+    // Initialize logging (setup_logging() should be called by the binary before this)
 
     tracing::info!("starting termstack");
 
@@ -63,8 +62,8 @@ fn main() -> anyhow::Result<()> {
 
     // Initialize X11 backend
     let window_title = match config.theme {
-        compositor::config::Theme::Light => "Column Compositor (Light)",
-        compositor::config::Theme::Dark => "Column Compositor (Dark)",
+        crate::config::Theme::Light => "Column Compositor (Light)",
+        crate::config::Theme::Dark => "Column Compositor (Dark)",
     };
 
     let x11_backend = X11Backend::new()
@@ -212,7 +211,7 @@ fn main() -> anyhow::Result<()> {
     }).expect("failed to insert socket source");
 
     // Create IPC socket for termstack commands
-    let ipc_socket_path = compositor::ipc::socket_path();
+    let ipc_socket_path = crate::ipc::socket_path();
     let _ = std::fs::remove_file(&ipc_socket_path); // Clean up old socket
     let ipc_listener = UnixListener::bind(&ipc_socket_path)
         .expect("failed to create IPC socket");
@@ -236,10 +235,10 @@ fn main() -> anyhow::Result<()> {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         tracing::info!("IPC connection received");
-                        match compositor::ipc::read_ipc_request(stream) {
+                        match crate::ipc::read_ipc_request(stream) {
                             Ok((request, stream)) => {
                                 match request {
-                                    compositor::ipc::IpcRequest::Spawn(spawn_req) => {
+                                    crate::ipc::IpcRequest::Spawn(spawn_req) => {
                                         // Detect if this is a gui command that slipped through the fish integration
                                         if spawn_req.command.starts_with("gui ") || spawn_req.command == "gui" {
                                             tracing::warn!(
@@ -254,7 +253,7 @@ fn main() -> anyhow::Result<()> {
                                         }
                                         // Spawn doesn't need ACK - it's fire-and-forget
                                     }
-                                    compositor::ipc::IpcRequest::GuiSpawn(gui_req) => {
+                                    crate::ipc::IpcRequest::GuiSpawn(gui_req) => {
                                         tracing::info!(
                                             command = %gui_req.command,
                                             foreground = gui_req.foreground,
@@ -270,17 +269,17 @@ fn main() -> anyhow::Result<()> {
                                             state.pending_gui_spawn_requests.push(gui_req);
                                         }
                                     }
-                                    compositor::ipc::IpcRequest::Resize(mode) => {
+                                    crate::ipc::IpcRequest::Resize(mode) => {
                                         tracing::info!(?mode, "IPC resize request queued");
                                         // Store stream for ACK after resize completes
                                         state.pending_resize_request = Some((mode, stream));
                                     }
                                 }
                             }
-                            Err(compositor::ipc::IpcError::Timeout) => {
+                            Err(crate::ipc::IpcError::Timeout) => {
                                 tracing::debug!("IPC read timeout");
                             }
-                            Err(compositor::ipc::IpcError::EmptyMessage) => {
+                            Err(crate::ipc::IpcError::EmptyMessage) => {
                                 tracing::debug!("IPC received empty message");
                             }
                             Err(e) => {
@@ -709,7 +708,7 @@ fn main() -> anyhow::Result<()> {
 
                                 // Calculate popup CONTENT position in screen coords
                                 // popup_position is relative to parent surface, so add parent's screen offset
-                                let popup_content_x = popup_position.x + parent_window_geo.loc.x + compositor::render::FOCUS_INDICATOR_WIDTH;
+                                let popup_content_x = popup_position.x + parent_window_geo.loc.x + crate::render::FOCUS_INDICATOR_WIDTH;
                                 let popup_content_top = client_area_top - popup_position.y - parent_window_geo.loc.y;
 
                                 // Popup SURFACE position = content position minus window geometry offset
@@ -890,7 +889,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn setup_logging() {
+pub fn setup_logging() {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     let filter = EnvFilter::try_from_default_env()
@@ -1124,11 +1123,11 @@ fn handle_gui_spawn_requests(
     compositor: &mut TermStack,
     terminal_manager: &mut TerminalManager,
 ) {
-    use compositor::terminal_manager::VisibilityState;
+    use crate::terminal_manager::VisibilityState;
 
     while let Some(request) = compositor.pending_gui_spawn_requests.pop() {
         // Get the launching terminal (currently focused)
-        use compositor::state::FocusedWindow;
+        use crate::state::FocusedWindow;
         let launching_terminal = compositor.focused_window.as_ref().and_then(|cell| match cell {
             FocusedWindow::Terminal(id) => Some(*id),
             FocusedWindow::External(_) => None,
@@ -1199,7 +1198,7 @@ fn handle_gui_spawn_requests(
                 // In both cases, restore focus to the launcher terminal now.
                 // For foreground mode, add_window will focus the GUI window when it's created.
                 if let Some(launcher_id) = launching_terminal {
-                    use compositor::state::FocusedWindow;
+                    use crate::state::FocusedWindow;
                     compositor.focused_window = Some(FocusedWindow::Terminal(launcher_id));
                     tracing::debug!(
                         launcher_id = launcher_id.0,
@@ -1432,7 +1431,7 @@ fn check_and_handle_height_changes(
 fn process_spawn_request(
     compositor: &mut TermStack,
     terminal_manager: &mut TerminalManager,
-    request: compositor::ipc::SpawnRequest,
+    request: crate::ipc::SpawnRequest,
 ) -> Option<TerminalId> {
     // Decide what command to run
     // Title bar now shows the command, so no need for echo prefix
@@ -1463,7 +1462,7 @@ fn process_spawn_request(
         env.insert("SHELL".to_string(), shell);
     }
 
-    use compositor::state::FocusedWindow;
+    use crate::state::FocusedWindow;
     let parent = compositor.focused_window.as_ref().and_then(|cell| match cell {
         FocusedWindow::Terminal(id) => Some(*id),
         FocusedWindow::External(_) => None,
@@ -1533,7 +1532,7 @@ fn process_terminal_output(
             terminal_manager.grow_terminal(id, target_rows);
 
             // If focused terminal grew, update cache and scroll (if bottom was visible)
-            use compositor::state::FocusedWindow;
+            use crate::state::FocusedWindow;
             let is_focused = matches!(compositor.focused_window.as_ref(), Some(FocusedWindow::Terminal(fid)) if *fid == id);
             if is_focused {
                 if let Some(idx) = find_terminal_window_index(compositor, id) {
@@ -1645,23 +1644,23 @@ fn handle_ipc_resize_request(
         return;
     };
 
-    use compositor::state::FocusedWindow;
+    use crate::state::FocusedWindow;
     let focused_id = match compositor.focused_window.as_ref() {
         Some(FocusedWindow::Terminal(id)) => *id,
         _ => {
             tracing::warn!("resize request but no focused terminal");
-            compositor::ipc::send_ack(ack_stream);
+            crate::ipc::send_ack(ack_stream);
             return;
         }
     };
 
     let char_height = terminal_manager.cell_height;
     let new_rows = match resize_mode {
-        compositor::ipc::ResizeMode::Full => {
+        crate::ipc::ResizeMode::Full => {
             tracing::info!(id = focused_id.0, max_rows = terminal_manager.max_rows, "resize to full");
             terminal_manager.max_rows
         }
-        compositor::ipc::ResizeMode::Content => {
+        crate::ipc::ResizeMode::Content => {
             // Process pending PTY output first
             if let Some(term) = terminal_manager.get_mut(focused_id) {
                 term.process();
@@ -1706,7 +1705,7 @@ fn handle_ipc_resize_request(
         }
     }
 
-    compositor::ipc::send_ack(ack_stream);
+    crate::ipc::send_ack(ack_stream);
 }
 
 
@@ -1759,7 +1758,7 @@ fn promote_output_terminals(
             })
             .unwrap_or(0);
 
-        compositor.layout_nodes.insert(insert_idx, compositor::state::LayoutNode {
+        compositor.layout_nodes.insert(insert_idx, crate::state::LayoutNode {
             cell: StackWindow::Terminal(term_id),
             height,
         });

@@ -3,4 +3,4 @@
 b = "build -Zchecksum-freshness"
 t = "nextest run -Zchecksum-freshness"
 l = "clippy -Zchecksum-freshness"
-r = "run -Zchecksum-freshness --bin termstack-compositor"
+r = "run -Zchecksum-freshness --bin termstack"

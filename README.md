@@ -18,13 +18,15 @@ TermStack is a specialized Wayland compositor designed for terminal-centric work
 ```
 termstack/
 ├── crates/
-│   ├── compositor/     # Smithay-based Wayland compositor
-│   ├── termstack/         # CLI tool for spawning terminals
+│   ├── compositor/     # Smithay-based Wayland compositor (library)
+│   ├── termstack/      # Unified binary (compositor + CLI)
 │   ├── terminal/       # Terminal emulation using alacritty_terminal
 │   └── test-harness/   # Testing infrastructure with tests/ subdirectory
 └── scripts/
     └── integration.fish # Fish shell integration
 ```
+
+**Note:** The `termstack` binary uses smart mode detection. When run directly, it starts the compositor. When run inside a termstack session (TERMSTACK_SOCKET is set), it acts as the CLI tool for spawning new terminals.
 
 ### Tech Stack
 
@@ -71,8 +73,7 @@ cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland
 # Build all binaries
 cargo build --release
 
-# Or build specific binaries
-cargo build --release --bin termstack-compositor
+# Or build the main binary
 cargo build --release --bin termstack
 ```
 
@@ -80,10 +81,10 @@ cargo build --release --bin termstack
 
 ```bash
 # Start the compositor (opens in a winit window for development)
-cargo run --release --bin termstack-compositor
+cargo run --release --bin termstack
 
 # Or run on real hardware (requires seat access)
-SMITHAY_BACKEND=udev cargo run --release --bin termstack-compositor
+SMITHAY_BACKEND=udev cargo run --release --bin termstack
 ```
 
 ## Key Bindings

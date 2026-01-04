@@ -145,7 +145,7 @@ fn test_xeyes_launches() {
     let _ = std::fs::remove_file(&wayland_lock);
 
     // Start compositor
-    let compositor_bin = workspace_root.join("target/release/termstack-compositor");
+    let compositor_bin = workspace_root.join("target/release/termstack");
     let mut compositor = Command::new(&compositor_bin)
         .env("DISPLAY", &display)
         .env("RUST_LOG", "compositor=info")
@@ -302,7 +302,7 @@ fn test_multiple_x11_apps() {
     let _ = std::fs::remove_file(&wayland_lock);
 
     // Start compositor
-    let compositor_bin = workspace_root.join("target/release/termstack-compositor");
+    let compositor_bin = workspace_root.join("target/release/termstack");
     let mut compositor = Command::new(&compositor_bin)
         .env("DISPLAY", &display)
         .env("RUST_LOG", "compositor=info")
@@ -413,7 +413,7 @@ fn test_compositor_works_without_xwayland_satellite() {
     let _ = std::fs::remove_file(&wayland_lock);
 
     // Start compositor with PATH cleared (so xwayland-satellite can't be found)
-    let compositor_bin = workspace_root.join("target/release/termstack-compositor");
+    let compositor_bin = workspace_root.join("target/release/termstack");
     let mut compositor = Command::new(&compositor_bin)
         .env("DISPLAY", &display)
         .env("RUST_LOG", "compositor=info")

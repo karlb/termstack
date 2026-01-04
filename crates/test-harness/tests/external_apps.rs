@@ -81,7 +81,7 @@ fn test_foot_connects() {
 
     // Build compositor
     let status = Command::new("cargo")
-        .args(["build", "--release", "-p", "compositor", "--bin", "termstack-compositor"])
+        .args(["build", "--release", "-p", "termstack", "--bin", "termstack"])
         .current_dir(&workspace_root)
         .status()
         .expect("Failed to run cargo build");
@@ -99,7 +99,7 @@ fn test_foot_connects() {
     let _ = std::fs::remove_file(&wayland_lock);
 
     // Start compositor
-    let compositor_bin = workspace_root.join("target/release/termstack-compositor");
+    let compositor_bin = workspace_root.join("target/release/termstack");
     let mut compositor = Command::new(&compositor_bin)
         .env("DISPLAY", &display)
         .env("RUST_LOG", "compositor=info")

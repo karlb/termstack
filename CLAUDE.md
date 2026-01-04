@@ -18,9 +18,11 @@ cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland
 cargo b                              # Build (alias for: cargo build -Zchecksum-freshness)
 cargo t                              # Test (alias for: cargo nextest run -Zchecksum-freshness)
 cargo l                              # Lint (alias for: cargo clippy -Zchecksum-freshness)
-cargo r                              # Run compositor (alias for: cargo run -Zchecksum-freshness --bin termstack-compositor)
+cargo r                              # Run compositor (alias for: cargo run -Zchecksum-freshness --bin termstack)
 RUST_LOG=termstack_compositor=debug cargo r    # Run with debug logging
 ```
+
+**Note:** The `termstack` binary uses smart mode detection. When run directly (`cargo r`), it starts the compositor (no TERMSTACK_SOCKET set). When run inside a termstack session, it acts as the CLI tool.
 
 Configuration is in `.cargo/config.toml` and `rust-toolchain.toml`. The nightly toolchain and `-Zchecksum-freshness` flag (to avoid mtime race conditions) are applied automatically.
 
@@ -36,8 +38,9 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
 
 ### Crate Structure
 
-- **compositor**: Smithay-based Wayland compositor with winit backend
-  - `main.rs`: Event loop, rendering, frame handling
+- **compositor**: Smithay-based Wayland compositor library
+  - `main.rs`: Compositor entry point (`run_compositor()`, `setup_logging()`)
+  - `lib.rs`: Public library API, re-exports main functions
   - `state.rs`: `TermStack` state machine, `StackWindow` enum (Terminal/External)
   - `input.rs`: Keyboard/pointer event handling, coordinate conversion
   - `coords.rs`: Type-safe coordinate wrappers (ScreenY, RenderY, ContentY)
@@ -49,7 +52,9 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
   - `ipc.rs`: IPC protocol for termstack CLI communication
   - `config.rs`: Configuration file handling
 
-- **termstack**: CLI tool for spawning terminals in the compositor
+- **termstack**: Unified binary with smart mode detection
+  - `main.rs`: Smart detection entry point (compositor or CLI mode)
+  - `cli.rs`: CLI tool for spawning terminals
   - Shell integration for automatic command routing
   - IPC client for communicating with compositor
   - TUI app detection and automatic resizing
