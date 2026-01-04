@@ -20,6 +20,72 @@ pub fn multiple_terminals(count: usize) -> (TestCompositor, Vec<TerminalHandle>)
     (compositor, terminals)
 }
 
+/// Create a compositor with mixed windows (terminals and external windows)
+///
+/// Useful for testing window interaction, focus management, and layout with heterogeneous content.
+///
+/// Returns: (compositor, terminal_handles)
+pub fn compositor_with_mixed_windows() -> (TestCompositor, Vec<TerminalHandle>) {
+    let mut compositor = TestCompositor::new_headless(TEST_WIDTH, TEST_HEIGHT);
+    let term1 = compositor.spawn_terminal();
+    compositor.add_external_window(200); // External window at index 1
+    let term2 = compositor.spawn_terminal();
+    compositor.add_external_window(300); // External window at index 3
+    (compositor, vec![term1, term2])
+}
+
+/// Create a compositor with scrollable content (total height > viewport)
+///
+/// Useful for testing scroll behavior, visibility calculations, and autoscroll.
+/// Total content height: ~1200px, viewport: 720px
+///
+/// Returns: compositor with 3 external windows (400px each)
+pub fn compositor_with_scrollable_content() -> TestCompositor {
+    let mut compositor = TestCompositor::new_headless(TEST_WIDTH, TEST_HEIGHT);
+    compositor.add_external_window(400);
+    compositor.add_external_window(400);
+    compositor.add_external_window(400);
+    compositor
+}
+
+/// Create a compositor scrolled to maximum offset
+///
+/// Useful for testing max scroll behavior, scroll bounds, and bottom edge cases.
+///
+/// Returns: compositor scrolled to show bottom of content
+pub fn compositor_at_max_scroll() -> TestCompositor {
+    let mut tc = compositor_with_scrollable_content();
+    // Scroll to maximum (total height - viewport height)
+    // Total: 1200px, viewport: 720px, max_scroll: 480px
+    tc.simulate_scroll(-480.0); // Negative scroll moves content up
+    tc
+}
+
+/// Create a compositor with a focused external window at specified index
+///
+/// Useful for testing focus-dependent behavior like keyboard input routing.
+///
+/// Arguments:
+/// - window_count: Total number of external windows to create
+/// - focused_index: Which window should have focus (0-indexed)
+///
+/// Returns: compositor with `window_count` external windows, focused at `focused_index`
+pub fn compositor_with_focused_window(window_count: usize, focused_index: usize) -> TestCompositor {
+    assert!(focused_index < window_count, "focused_index must be < window_count");
+    let mut compositor = TestCompositor::new_headless(TEST_WIDTH, TEST_HEIGHT);
+
+    for _ in 0..window_count {
+        compositor.add_external_window(200);
+    }
+
+    // Click on the focused window to give it focus
+    // Windows stack from top to bottom, each 200px tall
+    let click_y = (focused_index * 200 + 100) as f64; // Middle of target window
+    compositor.simulate_click(100.0, click_y);
+
+    compositor
+}
+
 /// Shell command to generate numbered lines
 pub fn seq_command(start: u32, end: u32) -> String {
     format!("for i in $(seq {} {}); do echo \"line $i\"; done\n", start, end)
