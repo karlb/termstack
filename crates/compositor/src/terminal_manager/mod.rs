@@ -314,32 +314,22 @@ impl ManagedTerminal {
 
     /// Resize to a specific pixel height (used for manual drag resize)
     /// Also sets `manually_sized` to disable auto-growth
+    ///
+    /// NOTE: Does NOT mark dirty - texture re-rendering is too slow (~30ms).
+    /// The caller must call mark_dirty() when resize ends to trigger final render.
     pub fn resize_to_height(&mut self, height_px: u32, cell_height: u32) {
-        // Always update visual height immediately for smooth drag feedback
+        // Update visual height for layout calculations (don't re-render texture yet)
         self.height = height_px;
-        self.dirty = true;
+        self.manually_sized = true;
 
+        // Resize PTY if row count changed (so programs see correct size)
         let target_rows = (height_px / cell_height).max(1) as u16;
         let (_, current_rows) = self.terminal.dimensions();
-
-        // Only resize PTY if row count actually changed
         if target_rows != current_rows {
             let action = self.terminal.configure(target_rows);
-
             if let SizingAction::ApplyResize { .. } = action {
                 self.terminal.complete_resize();
             }
-
-            self.manually_sized = true;
-            tracing::debug!(
-                id = self.id.0,
-                height_px,
-                rows = target_rows,
-                "terminal PTY resized during drag"
-            );
-        } else {
-            // Still set manually_sized even if row count didn't change
-            self.manually_sized = true;
         }
     }
 

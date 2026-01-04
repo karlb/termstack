@@ -394,13 +394,15 @@ pub fn render_terminal(
         return;
     }
 
+    // Calculate content area (below title bar if present)
+    let title_bar_height = if title_bar_texture.is_some() { TITLE_BAR_HEIGHT as i32 } else { 0 };
+    let content_area_top = y + height - title_bar_height;
+
     // Render title bar if present
     if let Some(tex) = title_bar_texture {
-        let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
-
         frame.render_texture_at(
             tex,
-            Point::from((FOCUS_INDICATOR_WIDTH, title_bar_y)),
+            Point::from((FOCUS_INDICATOR_WIDTH, content_area_top)),
             1,
             1.0,
             Transform::Flipped180,
@@ -410,10 +412,14 @@ pub fn render_terminal(
         ).ok();
     }
 
-    // Render terminal content
+    // Top-align terminal content within content area
+    // (texture may be smaller than cell during resize)
+    let texture_height = texture.size().h;
+    let content_y = content_area_top - texture_height;
+
     frame.render_texture_at(
         texture,
-        Point::from((FOCUS_INDICATOR_WIDTH, y)),
+        Point::from((FOCUS_INDICATOR_WIDTH, content_y)),
         1,
         1.0,
         Transform::Flipped180,

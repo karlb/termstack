@@ -364,7 +364,14 @@ fn main() -> anyhow::Result<()> {
     // This ensures DISPLAY is set correctly for X11 app support
 
     // Main event loop
+    let mut frame_start = std::time::Instant::now();
     while compositor.running {
+        let frame_elapsed = frame_start.elapsed();
+        frame_start = std::time::Instant::now();
+        if compositor.resizing.is_some() && frame_elapsed.as_millis() > 20 {
+            tracing::warn!(frame_ms = frame_elapsed.as_millis(), "resize: slow frame");
+        }
+
         // Clear stale drag state if no pointer buttons are pressed
         // This handles lost release events when window loses focus mid-drag
         compositor.clear_stale_drag_state(compositor.pointer_buttons_pressed > 0);
@@ -473,12 +480,18 @@ fn main() -> anyhow::Result<()> {
 
         // Process X11 input events from channel
         let mut event_count = 0;
+        let input_start = std::time::Instant::now();
         while let Ok(input_event) = x11_event_rx.try_recv() {
             event_count += 1;
             compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
         }
-        if event_count > 0 {
-            tracing::debug!(event_count, "processed X11 input events this frame");
+        let input_elapsed = input_start.elapsed();
+        if event_count > 0 && compositor.resizing.is_some() {
+            tracing::info!(
+                event_count,
+                input_ms = input_elapsed.as_millis(),
+                "resize: processed input events"
+            );
         }
 
         // Handle X11 resize events
@@ -582,7 +595,12 @@ fn main() -> anyhow::Result<()> {
             let scale = Scale::from(1.0);
 
             // Pre-render all terminal textures
+            let prerender_start = std::time::Instant::now();
             prerender_terminals(&mut terminal_manager, &mut renderer);
+            let prerender_elapsed = prerender_start.elapsed();
+            if compositor.resizing.is_some() && prerender_elapsed.as_millis() > 5 {
+                tracing::warn!(prerender_ms = prerender_elapsed.as_millis(), "resize: slow prerender");
+            }
 
             // Pre-render title bar textures for all cells with SSD
             let title_bar_textures = prerender_title_bars(

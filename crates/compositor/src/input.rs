@@ -522,7 +522,7 @@ impl TermStack {
             let new_height = (drag.start_height + delta).max(MIN_WINDOW_HEIGHT);
 
             tracing::trace!(
-                cell_index,
+                window_index,
                 screen_y = screen_y.value(),
                 delta,
                 new_height,
@@ -539,14 +539,23 @@ impl TermStack {
 
             match window_type {
                 Some(id) => {
-                    // Terminal
+                    // Terminal - snap to full rows during drag
                     let char_height = terminals.cell_height;
                     if let Some(terminal) = terminals.get_mut(id) {
-                        terminal.resize_to_height(new_height as u32, char_height);
-                    }
-                    // Update cached height in layout
-                    if let Some(node) = self.layout_nodes.get_mut(window_index) {
-                        node.height = new_height;
+                        let title_bar = if terminal.show_title_bar { TITLE_BAR_HEIGHT } else { 0 };
+
+                        // Calculate content height and snap to full rows
+                        let content_height = (new_height as u32).saturating_sub(title_bar);
+                        let rows = (content_height / char_height).max(1);
+                        let snapped_content = rows * char_height;
+                        let snapped_total = (snapped_content + title_bar) as i32;
+
+                        terminal.resize_to_height(snapped_content, char_height);
+
+                        // Update cached height with snapped value
+                        if let Some(node) = self.layout_nodes.get_mut(window_index) {
+                            node.height = snapped_total;
+                        }
                     }
                 }
                 None => {
@@ -572,8 +581,9 @@ impl TermStack {
                     );
                 }
             }
-            self.recalculate_layout();
-            return; // Don't process normal pointer motion during resize
+            // Don't call recalculate_layout() here - main loop handles it
+            // Just update node.height and let render use it directly
+            return;
         }
 
         // Update selection if we're in a drag operation
@@ -640,21 +650,30 @@ impl TermStack {
 
         // Handle left mouse button release
         if button == BTN_LEFT && state == ButtonState::Released {
-            // End resize drag - send final configure at drag target
+            // End resize drag
             if let Some(drag) = self.resizing.take() {
+                let window_index = drag.window_index;
                 let final_target = drag.target_height as u32;
 
-                tracing::info!(
-                    window_index = drag.window_index,
-                    final_target,
-                    "RESIZE DRAG ENDED - sending final configure"
-                );
-
-                if final_target > 0 {
-                    // Use force=true to bypass pending check
-                    self.request_resize(drag.window_index, final_target, true);
+                if let Some(node) = self.layout_nodes.get(window_index) {
+                    match &node.cell {
+                        StackWindow::Terminal(id) => {
+                            // Terminal: mark dirty to trigger texture re-render at final size
+                            if let Some(ref mut tm) = terminals {
+                                if let Some(term) = tm.get_mut(*id) {
+                                    term.mark_dirty();
+                                }
+                            }
+                        }
+                        StackWindow::External(_) => {
+                            // External window: send final configure
+                            if final_target > 0 {
+                                self.request_resize(window_index, final_target, true);
+                            }
+                        }
+                    }
                 }
-                return; // Don't process further
+                return;
             }
 
             // End selection drag (selection remains for copying)
