@@ -1,13 +1,13 @@
 [package]
-name = "column-term"
+name = "termstack"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "CLI tool to spawn terminals in column-compositor"
+description = "CLI tool to spawn terminals in TermStack"
 
 [[bin]]
-name = "column-term"
+name = "termstack"
 path = "src/main.rs"
 
 [dependencies]

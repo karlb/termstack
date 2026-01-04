@@ -72,8 +72,8 @@ mod tests {
         // This test simulates the COMPLETE flow from IPC message to terminal creation
         // exactly as main.rs does it
 
-        // Step 1: Simulate receiving JSON from column-term (like ipc::read_spawn_request does)
-        let json_from_column_term = serde_json::json!({
+        // Step 1: Simulate receiving JSON from termstack (like ipc::read_spawn_request does)
+        let json_from_termstack = serde_json::json!({
             "type": "spawn",
             "command": "mc",
             "cwd": "/tmp",
@@ -84,7 +84,7 @@ mod tests {
         });
 
         // Step 2: Parse the message (like ipc.rs does)
-        let parsed: IpcMessage = serde_json::from_value(json_from_column_term).unwrap();
+        let parsed: IpcMessage = serde_json::from_value(json_from_termstack).unwrap();
         let (command, cwd, env) = match parsed {
             IpcMessage::Spawn { command, cwd, env } => (command, cwd, env),
             IpcMessage::Resize { .. } => panic!("expected Spawn"),

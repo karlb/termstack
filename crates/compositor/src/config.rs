@@ -119,8 +119,8 @@ impl Config {
     /// Load configuration from file, falling back to defaults
     pub fn load() -> Self {
         let config_paths = [
-            dirs::config_dir().map(|p| p.join("column-compositor/config.toml")),
-            Some(std::path::PathBuf::from("/etc/column-compositor/config.toml")),
+            dirs::config_dir().map(|p| p.join("termstack/config.toml")),
+            Some(std::path::PathBuf::from("/etc/termstack/config.toml")),
         ];
 
         for path in config_paths.into_iter().flatten() {

@@ -4,7 +4,7 @@ members = [
     "crates/compositor",
     "crates/terminal",
     "crates/test-harness",
-    "crates/column-term",
+    "crates/termstack",
 ]
 
 [workspace.package]

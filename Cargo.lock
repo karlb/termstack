@@ -350,16 +350,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "column-term"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "toml 0.8.23",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2135,6 +2125,16 @@ dependencies = [
  "rustix 0.38.44",
  "thiserror 2.0.17",
  "tracing",
+]
+
+[[package]]
+name = "termstack"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
 ]
 
 [[package]]

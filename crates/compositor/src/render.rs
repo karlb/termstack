@@ -10,7 +10,7 @@ use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Color32F, Frame, ImportMem, Texture};
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 
-use crate::state::{ColumnCell, LayoutNode};
+use crate::state::{StackWindow, LayoutNode};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
@@ -87,7 +87,7 @@ pub fn prerender_title_bars<'a>(
 
     for node in layout_nodes.iter() {
         match &node.cell {
-            ColumnCell::Terminal(id) => {
+            StackWindow::Terminal(id) => {
                 let show_title_bar = terminal_manager.get(*id)
                     .map(|t| t.show_title_bar)
                     .unwrap_or(false);
@@ -116,7 +116,7 @@ pub fn prerender_title_bars<'a>(
                     keys.push(None);
                 }
             }
-            ColumnCell::External(entry) => {
+            StackWindow::External(entry) => {
                 if entry.uses_csd {
                     keys.push(None);
                 } else if let Some(ref mut tb_renderer) = title_bar_renderer {
@@ -149,7 +149,7 @@ pub fn prerender_title_bars<'a>(
 /// Collect actual heights for all cells and render external window elements
 ///
 /// Returns (heights, external_elements_per_cell)
-pub fn collect_cell_data(
+pub fn collect_window_data(
     layout_nodes: &[LayoutNode],
     terminal_manager: &TerminalManager,
     renderer: &mut GlesRenderer,
@@ -160,7 +160,7 @@ pub fn collect_cell_data(
 
     for node in layout_nodes.iter() {
         match &node.cell {
-            ColumnCell::Terminal(id) => {
+            StackWindow::Terminal(id) => {
                 let (content_height, show_title_bar) = terminal_manager.get(*id)
                     .map(|t| {
                         let h = if !t.is_visible() {
@@ -182,7 +182,7 @@ pub fn collect_cell_data(
                 heights.push(height);
                 external_elements.push(Vec::new());
             }
-            ColumnCell::External(entry) => {
+            StackWindow::External(entry) => {
                 // Use render_elements_from_surface_tree directly on the surface
                 // instead of window.render_elements() which includes popups when PopupManager is used.
                 // This ensures popup surfaces don't affect the window's height calculation.
@@ -241,12 +241,12 @@ pub fn build_render_data<'a>(
     let mut render_data = Vec::new();
     let mut content_y: i32 = -(scroll_offset as i32);
 
-    for (cell_idx, node) in layout_nodes.iter().enumerate() {
-        let height = heights[cell_idx];
+    for (window_idx, node) in layout_nodes.iter().enumerate() {
+        let height = heights[window_idx];
         let render_y = crate::coords::content_to_render_y(content_y as f64, height as f64, screen_height as f64) as i32;
 
         match &node.cell {
-            ColumnCell::Terminal(id) => {
+            StackWindow::Terminal(id) => {
                 if let Some(term) = terminal_manager.get(*id) {
                     let has_texture = term.get_texture().is_some();
                     tracing::debug!(
@@ -259,7 +259,7 @@ pub fn build_render_data<'a>(
                         "terminal render state"
                     );
                 }
-                let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
+                let title_bar_texture = title_bar_textures.get(window_idx).copied().flatten();
                 render_data.push(CellRenderData::Terminal {
                     id: *id,
                     y: render_y,
@@ -267,9 +267,9 @@ pub fn build_render_data<'a>(
                     title_bar_texture,
                 });
             }
-            ColumnCell::External(entry) => {
-                let elements = std::mem::take(&mut external_elements[cell_idx]);
-                let title_bar_texture = title_bar_textures.get(cell_idx).copied().flatten();
+            StackWindow::External(entry) => {
+                let elements = std::mem::take(&mut external_elements[window_idx]);
+                let title_bar_texture = title_bar_textures.get(window_idx).copied().flatten();
                 let uses_csd = entry.uses_csd;
 
                 // For external windows, check if height differs from committed
@@ -308,21 +308,21 @@ pub fn log_frame_state(
     focused_index: Option<usize>,
     screen_height: i32,
 ) {
-    let has_external = layout_nodes.iter().any(|n| matches!(n.cell, ColumnCell::External(_)));
+    let has_external = layout_nodes.iter().any(|n| matches!(n.cell, StackWindow::External(_)));
     if !has_external {
         return;
     }
 
-    let cell_info: Vec<String> = layout_nodes.iter().enumerate().map(|(i, node)| {
+    let window_info: Vec<String> = layout_nodes.iter().enumerate().map(|(i, node)| {
         match &node.cell {
-            ColumnCell::Terminal(id) => {
+            StackWindow::Terminal(id) => {
                 let visible = terminal_manager.get(*id).map(|t| t.is_visible()).unwrap_or(true);
                 format!("[{}]Term({})h={}{}",
                     i, id.0,
                     node.height,
                     if !visible { " HIDDEN" } else { "" })
             }
-            ColumnCell::External(e) => {
+            StackWindow::External(e) => {
                 format!("[{}]Ext h={}", i, e.state.current_height())
             }
         }
@@ -343,7 +343,7 @@ pub fn log_frame_state(
         scroll = scroll_offset,
         focused = ?focused_index,
         screen_h = screen_height,
-        cells = %cell_info.join(" "),
+        cells = %window_info.join(" "),
         render = %render_info.join(" "),
         "FRAME STATE"
     );

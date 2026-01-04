@@ -115,7 +115,7 @@ impl Pty {
         cmd.arg("-l").env("TERM", "xterm-256color");
 
         // Inject integration script for fish
-        // The script self-guards with COLUMN_COMPOSITOR_SOCKET check
+        // The script self-guards with TERMSTACK_SOCKET check
         if shell_basename(shell) == Some("fish") {
             cmd.arg("-C")
                 .arg(include_str!("../../../scripts/integration.fish"));

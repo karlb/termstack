@@ -1,4 +1,4 @@
-//! Test harness for column-compositor
+//! Test harness for termstack
 //!
 //! Provides infrastructure for testing the compositor in headless mode.
 //!

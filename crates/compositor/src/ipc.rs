@@ -1,6 +1,6 @@
 //! IPC socket for shell integration
 //!
-//! Handles requests from the `column-term` CLI tool.
+//! Handles requests from the `termstack` CLI tool.
 //! The compositor listens on a Unix socket and accepts JSON messages
 //! to spawn terminals or resize the focused terminal.
 
@@ -42,7 +42,7 @@ pub enum ResizeMode {
     Content,
 }
 
-/// Message from column-term to compositor
+/// Message from termstack to compositor
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum IpcMessage {
@@ -195,5 +195,5 @@ pub fn send_ack(mut stream: UnixStream) {
 /// Generate the IPC socket path for the current user
 pub fn socket_path() -> PathBuf {
     let uid = rustix::process::getuid().as_raw();
-    PathBuf::from(format!("/run/user/{}/column-compositor.sock", uid))
+    PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
 }

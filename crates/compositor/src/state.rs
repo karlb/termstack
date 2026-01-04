@@ -55,7 +55,7 @@ use crate::terminal_manager::TerminalId;
 /// Unlike indices, cell identity remains stable when cells are added/removed,
 /// preventing focus from accidentally sliding to a different cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FocusedCell {
+pub enum FocusedWindow {
     /// A terminal cell, identified by its TerminalId
     Terminal(TerminalId),
     /// An external window, identified by its surface ObjectId
@@ -65,7 +65,7 @@ pub enum FocusedCell {
 /// Active resize drag state
 pub struct ResizeDrag {
     /// Index of the cell being resized
-    pub cell_index: usize,
+    pub window_index: usize,
     /// Initial pointer Y in screen coordinates (Y=0 at top)
     pub start_screen_y: i32,
     /// Cell height when drag started
@@ -91,7 +91,7 @@ pub const MIN_CONFIGURE_INTERVAL_MS: u64 = 16; // ~60fps
 pub const CONFIGURE_COMMIT_TIMEOUT_MS: u64 = 100;
 
 /// Minimum cell height (pixels)
-pub const MIN_CELL_HEIGHT: i32 = 50;
+pub const MIN_WINDOW_HEIGHT: i32 = 50;
 
 /// xwayland-satellite process monitor with crash tracking
 pub struct XWaylandSatelliteMonitor {
@@ -104,7 +104,7 @@ pub struct XWaylandSatelliteMonitor {
 }
 
 /// Main compositor state
-pub struct ColumnCompositor {
+pub struct TermStack {
     /// Wayland display handle
     pub display_handle: DisplayHandle,
 
@@ -134,7 +134,7 @@ pub struct ColumnCompositor {
     pub scroll_offset: f64,
 
     /// Identity of focused cell (stable across cell additions/removals)
-    pub focused_cell: Option<FocusedCell>,
+    pub focused_window: Option<FocusedWindow>,
 
     /// Cached layout calculation
     pub layout: ColumnLayout,
@@ -157,10 +157,10 @@ pub struct ColumnCompositor {
     /// Scroll request (in pixels, positive = down)
     pub scroll_requested: f64,
 
-    /// Pending spawn requests from IPC (column-term commands)
+    /// Pending spawn requests from IPC (termstack commands)
     pub pending_spawn_requests: Vec<SpawnRequest>,
 
-    /// Pending resize request from IPC (column-term resize)
+    /// Pending resize request from IPC (termstack resize)
     /// Includes the stream for sending acknowledgement after resize completes
     pub pending_resize_request: Option<(ResizeMode, UnixStream)>,
 
@@ -281,7 +281,7 @@ pub struct ColumnCompositor {
 /// positioning calculations - always use `LayoutNode.height` which matches what was
 /// actually rendered.
 pub struct LayoutNode {
-    pub cell: ColumnCell,
+    pub cell: StackWindow,
     /// Cached height from last render frame. Used for layout, click detection, and scroll.
     /// Updated by `update_layout_heights()` at the start of each frame.
     pub height: i32,
@@ -353,7 +353,7 @@ impl WindowState {
 }
 
 /// A cell in the column layout - either a terminal or external window
-pub enum ColumnCell {
+pub enum StackWindow {
     /// An internal terminal, referenced by ID (actual terminal data in TerminalManager)
     Terminal(TerminalId),
     /// An external Wayland window (owns the WindowEntry directly)
@@ -361,7 +361,7 @@ pub enum ColumnCell {
     External(Box<WindowEntry>),
 }
 
-impl ColumnCell {
+impl StackWindow {
     /// Get the terminal ID if this is a Terminal cell
     pub fn terminal_id(&self) -> Option<TerminalId> {
         match self {
@@ -397,7 +397,7 @@ impl ColumnCell {
     }
 }
 
-impl ColumnCompositor {
+impl TermStack {
     /// Create a new compositor state
     /// Returns (compositor, display) - display must be kept alive for dispatching
     pub fn new(
@@ -438,7 +438,7 @@ impl ColumnCompositor {
             popup_manager: PopupManager::default(),
             layout_nodes: Vec::new(),
             scroll_offset: 0.0,
-            focused_cell: None,
+            focused_window: None,
             layout: ColumnLayout::empty(),
             output_size,
             seat,
@@ -515,7 +515,7 @@ impl ColumnCompositor {
             let height = node.height;
 
             // Only external windows need to be mapped in Space
-            if let ColumnCell::External(entry) = &node.cell {
+            if let StackWindow::External(entry) = &node.cell {
                 // Apply Y-flip
                 let render_y = crate::coords::content_to_render_y(
                     content_y as f64,
@@ -587,7 +587,7 @@ impl ColumnCompositor {
         let insert_index = if let Some(term_id) = output_terminal {
             // Find the output terminal's position and insert there
             let output_pos = self.layout_nodes.iter().position(|node| {
-                matches!(node.cell, ColumnCell::Terminal(id) if id == term_id)
+                matches!(node.cell, StackWindow::Terminal(id) if id == term_id)
             });
             if let Some(pos) = output_pos {
                 tracing::info!(
@@ -608,7 +608,7 @@ impl ColumnCompositor {
         };
 
         self.layout_nodes.insert(insert_index, LayoutNode {
-            cell: ColumnCell::External(Box::new(entry)),
+            cell: StackWindow::External(Box::new(entry)),
             height: initial_height as i32,
         });
 
@@ -631,8 +631,8 @@ impl ColumnCompositor {
         self.activate_toplevel(insert_index);
 
         tracing::info!(
-            cell_count = self.layout_nodes.len(),
-            focused = ?self.focused_cell,
+            window_count = self.layout_nodes.len(),
+            focused = ?self.focused_window,
             insert_index,
             has_output_terminal = output_terminal.is_some(),
             command = %command,
@@ -648,14 +648,14 @@ impl ColumnCompositor {
 
         // Insert with placeholder height 0, will be updated in next frame
         self.layout_nodes.insert(insert_index, LayoutNode {
-            cell: ColumnCell::Terminal(id),
+            cell: StackWindow::Terminal(id),
             height: 0,
         });
 
         // With identity-based focus, the previously focused cell's identity is unchanged
         // If nothing was focused, focus the new cell
-        if self.focused_cell.is_none() {
-            self.focused_cell = Some(FocusedCell::Terminal(id));
+        if self.focused_window.is_none() {
+            self.focused_window = Some(FocusedWindow::Terminal(id));
         }
 
         self.recalculate_layout();
@@ -663,7 +663,7 @@ impl ColumnCompositor {
         tracing::info!(
             terminal_id = id.0,
             insert_index,
-            cell_count = self.layout_nodes.len(),
+            window_count = self.layout_nodes.len(),
             "terminal added"
         );
     }
@@ -672,9 +672,9 @@ impl ColumnCompositor {
     /// If the window had an output terminal, it's added to pending_output_terminal_cleanup
     pub fn remove_window(&mut self, surface: &WlSurface) -> Option<TerminalId> {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
-            matches!(&node.cell, ColumnCell::External(entry) if entry.surface.wl_surface() == surface)
+            matches!(&node.cell, StackWindow::External(entry) if entry.surface.wl_surface() == surface)
         }) {
-            let (output_terminal, is_foreground_gui) = if let ColumnCell::External(entry) = &self.layout_nodes.remove(index).cell {
+            let (output_terminal, is_foreground_gui) = if let StackWindow::External(entry) = &self.layout_nodes.remove(index).cell {
                 self.space.unmap_elem(&entry.window);
                 (entry.output_terminal, entry.is_foreground_gui)
             } else {
@@ -696,8 +696,8 @@ impl ColumnCompositor {
             self.recalculate_layout();
 
             tracing::info!(
-                cell_count = self.layout_nodes.len(),
-                focused = ?self.focused_cell,
+                window_count = self.layout_nodes.len(),
+                focused = ?self.focused_window,
                 has_output_terminal = output_terminal.is_some(),
                 is_foreground_gui,
                 "external window removed"
@@ -715,15 +715,15 @@ impl ColumnCompositor {
     /// Remove a terminal by its ID
     pub fn remove_terminal(&mut self, id: TerminalId) {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
-            matches!(node.cell, ColumnCell::Terminal(tid) if tid == id)
+            matches!(node.cell, StackWindow::Terminal(tid) if tid == id)
         }) {
             self.layout_nodes.remove(index);
             self.update_focus_after_removal(index);
             self.recalculate_layout();
 
             tracing::info!(
-                cell_count = self.layout_nodes.len(),
-                focused = ?self.focused_cell,
+                window_count = self.layout_nodes.len(),
+                focused = ?self.focused_window,
                 terminal_id = ?id,
                 "terminal removed"
             );
@@ -765,7 +765,7 @@ impl ColumnCompositor {
             tracing::warn!("request_resize: node not found at index {}", index);
             return;
         };
-        let ColumnCell::External(entry) = &mut node.cell else {
+        let StackWindow::External(entry) = &mut node.cell else {
             tracing::debug!("request_resize: cell at index {} is not External", index);
             return;
         };
@@ -829,7 +829,7 @@ impl ColumnCompositor {
     /// Resize all external windows to new width (called when compositor is resized)
     pub fn resize_all_external_windows(&mut self, new_width: i32) {
         for node in &mut self.layout_nodes {
-            if let ColumnCell::External(entry) = &mut node.cell {
+            if let StackWindow::External(entry) = &mut node.cell {
                 let current_height = entry.state.current_height();
                 entry.surface.with_pending_state(|state| {
                     state.size = Some(Size::from((new_width, current_height as i32)));
@@ -847,14 +847,14 @@ impl ColumnCompositor {
     /// Handle window commit - check for resize completion
     pub fn handle_commit(&mut self, surface: &WlSurface) {
         let Some(index) = self.layout_nodes.iter().position(|node| {
-            matches!(&node.cell, ColumnCell::External(entry) if entry.surface.wl_surface() == surface)
+            matches!(&node.cell, StackWindow::External(entry) if entry.surface.wl_surface() == surface)
         }) else {
             return;
         };
 
         // Skip processing commits if we're actively resizing this window
         // (commits during drag have the old size and would overwrite our visual updates)
-        if self.resizing.as_ref().map(|d| d.cell_index) == Some(index) {
+        if self.resizing.as_ref().map(|d| d.window_index) == Some(index) {
             tracing::debug!(index, "skipping commit during active resize drag");
             return;
         }
@@ -864,7 +864,7 @@ impl ColumnCompositor {
             let Some(node) = self.layout_nodes.get(index) else {
                 return;
             };
-            let ColumnCell::External(entry) = &node.cell else {
+            let StackWindow::External(entry) = &node.cell else {
                 return;
             };
 
@@ -890,7 +890,7 @@ impl ColumnCompositor {
         let Some(node) = self.layout_nodes.get_mut(index) else {
             return;
         };
-        let ColumnCell::External(entry) = &mut node.cell else {
+        let StackWindow::External(entry) = &mut node.cell else {
             return;
         };
 
@@ -913,7 +913,7 @@ impl ColumnCompositor {
 
             // For SSD windows, the total cell height includes the title bar
             // For CSD windows, surface height = cell height
-            let committed_cell_height = if entry.uses_csd {
+            let committed_window_height = if entry.uses_csd {
                 committed_surface_height
             } else {
                 committed_surface_height + crate::title_bar::TITLE_BAR_HEIGHT
@@ -921,30 +921,30 @@ impl ColumnCompositor {
 
             match &entry.state {
                 WindowState::PendingResize { requested_height, .. }
-                    if committed_cell_height == *requested_height =>
+                    if committed_window_height == *requested_height =>
                 {
-                    entry.state = WindowState::Active { height: committed_cell_height };
+                    entry.state = WindowState::Active { height: committed_window_height };
                     tracing::info!(
                         index,
-                        cell_height = committed_cell_height,
+                        window_height = committed_window_height,
                         surface_height = committed_surface_height,
                         "resize completed"
                     );
-                    self.external_window_resized = Some((index, committed_cell_height as i32));
+                    self.external_window_resized = Some((index, committed_window_height as i32));
                     self.recalculate_layout();
 
                     // Reset throttle for catch-up (don't send immediately - give window breathing room)
                     if let Some(drag) = &self.resizing {
-                        if drag.cell_index == index {
+                        if drag.window_index == index {
                             let current_target = drag.target_height as u32;
-                            if current_target != committed_cell_height {
+                            if current_target != committed_window_height {
                                 // User continued dragging while commit was pending
                                 // Reset throttle timer so next configure will be sent after standard delay
                                 // This gives the window breathing room after commit instead of immediately
                                 // sending another configure
                                 tracing::debug!(
                                     index,
-                                    committed = committed_cell_height,
+                                    committed = committed_window_height,
                                     target = current_target,
                                     "drag moved during commit - will catch up on next motion event"
                                 );
@@ -964,7 +964,7 @@ impl ColumnCompositor {
                     // Resize pending but committed height doesn't match - log mismatch
                     tracing::warn!(
                         index,
-                        committed_cell_height,
+                        committed_window_height,
                         committed_surface_height,
                         requested_height,
                         current_height,
@@ -973,29 +973,29 @@ impl ColumnCompositor {
                     );
                 }
                 WindowState::AwaitingCommit { target_height, .. }
-                    if committed_cell_height == *target_height =>
+                    if committed_window_height == *target_height =>
                 {
-                    entry.state = WindowState::Active { height: committed_cell_height };
+                    entry.state = WindowState::Active { height: committed_window_height };
                     tracing::info!(
                         index,
-                        cell_height = committed_cell_height,
+                        window_height = committed_window_height,
                         surface_height = committed_surface_height,
                         "resize completed"
                     );
-                    self.external_window_resized = Some((index, committed_cell_height as i32));
+                    self.external_window_resized = Some((index, committed_window_height as i32));
                     self.recalculate_layout();
                 }
-                WindowState::Active { height } if committed_cell_height != *height => {
+                WindowState::Active { height } if committed_window_height != *height => {
                     let old_height = *height;
-                    entry.state = WindowState::Active { height: committed_cell_height };
+                    entry.state = WindowState::Active { height: committed_window_height };
                     tracing::info!(
                         index,
-                        cell_height = committed_cell_height,
+                        window_height = committed_window_height,
                         surface_height = committed_surface_height,
                         old_height,
                         "external window size changed"
                     );
-                    self.external_window_resized = Some((index, committed_cell_height as i32));
+                    self.external_window_resized = Some((index, committed_window_height as i32));
                     self.recalculate_layout();
                 }
                 _ => {}
@@ -1063,7 +1063,7 @@ impl ColumnCompositor {
         let now = Instant::now();
 
         for node in &mut self.layout_nodes {
-            if let ColumnCell::External(entry) = &mut node.cell {
+            if let StackWindow::External(entry) = &mut node.cell {
                 if let WindowState::PendingResize { current_height, requested_at, .. } = &entry.state {
                     let elapsed = now.duration_since(*requested_at).as_millis();
                     if elapsed > RESIZE_TIMEOUT_MS {
@@ -1102,7 +1102,7 @@ impl ColumnCompositor {
     /// Update keyboard focus based on the currently focused cell.
     /// If focused cell is an external window, set keyboard focus to it.
     /// If focused cell is a terminal, clear keyboard focus from external windows.
-    pub fn update_keyboard_focus_for_focused_cell(&mut self) {
+    pub fn update_keyboard_focus_for_focused_window(&mut self) {
         let Some(focused_idx) = self.focused_index() else { return };
         let Some(node) = self.layout_nodes.get(focused_idx) else { return };
 
@@ -1110,8 +1110,8 @@ impl ColumnCompositor {
 
         // Extract what we need before mutable operations
         let (wl_surface, is_terminal) = match &node.cell {
-            ColumnCell::External(entry) => (Some(entry.surface.wl_surface()), false),
-            ColumnCell::Terminal(_) => (None, true),
+            StackWindow::External(entry) => (Some(entry.surface.wl_surface()), false),
+            StackWindow::Terminal(_) => (None, true),
         };
 
         // Clone seat to avoid borrow conflicts when calling KeyboardTarget::enter
@@ -1136,7 +1136,7 @@ impl ColumnCompositor {
     /// This is required for GTK apps to run animations and handle input properly.
     pub fn activate_toplevel(&mut self, index: usize) {
         for (i, node) in self.layout_nodes.iter().enumerate() {
-            if let ColumnCell::External(entry) = &node.cell {
+            if let StackWindow::External(entry) = &node.cell {
                 let should_activate = i == index;
                 entry.surface.with_pending_state(|state| {
                     if should_activate {
@@ -1153,7 +1153,7 @@ impl ColumnCompositor {
     /// Deactivate all toplevel windows (e.g., when focusing a terminal)
     pub fn deactivate_all_toplevels(&mut self) {
         for node in &self.layout_nodes {
-            if let ColumnCell::External(entry) = &node.cell {
+            if let StackWindow::External(entry) = &node.cell {
                 entry.surface.with_pending_state(|state| {
                     state.states.unset(ToplevelState::Activated);
                 });
@@ -1185,15 +1185,15 @@ impl ColumnCompositor {
     }
 
     /// Get the height of a cell at the given index
-    pub fn get_cell_height(&self, index: usize) -> Option<i32> {
+    pub fn get_window_height(&self, index: usize) -> Option<i32> {
         self.layout_nodes.get(index).map(|n| n.height)
     }
 
     /// Scroll to ensure a cell's bottom edge is visible on screen.
     /// Returns the new scroll offset if it changed, None otherwise.
-    pub fn scroll_to_show_cell_bottom(&mut self, cell_index: usize) -> Option<f64> {
-        let y: i32 = self.layout_nodes[..cell_index].iter().map(|node| node.height).sum();
-        let height = self.layout_nodes.get(cell_index).map(|n| n.height).unwrap_or(0);
+    pub fn scroll_to_show_window_bottom(&mut self, window_index: usize) -> Option<f64> {
+        let y: i32 = self.layout_nodes[..window_index].iter().map(|node| node.height).sum();
+        let height = self.layout_nodes.get(window_index).map(|n| n.height).unwrap_or(0);
         let bottom_y = y + height;
         let visible_height = self.output_size.h;
         let total_height: i32 = self.layout_nodes.iter().map(|node| node.height).sum();
@@ -1212,7 +1212,7 @@ impl ColumnCompositor {
     /// Ensure the focused cell is visible
     fn ensure_focused_visible(&mut self) {
         if let Some(index) = self.focused_index() {
-            self.scroll_to_show_cell_bottom(index);
+            self.scroll_to_show_window_bottom(index);
         }
     }
 
@@ -1220,10 +1220,10 @@ impl ColumnCompositor {
     ///
     /// Returns None if no cell is focused or if the focused cell no longer exists.
     pub fn focused_index(&self) -> Option<usize> {
-        let focused = self.focused_cell.as_ref()?;
+        let focused = self.focused_window.as_ref()?;
         self.layout_nodes.iter().position(|node| match (&node.cell, focused) {
-            (ColumnCell::Terminal(tid), FocusedCell::Terminal(focused_tid)) => tid == focused_tid,
-            (ColumnCell::External(entry), FocusedCell::External(focused_id)) => {
+            (StackWindow::Terminal(tid), FocusedWindow::Terminal(focused_tid)) => tid == focused_tid,
+            (StackWindow::External(entry), FocusedWindow::External(focused_id)) => {
                 entry.surface.wl_surface().id() == *focused_id
             }
             _ => false,
@@ -1232,15 +1232,15 @@ impl ColumnCompositor {
 
     /// Set focus to the cell at the given index.
     ///
-    /// Extracts the cell's identity and stores it in focused_cell.
+    /// Extracts the cell's identity and stores it in focused_window.
     pub fn set_focus_by_index(&mut self, index: usize) {
         if let Some(node) = self.layout_nodes.get(index) {
-            self.focused_cell = Some(match &node.cell {
-                ColumnCell::Terminal(id) => FocusedCell::Terminal(*id),
-                ColumnCell::External(entry) => {
+            self.focused_window = Some(match &node.cell {
+                StackWindow::Terminal(id) => FocusedWindow::Terminal(*id),
+                StackWindow::External(entry) => {
                     // All external windows are now Wayland toplevels (via xwayland-satellite)
                     let surface = entry.surface.wl_surface();
-                    FocusedCell::External(surface.id())
+                    FocusedWindow::External(surface.id())
                 }
             });
         }
@@ -1248,23 +1248,23 @@ impl ColumnCompositor {
 
     /// Clear focus (no cell focused).
     pub fn clear_focus(&mut self) {
-        self.focused_cell = None;
+        self.focused_window = None;
     }
 
     /// Check if the focused cell is a terminal
     pub fn is_terminal_focused(&self) -> bool {
-        matches!(self.focused_cell, Some(FocusedCell::Terminal(_)))
+        matches!(self.focused_window, Some(FocusedWindow::Terminal(_)))
     }
 
     /// Check if the focused cell is an external window
     pub fn is_external_focused(&self) -> bool {
-        matches!(self.focused_cell, Some(FocusedCell::External(_)))
+        matches!(self.focused_window, Some(FocusedWindow::External(_)))
     }
 
     /// Get the focused terminal ID, if any
     pub fn focused_terminal(&self) -> Option<TerminalId> {
-        match &self.focused_cell {
-            Some(FocusedCell::Terminal(id)) => Some(*id),
+        match &self.focused_window {
+            Some(FocusedWindow::Terminal(id)) => Some(*id),
             _ => None,
         }
     }
@@ -1276,16 +1276,16 @@ impl ColumnCompositor {
     ///
     /// This uses our own coordinate calculation (not Smithay's Space.element_under)
     /// to ensure consistent behavior with Y-flip coordinates.
-    pub fn cell_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
+    pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
         for i in 0..self.layout_nodes.len() {
-            let cell_height = self.layout_nodes[i].height as f64;
+            let window_height = self.layout_nodes[i].height as f64;
 
             // Calculate render Y for this cell (same formula as main.rs rendering)
-            let render_y = crate::coords::content_to_render_y(content_y, cell_height, screen_height);
-            let render_end = render_y + cell_height;
+            let render_y = crate::coords::content_to_render_y(content_y, window_height, screen_height);
+            let render_end = render_y + window_height;
 
             if point.y >= render_y && point.y < render_end {
                 tracing::debug!(
@@ -1294,33 +1294,33 @@ impl ColumnCompositor {
                     render_y,
                     render_end,
                     content_y,
-                    "cell_at: hit"
+                    "window_at: hit"
                 );
                 return Some(i);
             }
-            content_y += cell_height;
+            content_y += window_height;
         }
         None
     }
 
-    /// Get the external window cell under a point (returns None for terminals)
+    /// Get the external window under a point (returns None for terminals)
     /// This is for compatibility with existing code that only cares about external windows
-    pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
-        self.cell_at(point).filter(|&i| {
-            matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, ColumnCell::External(_)))
+    pub fn external_window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
+        self.window_at(point).filter(|&i| {
+            matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, StackWindow::External(_)))
         })
     }
 
     /// Check if a point is on a terminal cell
     pub fn is_on_terminal(&self, point: Point<f64, smithay::utils::Logical>) -> bool {
-        self.cell_at(point)
-            .map(|i| matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, ColumnCell::Terminal(_))))
+        self.window_at(point)
+            .map(|i| matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, StackWindow::Terminal(_))))
             .unwrap_or(false)
     }
 
     /// Get the render position (render_y, height) for a cell at the given index
     /// Returns (render_y, height) where render_y is in render coordinates (Y=0 at bottom)
-    pub fn get_cell_render_position(&self, index: usize) -> (f64, i32) {
+    pub fn get_window_render_position(&self, index: usize) -> (f64, i32) {
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
@@ -1339,7 +1339,7 @@ impl ColumnCompositor {
 
     /// Get the screen bounds (top_y, bottom_y) for a cell at the given index
     /// Returns (top_y, bottom_y) in screen coordinates (Y=0 at top)
-    pub fn get_cell_screen_bounds(&self, index: usize) -> Option<(i32, i32)> {
+    pub fn get_window_screen_bounds(&self, index: usize) -> Option<(i32, i32)> {
         let mut content_y = -(self.scroll_offset as i32);
 
         for i in 0..self.layout_nodes.len() {
@@ -1425,7 +1425,7 @@ impl ColumnCompositor {
 
 // Wayland protocol implementations
 
-impl CompositorHandler for ColumnCompositor {
+impl CompositorHandler for TermStack {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
@@ -1473,17 +1473,17 @@ impl CompositorHandler for ColumnCompositor {
     }
 }
 
-impl BufferHandler for ColumnCompositor {
+impl BufferHandler for TermStack {
     fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
 }
 
-impl ShmHandler for ColumnCompositor {
+impl ShmHandler for TermStack {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
     }
 }
 
-impl XdgShellHandler for ColumnCompositor {
+impl XdgShellHandler for TermStack {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
     }
@@ -1511,7 +1511,7 @@ impl XdgShellHandler for ColumnCompositor {
         // This is needed to properly constrain the popup to the screen
         let parent_content_y = parent_surface.as_ref().and_then(|parent| {
             self.layout_nodes.iter().enumerate().find_map(|(idx, node)| {
-                if let ColumnCell::External(entry) = &node.cell {
+                if let StackWindow::External(entry) = &node.cell {
                     if entry.surface.wl_surface() == parent {
                         // Calculate content Y position (sum of heights above this window)
                         let content_y: i32 = self.layout_nodes[..idx]
@@ -1692,7 +1692,7 @@ impl XdgShellHandler for ColumnCompositor {
         let parent_surface = surface.get_parent_surface();
         let parent_content_y = parent_surface.as_ref().and_then(|parent| {
             self.layout_nodes.iter().enumerate().find_map(|(idx, node)| {
-                if let ColumnCell::External(entry) = &node.cell {
+                if let StackWindow::External(entry) = &node.cell {
                     if entry.surface.wl_surface() == parent {
                         let content_y: i32 = self.layout_nodes[..idx]
                             .iter()
@@ -1738,7 +1738,7 @@ impl XdgShellHandler for ColumnCompositor {
     }
 }
 
-impl SeatHandler for ColumnCompositor {
+impl SeatHandler for TermStack {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
@@ -1765,21 +1765,21 @@ impl SeatHandler for ColumnCompositor {
     }
 }
 
-impl SelectionHandler for ColumnCompositor {
+impl SelectionHandler for TermStack {
     type SelectionUserData = ();
 }
 
-impl DataDeviceHandler for ColumnCompositor {
+impl DataDeviceHandler for TermStack {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
     }
 }
 
-impl ClientDndGrabHandler for ColumnCompositor {}
-impl ServerDndGrabHandler for ColumnCompositor {}
-impl OutputHandler for ColumnCompositor {}
+impl ClientDndGrabHandler for TermStack {}
+impl ServerDndGrabHandler for TermStack {}
+impl OutputHandler for TermStack {}
 
-impl XdgDecorationHandler for ColumnCompositor {
+impl XdgDecorationHandler for TermStack {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         // Advertise server-side decoration as preferred
         toplevel.with_pending_state(|state| {
@@ -1793,7 +1793,7 @@ impl XdgDecorationHandler for ColumnCompositor {
 
         let surface = toplevel.wl_surface();
         for node in &mut self.layout_nodes {
-            if let ColumnCell::External(entry) = &mut node.cell {
+            if let StackWindow::External(entry) = &mut node.cell {
                 if entry.surface.wl_surface() == surface {
                     entry.uses_csd = uses_csd;
                     tracing::info!(
@@ -1818,7 +1818,7 @@ impl XdgDecorationHandler for ColumnCompositor {
         // Client unset mode preference - revert to server-side
         let surface = toplevel.wl_surface();
         for node in &mut self.layout_nodes {
-            if let ColumnCell::External(entry) = &mut node.cell {
+            if let StackWindow::External(entry) = &mut node.cell {
                 if entry.surface.wl_surface() == surface {
                     entry.uses_csd = false;
                     tracing::info!(
@@ -1849,20 +1849,20 @@ impl ClientData for ClientState {
 
 // Delegate macros
 // Note: XWaylandShellHandler not needed - xwayland-satellite handles X11 WM duties
-delegate_compositor!(ColumnCompositor);
-delegate_shm!(ColumnCompositor);
-delegate_xdg_shell!(ColumnCompositor);
-delegate_xdg_decoration!(ColumnCompositor);
-delegate_seat!(ColumnCompositor);
-delegate_data_device!(ColumnCompositor);
-delegate_output!(ColumnCompositor);
-delegate_text_input_manager!(ColumnCompositor);
-delegate_viewporter!(ColumnCompositor);
+delegate_compositor!(TermStack);
+delegate_shm!(TermStack);
+delegate_xdg_shell!(TermStack);
+delegate_xdg_decoration!(TermStack);
+delegate_seat!(TermStack);
+delegate_data_device!(TermStack);
+delegate_output!(TermStack);
+delegate_text_input_manager!(TermStack);
+delegate_viewporter!(TermStack);
 
 #[cfg(test)]
 mod tests {
 
-    /// Test data for positioning - simulates the state needed for cell_at() calculations
+    /// Test data for positioning - simulates the state needed for window_at() calculations
     /// Uses the same Y-flip coordinate system as the actual implementation.
     ///
     /// Coordinate system:
@@ -1876,23 +1876,23 @@ mod tests {
     }
 
     impl MockPositioning {
-        /// Replicate the cell_at() logic for testing
-        /// This is the exact same formula as in ColumnCompositor::cell_at()
-        fn cell_at(&self, y: f64) -> Option<usize> {
+        /// Replicate the window_at() logic for testing
+        /// This is the exact same formula as in TermStack::window_at()
+        fn window_at(&self, y: f64) -> Option<usize> {
             let screen_height = self.screen_height as f64;
             let mut content_y = -self.scroll_offset;
 
             for (i, &height) in self.layout_heights.iter().enumerate() {
-                let cell_height = height as f64;
+                let window_height = height as f64;
 
                 // Y-flip formula
-                let render_y = crate::coords::content_to_render_y(content_y, cell_height, screen_height);
-                let render_end = render_y + cell_height;
+                let render_y = crate::coords::content_to_render_y(content_y, window_height, screen_height);
+                let render_end = render_y + window_height;
 
                 if y >= render_y && y < render_end {
                     return Some(i);
                 }
-                content_y += cell_height;
+                content_y += window_height;
             }
             None
         }
@@ -1918,17 +1918,17 @@ mod tests {
         }
 
         /// Get the render Y range for each cell (render_start, render_end)
-        fn cell_ranges(&self) -> Vec<(f64, f64)> {
+        fn window_ranges(&self) -> Vec<(f64, f64)> {
             let screen_height = self.screen_height as f64;
             let mut content_y = -self.scroll_offset;
 
             self.layout_heights
                 .iter()
                 .map(|&height| {
-                    let cell_height = height as f64;
-                    let render_y = crate::coords::content_to_render_y(content_y, cell_height, screen_height);
-                    let render_end = render_y + cell_height;
-                    content_y += cell_height;
+                    let window_height = height as f64;
+                    let render_y = crate::coords::content_to_render_y(content_y, window_height, screen_height);
+                    let render_end = render_y + window_height;
+                    content_y += window_height;
                     (render_y, render_end)
                 })
                 .collect()
@@ -1936,7 +1936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cell_at_single_cell() {
+    fn test_window_at_single_cell() {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
@@ -1948,15 +1948,15 @@ mod tests {
         // render_end = 400 + 200 = 600
         // So cell 0 is at render Y 400-600 (TOP of screen in render coords)
 
-        assert_eq!(pos.cell_at(300.0), None, "render Y=300 below cell 0");
-        assert_eq!(pos.cell_at(400.0), Some(0), "render Y=400 at cell 0 start");
-        assert_eq!(pos.cell_at(500.0), Some(0), "render Y=500 inside cell 0");
-        assert_eq!(pos.cell_at(599.0), Some(0), "render Y=599 inside cell 0");
-        assert_eq!(pos.cell_at(600.0), None, "render Y=600 is past screen top");
+        assert_eq!(pos.window_at(300.0), None, "render Y=300 below cell 0");
+        assert_eq!(pos.window_at(400.0), Some(0), "render Y=400 at cell 0 start");
+        assert_eq!(pos.window_at(500.0), Some(0), "render Y=500 inside cell 0");
+        assert_eq!(pos.window_at(599.0), Some(0), "render Y=599 inside cell 0");
+        assert_eq!(pos.window_at(600.0), None, "render Y=600 is past screen top");
     }
 
     #[test]
-    fn test_cell_at_two_cells_no_overlap() {
+    fn test_window_at_two_cells_no_overlap() {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
@@ -1968,7 +1968,7 @@ mod tests {
         // Cell 1: content_y=200, height=300
         //   render_y = 600 - 200 - 300 = 100, render_end = 400
 
-        let ranges = pos.cell_ranges();
+        let ranges = pos.window_ranges();
         assert_eq!(ranges[0], (400.0, 600.0), "cell 0 at top (high render Y)");
         assert_eq!(ranges[1], (100.0, 400.0), "cell 1 below (lower render Y)");
 
@@ -1976,12 +1976,12 @@ mod tests {
         assert_eq!(ranges[0].0, ranges[1].1, "cells should be adjacent");
 
         // Test click detection
-        assert_eq!(pos.cell_at(500.0), Some(0), "render Y=500 hits cell 0");
-        assert_eq!(pos.cell_at(400.0), Some(0), "render Y=400 at boundary hits cell 0");
-        assert_eq!(pos.cell_at(399.0), Some(1), "render Y=399 hits cell 1");
-        assert_eq!(pos.cell_at(200.0), Some(1), "render Y=200 hits cell 1");
-        assert_eq!(pos.cell_at(100.0), Some(1), "render Y=100 at cell 1 start");
-        assert_eq!(pos.cell_at(99.0), None, "render Y=99 below all cells");
+        assert_eq!(pos.window_at(500.0), Some(0), "render Y=500 hits cell 0");
+        assert_eq!(pos.window_at(400.0), Some(0), "render Y=400 at boundary hits cell 0");
+        assert_eq!(pos.window_at(399.0), Some(1), "render Y=399 hits cell 1");
+        assert_eq!(pos.window_at(200.0), Some(1), "render Y=200 hits cell 1");
+        assert_eq!(pos.window_at(100.0), Some(1), "render Y=100 at cell 1 start");
+        assert_eq!(pos.window_at(99.0), None, "render Y=99 below all cells");
     }
 
     #[test]
@@ -1993,7 +1993,7 @@ mod tests {
         };
 
         let render_pos = pos.render_positions();
-        let click_ranges = pos.cell_ranges();
+        let click_ranges = pos.window_ranges();
 
         // Verify render Y matches click detection range
         for (i, ((render_y, render_h), (click_start, click_end))) in
@@ -2013,7 +2013,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cell_positions_with_scroll() {
+    fn test_window_positions_with_scroll() {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 50.0,
@@ -2026,7 +2026,7 @@ mod tests {
         // Cell 1: content_y=150, height=300
         //   render_y = 600 - 150 - 300 = 150, render_end = 450
 
-        let ranges = pos.cell_ranges();
+        let ranges = pos.window_ranges();
         assert_eq!(ranges[0], (450.0, 650.0), "cell 0 scrolled up (higher render Y)");
         assert_eq!(ranges[1], (150.0, 450.0), "cell 1 scrolled up");
 
@@ -2035,7 +2035,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cell_order_matches_visual_top_to_bottom() {
+    fn test_window_order_matches_visual_top_to_bottom() {
         // Cell 0 should be at TOP of screen (highest render Y)
         // Cell N should be at BOTTOM of screen (lowest render Y)
         let pos = MockPositioning {
@@ -2049,7 +2049,7 @@ mod tests {
         // Cell 1: content_y=100, height=200 → render_y=300, render_end=500
         // Cell 2: content_y=300, height=150 → render_y=150, render_end=300
 
-        let ranges = pos.cell_ranges();
+        let ranges = pos.window_ranges();
         assert_eq!(ranges[0], (500.0, 600.0), "cell 0");
         assert_eq!(ranges[1], (300.0, 500.0), "cell 1");
         assert_eq!(ranges[2], (150.0, 300.0), "cell 2");
@@ -2059,17 +2059,17 @@ mod tests {
         assert!(ranges[1].0 > ranges[2].0, "cell 1 should be higher than cell 2");
 
         // Clicking at HIGH render Y (top of screen) should hit cell 0
-        assert_eq!(pos.cell_at(550.0), Some(0), "high render Y (top of screen) hits cell 0");
+        assert_eq!(pos.window_at(550.0), Some(0), "high render Y (top of screen) hits cell 0");
 
         // Clicking at LOW render Y (bottom of screen) should hit cell 2
-        assert_eq!(pos.cell_at(200.0), Some(2), "low render Y (bottom of screen) hits cell 2");
+        assert_eq!(pos.window_at(200.0), Some(2), "low render Y (bottom of screen) hits cell 2");
 
         // Below cell 2 should hit nothing
-        assert_eq!(pos.cell_at(149.0), None, "below all cells hits nothing");
+        assert_eq!(pos.window_at(149.0), None, "below all cells hits nothing");
     }
 
     #[test]
-    fn test_cells_stack_vertically_not_overlap() {
+    fn test_windows_stack_vertically_not_overlap() {
         let heights = vec![200, 300, 150];
         let pos = MockPositioning {
             screen_height: 800,
@@ -2077,7 +2077,7 @@ mod tests {
             layout_heights: heights.clone(),
         };
 
-        let ranges = pos.cell_ranges();
+        let ranges = pos.window_ranges();
 
         // Each cell's render_y (bottom) should equal the next cell's render_end (top)
         for i in 0..ranges.len() - 1 {
@@ -2098,7 +2098,7 @@ mod tests {
     }
 
     #[test]
-    fn test_point_in_only_one_cell() {
+    fn test_point_in_only_one_window() {
         let pos = MockPositioning {
             screen_height: 600,
             scroll_offset: 0.0,
@@ -2110,20 +2110,20 @@ mod tests {
         let bottom_y = pos.screen_height - total_height;
 
         for y in bottom_y..pos.screen_height {
-            let result = pos.cell_at(y as f64);
+            let result = pos.window_at(y as f64);
             assert!(result.is_some(), "render Y={} should hit a cell", y);
             let idx = result.unwrap();
             assert!(idx < 3, "cell index should be valid");
         }
 
         // Below content should hit nothing
-        assert_eq!(pos.cell_at((bottom_y - 1) as f64), None);
+        assert_eq!(pos.window_at((bottom_y - 1) as f64), None);
         // At/above screen top should hit nothing
-        assert_eq!(pos.cell_at(600.0), None);
+        assert_eq!(pos.window_at(600.0), None);
     }
 
     #[test]
-    fn test_click_below_last_cell() {
+    fn test_click_below_last_window() {
         // Verify we can detect when a click is below all cells
         let pos = MockPositioning {
             screen_height: 600,
@@ -2136,28 +2136,28 @@ mod tests {
         // Total content height = 500
         // Last cell bottom in render coords = 600 - 500 = 100
 
-        let ranges = pos.cell_ranges();
+        let ranges = pos.window_ranges();
         assert_eq!(ranges[1], (100.0, 400.0), "last cell (cell 1) range");
 
         // Click at Y=99 (below last cell's render_y of 100) should hit nothing
-        assert_eq!(pos.cell_at(99.0), None, "click below last cell hits nothing");
+        assert_eq!(pos.window_at(99.0), None, "click below last cell hits nothing");
 
         // Click at Y=100 (at last cell's render_y) should hit last cell
-        assert_eq!(pos.cell_at(100.0), Some(1), "click at last cell bottom hits last cell");
+        assert_eq!(pos.window_at(100.0), Some(1), "click at last cell bottom hits last cell");
 
-        // Calculate last_cell_bottom (same logic as the implementation)
+        // Calculate last_window_bottom (same logic as the implementation)
         let screen_height = pos.screen_height as f64;
         let mut content_y = -pos.scroll_offset;
         for &height in &pos.layout_heights {
             content_y += height as f64;
         }
-        let last_cell_bottom = screen_height - content_y;
-        assert_eq!(last_cell_bottom, 100.0, "last cell bottom should be at render Y=100");
+        let last_window_bottom = screen_height - content_y;
+        assert_eq!(last_window_bottom, 100.0, "last cell bottom should be at render Y=100");
 
-        // Clicks below last_cell_bottom should trigger "focus last cell" logic
-        assert!(50.0 < last_cell_bottom, "Y=50 is below last cell");
-        assert!(99.0 < last_cell_bottom, "Y=99 is below last cell");
-        assert!(!(100.0 < last_cell_bottom), "Y=100 is NOT below last cell (it's at the edge)");
+        // Clicks below last_window_bottom should trigger "focus last cell" logic
+        assert!(50.0 < last_window_bottom, "Y=50 is below last cell");
+        assert!(99.0 < last_window_bottom, "Y=99 is below last cell");
+        assert!(!(100.0 < last_window_bottom), "Y=100 is NOT below last cell (it's at the edge)");
     }
 
     #[test]
@@ -2177,27 +2177,27 @@ mod tests {
         //         content_y becomes 100 + 300 = 400
         // Last cell bottom = screen_height - final_content_y = 600 - 400 = 200
 
-        let ranges = pos.cell_ranges();
+        let ranges = pos.window_ranges();
         assert_eq!(ranges[1], (200.0, 500.0), "last cell with scroll");
 
-        // Calculate last_cell_bottom with scroll
+        // Calculate last_window_bottom with scroll
         let screen_height = pos.screen_height as f64;
         let mut content_y = -pos.scroll_offset;
         for &height in &pos.layout_heights {
             content_y += height as f64;
         }
-        let last_cell_bottom = screen_height - content_y;
-        assert_eq!(last_cell_bottom, 200.0, "last cell bottom should be at render Y=200");
+        let last_window_bottom = screen_height - content_y;
+        assert_eq!(last_window_bottom, 200.0, "last cell bottom should be at render Y=200");
 
         // Clicks below 200 should trigger "focus last cell"
-        assert!(50.0 < last_cell_bottom);
-        assert!(199.0 < last_cell_bottom);
+        assert!(50.0 < last_window_bottom);
+        assert!(199.0 < last_window_bottom);
     }
 
     #[test]
     fn test_new_terminals_insert_above_focused() {
         use crate::terminal_manager::TerminalId;
-        use crate::state::{ColumnCell, LayoutNode};
+        use crate::state::{StackWindow, LayoutNode};
 
         // Simulate cell insertion behavior
         let mut layout_nodes: Vec<LayoutNode> = Vec::new();
@@ -2207,7 +2207,7 @@ mod tests {
         let add_terminal = |id: u32, nodes: &mut Vec<LayoutNode>, focused: &mut Option<usize>| {
             let insert_index = focused.unwrap_or(nodes.len());
             nodes.insert(insert_index, LayoutNode {
-                cell: ColumnCell::Terminal(TerminalId(id)),
+                cell: StackWindow::Terminal(TerminalId(id)),
                 height: 0
             });
             *focused = Some(focused.map(|idx| idx + 1).unwrap_or(insert_index));
@@ -2217,21 +2217,21 @@ mod tests {
         add_terminal(0, &mut layout_nodes, &mut focused_index);
         assert_eq!(layout_nodes.len(), 1);
         assert_eq!(focused_index, Some(0));
-        assert!(matches!(layout_nodes[0].cell, ColumnCell::Terminal(TerminalId(0))));
+        assert!(matches!(layout_nodes[0].cell, StackWindow::Terminal(TerminalId(0))));
 
         // Add second terminal - should appear above T0, focus stays on T0
         add_terminal(1, &mut layout_nodes, &mut focused_index);
         assert_eq!(layout_nodes.len(), 2);
         assert_eq!(focused_index, Some(1), "focus should move to index 1 (still T0)");
-        assert!(matches!(layout_nodes[0].cell, ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0 (top)");
-        assert!(matches!(layout_nodes[1].cell, ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 1");
+        assert!(matches!(layout_nodes[0].cell, StackWindow::Terminal(TerminalId(1))), "T1 should be at index 0 (top)");
+        assert!(matches!(layout_nodes[1].cell, StackWindow::Terminal(TerminalId(0))), "T0 should be at index 1");
 
         // Add third terminal - should appear above T0 (at index 1), focus stays on T0
         add_terminal(2, &mut layout_nodes, &mut focused_index);
         assert_eq!(layout_nodes.len(), 3);
         assert_eq!(focused_index, Some(2), "focus should move to index 2 (still T0)");
-        assert!(matches!(layout_nodes[0].cell, ColumnCell::Terminal(TerminalId(1))), "T1 should be at index 0");
-        assert!(matches!(layout_nodes[1].cell, ColumnCell::Terminal(TerminalId(2))), "T2 should be at index 1");
-        assert!(matches!(layout_nodes[2].cell, ColumnCell::Terminal(TerminalId(0))), "T0 should be at index 2 (bottom)");
+        assert!(matches!(layout_nodes[0].cell, StackWindow::Terminal(TerminalId(1))), "T1 should be at index 0");
+        assert!(matches!(layout_nodes[1].cell, StackWindow::Terminal(TerminalId(2))), "T2 should be at index 1");
+        assert!(matches!(layout_nodes[2].cell, StackWindow::Terminal(TerminalId(0))), "T0 should be at index 2 (bottom)");
     }
 }

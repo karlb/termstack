@@ -43,18 +43,18 @@ mod tests {
 
     #[test]
     fn column_compositor_tui_env_causes_exit_code_2() {
-        // When COLUMN_COMPOSITOR_TUI is set, column-term should exit with code 2
+        // When TERMSTACK_TUI is set, termstack should exit with code 2
         // (EXIT_SHELL_COMMAND) to tell the shell integration to run the command
         // via eval. This prevents mc's internal subshell commands from being
         // intercepted and spawned as separate terminals.
         //
-        // This test runs column-term as a subprocess with the env var set.
+        // This test runs termstack as a subprocess with the env var set.
 
         use std::process::Command;
 
-        // Get the column-term binary path
+        // Get the termstack binary path
         // Try multiple locations since tests run from different directories
-        let cargo_bin = std::env::var("CARGO_BIN_EXE_column-term")
+        let cargo_bin = std::env::var("CARGO_BIN_EXE_termstack")
             .or_else(|_| {
                 // Look relative to current exe
                 std::env::current_exe()
@@ -62,7 +62,7 @@ mod tests {
                         let deps_dir = p.parent().unwrap();
                         // Could be target/debug/deps or target/release/deps
                         let bin_dir = deps_dir.parent().unwrap();
-                        let path = bin_dir.join("column-term");
+                        let path = bin_dir.join("termstack");
                         if path.exists() {
                             Ok(path.to_string_lossy().to_string())
                         } else {
@@ -79,11 +79,11 @@ mod tests {
                         loop {
                             let cargo_toml = dir.join("Cargo.toml");
                             if cargo_toml.exists() {
-                                let release = dir.join("target/release/column-term");
+                                let release = dir.join("target/release/termstack");
                                 if release.exists() {
                                     return Ok(release.to_string_lossy().to_string());
                                 }
-                                let debug = dir.join("target/debug/column-term");
+                                let debug = dir.join("target/debug/termstack");
                                 if debug.exists() {
                                     return Ok(debug.to_string_lossy().to_string());
                                 }
@@ -102,23 +102,23 @@ mod tests {
         let bin_path = match cargo_bin {
             Ok(p) => p,
             Err(_) => {
-                eprintln!("Skipping test: can't find column-term binary");
+                eprintln!("Skipping test: can't find termstack binary");
                 return;
             }
         };
 
         // Check if binary exists
         if !std::path::Path::new(&bin_path).exists() {
-            eprintln!("Skipping test: column-term binary not found at {}", bin_path);
+            eprintln!("Skipping test: termstack binary not found at {}", bin_path);
             return;
         }
 
-        // Run column-term with COLUMN_COMPOSITOR_TUI set
+        // Run termstack with TERMSTACK_TUI set
         let output = Command::new(&bin_path)
             .arg("-c")
             .arg("echo test")
-            .env("COLUMN_COMPOSITOR_TUI", "1")
-            .env("COLUMN_COMPOSITOR_SOCKET", "/dev/null")  // Fake socket
+            .env("TERMSTACK_TUI", "1")
+            .env("TERMSTACK_SOCKET", "/dev/null")  // Fake socket
             .output();
 
         match output {
@@ -126,7 +126,7 @@ mod tests {
                 let exit_code = o.status.code().unwrap_or(-1);
                 assert_eq!(
                     exit_code, 2,
-                    "column-term should exit with code 2 when COLUMN_COMPOSITOR_TUI is set, \
+                    "termstack should exit with code 2 when TERMSTACK_TUI is set, \
                      but got {}. stdout: {}, stderr: {}",
                     exit_code,
                     String::from_utf8_lossy(&o.stdout),
@@ -134,7 +134,7 @@ mod tests {
                 );
             }
             Err(e) => {
-                eprintln!("Skipping test: failed to run column-term: {}", e);
+                eprintln!("Skipping test: failed to run termstack: {}", e);
             }
         }
     }
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn gui_subcommand_requires_socket() {
-        // When gui subcommand is used without COLUMN_COMPOSITOR_SOCKET,
+        // When gui subcommand is used without TERMSTACK_SOCKET,
         // it should error with a helpful message
         use std::process::Command;
 
@@ -244,15 +244,15 @@ mod tests {
         let bin_path = match bin_path {
             Some(p) => p,
             None => {
-                eprintln!("Skipping test: can't find column-term binary");
+                eprintln!("Skipping test: can't find termstack binary");
                 return;
             }
         };
 
-        // Run column-term gui without COLUMN_COMPOSITOR_SOCKET
+        // Run termstack gui without TERMSTACK_SOCKET
         let output = Command::new(&bin_path)
             .args(["gui", "pqiv", "image.png"])
-            .env_remove("COLUMN_COMPOSITOR_SOCKET")
+            .env_remove("TERMSTACK_SOCKET")
             .output();
 
         match output {
@@ -260,16 +260,16 @@ mod tests {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 assert!(
                     !o.status.success(),
-                    "gui should fail without COLUMN_COMPOSITOR_SOCKET"
+                    "gui should fail without TERMSTACK_SOCKET"
                 );
                 assert!(
-                    stderr.contains("COLUMN_COMPOSITOR_SOCKET") || stderr.contains("column-compositor"),
-                    "error should mention COLUMN_COMPOSITOR_SOCKET, got: {}",
+                    stderr.contains("TERMSTACK_SOCKET") || stderr.contains("termstack"),
+                    "error should mention TERMSTACK_SOCKET, got: {}",
                     stderr
                 );
             }
             Err(e) => {
-                eprintln!("Skipping test: failed to run column-term: {}", e);
+                eprintln!("Skipping test: failed to run termstack: {}", e);
             }
         }
     }
@@ -283,15 +283,15 @@ mod tests {
         let bin_path = match bin_path {
             Some(p) => p,
             None => {
-                eprintln!("Skipping test: can't find column-term binary");
+                eprintln!("Skipping test: can't find termstack binary");
                 return;
             }
         };
 
-        // Run column-term gui with no command
+        // Run termstack gui with no command
         let output = Command::new(&bin_path)
             .args(["gui"])
-            .env("COLUMN_COMPOSITOR_SOCKET", "/tmp/fake")
+            .env("TERMSTACK_SOCKET", "/tmp/fake")
             .output();
 
         match output {
@@ -308,14 +308,14 @@ mod tests {
                 );
             }
             Err(e) => {
-                eprintln!("Skipping test: failed to run column-term: {}", e);
+                eprintln!("Skipping test: failed to run termstack: {}", e);
             }
         }
     }
 
     #[test]
     fn gui_subcommand_strips_gui_prefix() {
-        // When using 'column-term gui swayimg image.png', the command sent to the
+        // When using 'termstack gui swayimg image.png', the command sent to the
         // compositor should be 'swayimg image.png' (without 'gui' prefix).
         // This test verifies the subcommand detection works by checking debug output.
         use std::process::Command;
@@ -324,17 +324,17 @@ mod tests {
         let bin_path = match bin_path {
             Some(p) => p,
             None => {
-                eprintln!("Skipping test: can't find column-term binary");
+                eprintln!("Skipping test: can't find termstack binary");
                 return;
             }
         };
 
-        // Run column-term gui with debug enabled - it will fail to connect but
+        // Run termstack gui with debug enabled - it will fail to connect but
         // we can check the debug output to see what command it would send
         let output = Command::new(&bin_path)
             .args(["gui", "swayimg", "image.png"])
-            .env("DEBUG_COLUMN_TERM", "1")
-            .env("COLUMN_COMPOSITOR_SOCKET", "/tmp/nonexistent-socket-12345")
+            .env("DEBUG_TSTACK", "1")
+            .env("TERMSTACK_SOCKET", "/tmp/nonexistent-socket-12345")
             .output();
 
         match output {
@@ -355,14 +355,14 @@ mod tests {
                 );
             }
             Err(e) => {
-                eprintln!("Skipping test: failed to run column-term: {}", e);
+                eprintln!("Skipping test: failed to run termstack: {}", e);
             }
         }
     }
 
     #[test]
     fn fish_integration_function_defined_with_socket() {
-        // Verify the fish integration script defines column_exec when COLUMN_COMPOSITOR_SOCKET is set
+        // Verify the fish integration script defines termstack_exec when TERMSTACK_SOCKET is set
         use std::process::Command;
 
         // Find the integration script
@@ -378,10 +378,10 @@ mod tests {
         // Run fish to check if function is defined
         let output = Command::new("fish")
             .args(["-c", &format!(
-                "source {}; type column_exec 2>/dev/null && echo 'FUNCTION_DEFINED'",
+                "source {}; type termstack_exec 2>/dev/null && echo 'FUNCTION_DEFINED'",
                 script_path
             )])
-            .env("COLUMN_COMPOSITOR_SOCKET", "/tmp/fake")
+            .env("TERMSTACK_SOCKET", "/tmp/fake")
             .output();
 
         match output {
@@ -389,7 +389,7 @@ mod tests {
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 assert!(
                     stdout.contains("FUNCTION_DEFINED"),
-                    "column_exec should be defined when COLUMN_COMPOSITOR_SOCKET is set. stdout: {}, stderr: {}",
+                    "termstack_exec should be defined when TERMSTACK_SOCKET is set. stdout: {}, stderr: {}",
                     stdout,
                     String::from_utf8_lossy(&o.stderr)
                 );
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn fish_integration_binding_set_with_socket() {
-        // Verify the fish integration script binds Enter to column_exec
+        // Verify the fish integration script binds Enter to termstack_exec
         use std::process::Command;
 
         let script_path = find_integration_script("integration.fish");
@@ -417,10 +417,10 @@ mod tests {
         // Run fish to check if binding is set
         let output = Command::new("fish")
             .args(["-c", &format!(
-                "source {}; bind | grep -E 'enter|\\\\r' | grep column_exec && echo 'BINDING_SET'",
+                "source {}; bind | grep -E 'enter|\\\\r' | grep termstack_exec && echo 'BINDING_SET'",
                 script_path
             )])
-            .env("COLUMN_COMPOSITOR_SOCKET", "/tmp/fake")
+            .env("TERMSTACK_SOCKET", "/tmp/fake")
             .output();
 
         match output {
@@ -428,7 +428,7 @@ mod tests {
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 assert!(
                     stdout.contains("BINDING_SET"),
-                    "Enter should be bound to column_exec when COLUMN_COMPOSITOR_SOCKET is set. \
+                    "Enter should be bound to termstack_exec when TERMSTACK_SOCKET is set. \
                      stdout: {}, stderr: {}",
                     stdout,
                     String::from_utf8_lossy(&o.stderr)
@@ -460,7 +460,7 @@ mod tests {
                 "source {}; type gui 2>/dev/null && echo 'GUI_FUNCTION_DEFINED'",
                 script_path
             )])
-            .env("COLUMN_COMPOSITOR_SOCKET", "/tmp/fake")
+            .env("TERMSTACK_SOCKET", "/tmp/fake")
             .output();
 
         match output {
@@ -468,7 +468,7 @@ mod tests {
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 assert!(
                     stdout.contains("GUI_FUNCTION_DEFINED"),
-                    "gui function should be defined when COLUMN_COMPOSITOR_SOCKET is set. stdout: {}, stderr: {}",
+                    "gui function should be defined when TERMSTACK_SOCKET is set. stdout: {}, stderr: {}",
                     stdout,
                     String::from_utf8_lossy(&o.stderr)
                 );
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn fish_integration_not_active_without_socket() {
-        // Verify the fish integration script does NOT define column_exec when socket is unset
+        // Verify the fish integration script does NOT define termstack_exec when socket is unset
         use std::process::Command;
 
         let script_path = find_integration_script("integration.fish");
@@ -493,13 +493,13 @@ mod tests {
             }
         };
 
-        // Run fish without COLUMN_COMPOSITOR_SOCKET
+        // Run fish without TERMSTACK_SOCKET
         let output = Command::new("fish")
             .args(["-c", &format!(
-                "source {}; type column_exec 2>/dev/null && echo 'FUNCTION_DEFINED' || echo 'NOT_DEFINED'",
+                "source {}; type termstack_exec 2>/dev/null && echo 'FUNCTION_DEFINED' || echo 'NOT_DEFINED'",
                 script_path
             )])
-            .env_remove("COLUMN_COMPOSITOR_SOCKET")
+            .env_remove("TERMSTACK_SOCKET")
             .output();
 
         match output {
@@ -507,7 +507,7 @@ mod tests {
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 assert!(
                     stdout.contains("NOT_DEFINED"),
-                    "column_exec should NOT be defined without COLUMN_COMPOSITOR_SOCKET. stdout: {}",
+                    "termstack_exec should NOT be defined without TERMSTACK_SOCKET. stdout: {}",
                     stdout
                 );
             }
@@ -521,7 +521,7 @@ mod tests {
 
     fn find_column_term_binary() -> Option<String> {
         // Try CARGO_BIN_EXE first
-        if let Ok(p) = std::env::var("CARGO_BIN_EXE_column-term") {
+        if let Ok(p) = std::env::var("CARGO_BIN_EXE_termstack") {
             if std::path::Path::new(&p).exists() {
                 return Some(p);
             }
@@ -531,7 +531,7 @@ mod tests {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(deps_dir) = exe.parent() {
                 if let Some(bin_dir) = deps_dir.parent() {
-                    let path = bin_dir.join("column-term");
+                    let path = bin_dir.join("termstack");
                     if path.exists() {
                         return Some(path.to_string_lossy().to_string());
                     }
@@ -546,7 +546,7 @@ mod tests {
                 let cargo_toml = dir.join("Cargo.toml");
                 if cargo_toml.exists() {
                     for subdir in ["target/release", "target/debug"] {
-                        let path = dir.join(subdir).join("column-term");
+                        let path = dir.join(subdir).join("termstack");
                         if path.exists() {
                             return Some(path.to_string_lossy().to_string());
                         }

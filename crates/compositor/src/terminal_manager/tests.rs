@@ -288,7 +288,7 @@
     fn resize_to_full_updates_pty_and_dimensions() {
         // This test reproduces the TUI resize flow:
         // 1. Shell terminal starts small (content-based sizing)
-        // 2. User runs TUI app -> column-term --resize full
+        // 2. User runs TUI app -> termstack --resize full
         // 3. Terminal is resized to full viewport height
         // 4. TUI app runs and should see full-size terminal
         //
@@ -329,7 +329,7 @@
             );
         }
 
-        // NOW: Resize to full height (simulating column-term --resize full)
+        // NOW: Resize to full height (simulating termstack --resize full)
         {
             let terminal = manager.get_mut(id).expect("terminal should exist");
             terminal.resize(max_rows, cell_height);
@@ -696,7 +696,7 @@
             eprintln!("BEFORE forced resize: sizing state = {:?}", sizing_state);
         }
 
-        // Now force resize to full height (simulating column-term --resize full)
+        // Now force resize to full height (simulating termstack --resize full)
         // This might conflict with pending growth
         {
             let terminal = manager.get_mut(id).unwrap();
@@ -815,7 +815,7 @@
         //
         // This simulates the TUI resize flow:
         // 1. Shell terminal starts small (content-based)
-        // 2. column-term --resize full resizes it
+        // 2. termstack --resize full resizes it
         // 3. mc (or other TUI) runs and draws the full screen
         // 4. The compositor should see all of mc's output
 
@@ -839,7 +839,7 @@
             assert!(initial_height < 100, "Initial height should be small");
         }
 
-        // Simulate column-term --resize full
+        // Simulate termstack --resize full
         {
             let terminal = manager.get_mut(id).unwrap();
             terminal.resize(max_rows, cell_height);
@@ -902,9 +902,9 @@
 
     #[test]
     fn resize_ipc_flow_simulation() {
-        // This test simulates the EXACT flow when column-term --resize full is called:
+        // This test simulates the EXACT flow when termstack --resize full is called:
         //
-        // 1. column-term sends IPC message: {"type": "resize", "mode": "full"}
+        // 1. termstack sends IPC message: {"type": "resize", "mode": "full"}
         // 2. Compositor receives message (in calloop callback)
         // 3. Compositor stores pending_resize_request
         // 4. Later in frame: process pending_resize_request
@@ -1039,9 +1039,9 @@
         //
         // 1. Shell terminal starts (small, content-based)
         // 2. User runs TUI app (e.g., mc)
-        // 3. column-term --resize full is called
+        // 3. termstack --resize full is called
         // 4. Terminal is resized to full viewport
-        // 5. ACK is sent (column-term exits)
+        // 5. ACK is sent (termstack exits)
         // 6. Shell runs mc
         // 7. mc queries terminal size (TIOCGWINSZ)
         // 8. mc draws full screen
@@ -1066,7 +1066,7 @@
         eprintln!("  max_rows={}, cell_height={}", max_rows, cell_height);
         eprintln!("  height={}", manager.get(id).unwrap().height);
 
-        // Step 1: Simulate column-term --resize full
+        // Step 1: Simulate termstack --resize full
         // This happens BEFORE mc starts
         {
             let terminal = manager.get_mut(id).unwrap();
@@ -1252,7 +1252,7 @@
         // 2. Resize to full (for TUI app)
         // 3. Resize back to content (after TUI exits)
         //
-        // This is what happens with column-term --resize full/content
+        // This is what happens with termstack --resize full/content
 
         let output_width = 800;
         let output_height = 720;
@@ -1615,9 +1615,9 @@
     fn fzf_resize_flow_shows_output() {
         // Full simulation of the fzf resize flow:
         // 1. Shell terminal starts small (non-TUI, PTY=1000, visual=3)
-        // 2. column-term --resize full (PTY and visual become max_rows)
+        // 2. termstack --resize full (PTY and visual become max_rows)
         // 3. fzf runs (enters alternate screen, draws, exits, prints output)
-        // 4. column-term --resize content (should resize to show output)
+        // 4. termstack --resize content (should resize to show output)
 
         let output_width = 800;
         let output_height = 720;  // 720/17 = 42 max_rows
@@ -1644,7 +1644,7 @@
         let initial_height = manager.get(id).unwrap().height;
         eprintln!("Initial: cursor={}, height={}, max_rows={}", initial_cursor, initial_height, max_rows);
 
-        // Step 2: Simulate column-term --resize full
+        // Step 2: Simulate termstack --resize full
         {
             let terminal = manager.get_mut(id).unwrap();
             terminal.resize(max_rows, cell_height);
@@ -1687,7 +1687,7 @@
         };
         eprintln!("After fzf exit: cursor={}", after_fzf_cursor);
 
-        // Step 4: Simulate column-term --resize content
+        // Step 4: Simulate termstack --resize content
         // This is what the compositor does: cursor_line + 2
         let content_rows = (after_fzf_cursor + 2).max(3);
         eprintln!("Content rows to resize to: {}", content_rows);
@@ -2121,9 +2121,9 @@
 
         // Write a command that produces 10 lines of output
         {
-            use crate::state::FocusedCell;
-            let focused_cell = FocusedCell::Terminal(id);
-            let terminal = manager.get_focused_mut(Some(&focused_cell)).unwrap();
+            use crate::state::FocusedWindow;
+            let focused_window = FocusedWindow::Terminal(id);
+            let terminal = manager.get_focused_mut(Some(&focused_window)).unwrap();
             terminal.write(b"seq 10\n").expect("write to terminal");
         }
 
@@ -2206,9 +2206,9 @@
 
         // Write a simple command
         {
-            use crate::state::FocusedCell;
-            let focused_cell = FocusedCell::Terminal(id);
-            let terminal = manager.get_focused_mut(Some(&focused_cell)).unwrap();
+            use crate::state::FocusedWindow;
+            let focused_window = FocusedWindow::Terminal(id);
+            let terminal = manager.get_focused_mut(Some(&focused_window)).unwrap();
             terminal.write(b"echo HELLO\n").expect("write to terminal");
         }
 
@@ -2327,7 +2327,7 @@
 
     /// Test realistic scenario: command with echo prefix that fails immediately.
     ///
-    /// This mimics what happens when column-term runs a command that fails:
+    /// This mimics what happens when termstack runs a command that fails:
     /// 1. Command is prefixed with `echo '> cmd'; cmd`
     /// 2. Command fails immediately and outputs to stderr
     /// 3. Terminal should show both the echo and the error output
@@ -2342,7 +2342,7 @@
         // First spawn a parent shell terminal
         let parent_id = manager.spawn().expect("spawn parent");
 
-        // Simulate the real command format from column-term
+        // Simulate the real command format from termstack
         // This is what process_spawn_request creates: "echo '> cmd'; cmd"
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");

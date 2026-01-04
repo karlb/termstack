@@ -150,7 +150,7 @@ impl TestCompositor {
     /// Get window under a point - mirrors real compositor's window_at()
     /// NOW USES ACTUAL HEIGHTS (like the fixed compositor)
     pub fn window_at(&self, y: f64) -> Option<usize> {
-        // Match the real cell_at() implementation with Y-flip
+        // Match the real window_at() implementation with Y-flip
         let screen_height = self.output_size.1 as f64;
         let mut content_y = -self.scroll_offset;
         let actual_heights = self.actual_heights();
@@ -158,7 +158,7 @@ impl TestCompositor {
         for (i, &height) in actual_heights.iter().enumerate() {
             let cell_height = height as f64;
 
-            // Calculate render Y for this cell (same formula as state.rs cell_at)
+            // Calculate render Y for this cell (same formula as state.rs window_at)
             let render_y = screen_height - content_y - cell_height;
             let render_end = render_y + cell_height;
 
@@ -222,7 +222,7 @@ impl TestCompositor {
     /// Get window Y ranges for click detection
     /// NOW USES ACTUAL HEIGHTS (like the fixed compositor)
     pub fn window_click_ranges(&self) -> Vec<(f64, f64)> {
-        // Match the real cell_at() implementation with Y-flip
+        // Match the real window_at() implementation with Y-flip
         let screen_height = self.output_size.1 as f64;
         let mut content_y = -self.scroll_offset;
         let actual_heights = self.actual_heights();

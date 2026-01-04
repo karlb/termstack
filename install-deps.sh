@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Installing column-compositor dependencies..."
+echo "Installing termstack dependencies..."
 
 # Check if running on Debian/Ubuntu
 if command -v apt-get &> /dev/null; then
@@ -46,4 +46,4 @@ echo "To build the compositor:"
 echo "  cargo build --release"
 echo ""
 echo "To run:"
-echo "  ./target/release/column-compositor"
+echo "  ./target/release/termstack-compositor"

@@ -1,11 +1,11 @@
-# Only enable column-term integration inside column-compositor
+# Only enable termstack integration inside termstack
 
-if set -q COLUMN_COMPOSITOR_SOCKET
+if set -q TERMSTACK_SOCKET
     # Define 'gui' as a function for launching GUI apps
     # Usage: gui <command>           # foreground mode (launcher hidden until GUI exits)
     # Usage: gui -b <command>        # background mode (launcher stays visible)
     # Usage: gui --background <command>
-    function gui --description "Launch GUI app in column-compositor"
+    function gui --description "Launch GUI app in termstack"
         set -l background 0
         set -l args
 
@@ -25,22 +25,22 @@ if set -q COLUMN_COMPOSITOR_SOCKET
             return 1
         end
 
-        if set -q COLUMN_DEBUG
-            echo "[gui] calling: column-term gui $args" >&2
+        if set -q TERMSTACK_DEBUG
+            echo "[gui] calling: termstack gui $args" >&2
         end
 
         if test $background -eq 1
-            COLUMN_GUI_BACKGROUND=1 column-term gui $args
+            TERMSTACK_GUI_BACKGROUND=1 termstack gui $args
         else
-            column-term gui $args
+            termstack gui $args
         end
 
-        if set -q COLUMN_DEBUG
-            echo "[gui] column-term exit code: $status" >&2
+        if set -q TERMSTACK_DEBUG
+            echo "[gui] termstack exit code: $status" >&2
         end
     end
 
-    function column_exec
+    function termstack_exec
         set -l cmd (commandline)
         if test -z "$cmd"
             commandline -f execute
@@ -48,27 +48,27 @@ if set -q COLUMN_COMPOSITOR_SOCKET
         end
 
         # Debug: show what command we're processing
-        if set -q COLUMN_DEBUG
-            echo "[column_exec] cmd='$cmd'" >&2
+        if set -q TERMSTACK_DEBUG
+            echo "[termstack_exec] cmd='$cmd'" >&2
         end
 
         # Let 'gui' commands execute normally (handled by gui function above)
         # Check both with and without leading/trailing whitespace
         set -l trimmed_cmd (string trim "$cmd")
         if string match -q 'gui' "$trimmed_cmd"; or string match -q 'gui *' "$trimmed_cmd"
-            if set -q COLUMN_DEBUG
-                echo "[column_exec] detected gui command, executing normally" >&2
+            if set -q TERMSTACK_DEBUG
+                echo "[termstack_exec] detected gui command, executing normally" >&2
             end
             commandline -f execute
             return
         end
 
-        # Check command type and syntax via column-term
+        # Check command type and syntax via termstack
         # Exit codes:
         #   0 = spawned in new terminal
         #   2 = shell builtin, run in current shell
         #   3 = incomplete/invalid syntax, let shell handle it
-        column-term -c "$cmd"
+        termstack -c "$cmd"
         set -l ret $status
 
         switch $ret
@@ -84,16 +84,16 @@ if set -q COLUMN_COMPOSITOR_SOCKET
         end
     end
 
-    bind \r column_exec
-    bind \n column_exec
+    bind \r termstack_exec
+    bind \n termstack_exec
 else
     # Not inside compositor - only show message if sourced interactively (not from config.fish)
-    if status --is-interactive; and test -z "$__column_integration_sourced"
-        echo "Note: column-compositor shell integration not active" >&2
-        echo "      (COLUMN_COMPOSITOR_SOCKET not set)" >&2
-        echo "      Start column-compositor first, then source this script." >&2
+    if status --is-interactive; and test -z "$__termstack_integration_sourced"
+        echo "Note: termstack shell integration not active" >&2
+        echo "      (TERMSTACK_SOCKET not set)" >&2
+        echo "      Start termstack first, then source this script." >&2
     end
 end
 
 # Mark that we've been sourced (prevents repeated messages in config.fish)
-set -g __column_integration_sourced 1
+set -g __termstack_integration_sourced 1

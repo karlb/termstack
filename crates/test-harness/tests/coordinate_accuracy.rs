@@ -237,8 +237,8 @@ fn scroll_shifts_all_positions_uniformly() {
 /// Reproduce issue: compare real compositor calculation vs test harness
 #[test]
 fn verify_formula_matches_real_compositor() {
-    // Simulate the exact calculation from state.rs cell_at()
-    fn real_cell_at(
+    // Simulate the exact calculation from state.rs window_at()
+    fn real_window_at(
         screen_height: f64,
         scroll_offset: f64,
         heights: &[i32],
@@ -286,7 +286,7 @@ fn verify_formula_matches_real_compositor() {
     // For each window, verify clicking at its center hits it
     for (i, &(render_y, height)) in render_positions.iter().enumerate() {
         let center = render_y as f64 + height as f64 / 2.0;
-        let hit = real_cell_at(screen_height as f64, scroll_offset, &heights, center);
+        let hit = real_window_at(screen_height as f64, scroll_offset, &heights, center);
 
         assert_eq!(
             hit,
@@ -307,7 +307,7 @@ fn verify_formula_matches_real_compositor() {
 
         // Only test if center is on screen
         if center >= 0.0 && center < screen_height as f64 {
-            let hit = real_cell_at(screen_height as f64, scroll_offset, &heights, center);
+            let hit = real_window_at(screen_height as f64, scroll_offset, &heights, center);
 
             assert_eq!(
                 hit,
@@ -391,7 +391,7 @@ fn click_detection_uses_same_heights_as_rendering() {
 #[test]
 fn integer_truncation_in_scroll() {
     // The issue: main.rs uses (scroll_offset as i32) for rendering
-    // but cell_at() uses scroll_offset as f64
+    // but window_at() uses scroll_offset as f64
     // This could cause a 1-pixel discrepancy
 
     fn render_position_i32(screen_height: i32, scroll_offset: f64, content_y_before: i32, height: i32) -> i32 {

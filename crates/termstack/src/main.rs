@@ -1,12 +1,12 @@
-//! column-term - Spawn terminals in column-compositor
+//! termstack - Spawn terminals in TermStack
 //!
 //! This CLI tool allows spawning new terminals from the shell that share
 //! the current terminal's environment. The new terminal appears above
-//! the current one in the column layout.
+//! the current one in the stack layout.
 //!
 //! Commands are split into categories:
 //! - Shell builtins: run in current shell (cd, export, etc.)
-//! - All other commands: run in a new column-term terminal
+//! - All other commands: run in a new terminal window
 //!
 //! TUI apps (vim, mc, etc.) are auto-detected via alternate screen mode
 //! and automatically resized to full viewport height.
@@ -18,10 +18,10 @@
 //!
 //! ```fish
 //! # Run a command in a new terminal
-//! column-term -c "git status"
+//! termstack -c "git status"
 //!
 //! # Run with no command (opens interactive shell)
-//! column-term
+//! termstack
 //! ```
 //!
 //! # Shell Integration
@@ -32,12 +32,12 @@
 //!
 //! Add to your `~/.config/fish/config.fish` (or source `scripts/integration.fish`):
 //! ```fish
-//! if set -q COLUMN_COMPOSITOR_SOCKET
-//!     function column_exec
+//! if set -q TERMSTACK_SOCKET
+//!     function termstack_exec
 //!         set -l cmd (commandline)
 //!         test -z "$cmd"; and commandline -f execute; and return
 //!
-//!         column-term -c "$cmd"
+//!         termstack -c "$cmd"
 //!         switch $status
 //!             case 2 3  # Shell builtin or incomplete syntax
 //!                 commandline -f execute
@@ -47,8 +47,8 @@
 //!                 commandline -f repaint
 //!         end
 //!     end
-//!     bind \r column_exec
-//!     bind \n column_exec
+//!     bind \r termstack_exec
+//!     bind \n termstack_exec
 //! end
 //! ```
 //!
@@ -68,7 +68,7 @@ use serde::Deserialize;
 #[cfg(test)]
 mod config_test;
 
-/// Configuration for column-term
+/// Configuration for termstack
 #[derive(Debug, Deserialize)]
 pub(crate) struct Config {
     /// List of shell builtins/commands that should run in the current shell
@@ -106,7 +106,7 @@ impl Config {
         ].into_iter().map(String::from).collect()
     }
 
-    /// Load config from ~/.config/column-compositor/config.toml
+    /// Load config from ~/.config/termstack/config.toml
     fn load() -> Self {
         let config_path = Self::config_path();
 
@@ -126,7 +126,7 @@ impl Config {
         let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
         PathBuf::from(home)
             .join(".config")
-            .join("column-compositor")
+            .join("termstack")
             .join("config.toml")
     }
 
@@ -155,12 +155,12 @@ const EXIT_SHELL_COMMAND: i32 = 2;
 /// Shell integration should let the shell handle it (show continuation or error)
 const EXIT_INCOMPLETE_SYNTAX: i32 = 3;
 
-/// Check if debug mode is enabled via DEBUG_COLUMN_TERM environment variable
+/// Check if debug mode is enabled via DEBUG_TSTACK environment variable
 fn debug_enabled() -> bool {
     // Cache result to avoid repeated env lookups (inline const fn not stable yet)
     use std::sync::OnceLock;
     static DEBUG: OnceLock<bool> = OnceLock::new();
-    *DEBUG.get_or_init(|| env::var("DEBUG_COLUMN_TERM").is_ok())
+    *DEBUG.get_or_init(|| env::var("DEBUG_TSTACK").is_ok())
 }
 
 /// Check if a command is syntactically complete for the current shell
@@ -225,13 +225,13 @@ pub(crate) fn is_syntax_complete(command: &str) -> bool {
 
     let debug = debug_enabled();
     if debug {
-        eprintln!("[column-term] syntax check: shell={}, shell_name={}", shell, shell_name);
+        eprintln!("[termstack] syntax check: shell={}, shell_name={}", shell, shell_name);
     }
 
     // Only support fish
     if shell_name != "fish" {
         if debug {
-            eprintln!("[column-term] syntax check: non-fish shell, assuming complete");
+            eprintln!("[termstack] syntax check: non-fish shell, assuming complete");
         }
         return true;
     }
@@ -244,13 +244,13 @@ pub(crate) fn is_syntax_complete(command: &str) -> bool {
         Ok(output) => {
             let complete = output.status.success();
             if debug {
-                eprintln!("[column-term] syntax check: exit={:?}, complete={}", output.status.code(), complete);
+                eprintln!("[termstack] syntax check: exit={:?}, complete={}", output.status.code(), complete);
             }
             complete
         }
         Err(e) => {
             if debug {
-                eprintln!("[column-term] syntax check: error running shell: {}", e);
+                eprintln!("[termstack] syntax check: error running shell: {}", e);
             }
             true // If we can't run the shell, assume syntax is complete
         }
@@ -263,17 +263,17 @@ fn main() -> Result<()> {
     // Debug: show we're running (only if DEBUG_COLUMN_TERM is set)
     let debug = debug_enabled();
     if debug {
-        eprintln!("[column-term] args: {:?}", args);
-        eprintln!("[column-term] COLUMN_COMPOSITOR_SOCKET={:?}", env::var("COLUMN_COMPOSITOR_SOCKET"));
+        eprintln!("[termstack] args: {:?}", args);
+        eprintln!("[termstack] TERMSTACK_SOCKET={:?}", env::var("TERMSTACK_SOCKET"));
     }
 
     // Handle --status flag for diagnostics
     if args.len() >= 2 && args[1] == "--status" {
-        let socket = env::var("COLUMN_COMPOSITOR_SOCKET");
+        let socket = env::var("TERMSTACK_SOCKET");
         let shell = env::var("SHELL").unwrap_or_else(|_| "(not set)".to_string());
 
-        println!("column-term status:");
-        println!("  COLUMN_COMPOSITOR_SOCKET: {}", match &socket {
+        println!("termstack status:");
+        println!("  TERMSTACK_SOCKET: {}", match &socket {
             Ok(path) => format!("{} (exists: {})", path, std::path::Path::new(path).exists()),
             Err(_) => "NOT SET - shell integration will not activate".to_string(),
         });
@@ -285,7 +285,7 @@ fn main() -> Result<()> {
             println!("If 'gui' command is not found, make sure to source the integration script:");
             println!("  fish: source scripts/integration.fish");
         } else {
-            println!("You are NOT inside column-compositor.");
+            println!("You are NOT inside termstack.");
             println!("Start the compositor first, then the shell integration will activate.");
         }
         return Ok(());
@@ -298,20 +298,20 @@ fn main() -> Result<()> {
     }
 
     // Handle 'gui' subcommand for launching GUI apps with foreground/background mode
-    // Usage: column-term gui <command>
-    // Background mode: COLUMN_GUI_BACKGROUND=1 column-term gui <command>
+    // Usage: termstack gui <command>
+    // Background mode: TERMSTACK_GUI_BACKGROUND=1 termstack gui <command>
     if debug {
-        eprintln!("[column-term] checking gui subcommand: args.len()={}, args[1]={:?}", args.len(), args.get(1));
+        eprintln!("[termstack] checking gui subcommand: args.len()={}, args[1]={:?}", args.len(), args.get(1));
     }
     if args.len() >= 2 && args[1] == "gui" {
         if args.len() < 3 {
-            bail!("usage: column-term gui <command>");
+            bail!("usage: termstack gui <command>");
         }
         let command = args[2..].join(" ");
         // Background mode is set by shell integration when user adds & suffix
-        let foreground = env::var("COLUMN_GUI_BACKGROUND").is_err();
+        let foreground = env::var("TERMSTACK_GUI_BACKGROUND").is_err();
         if debug {
-            eprintln!("[column-term] gui spawn: command={:?} foreground={}", command, foreground);
+            eprintln!("[termstack] gui spawn: command={:?} foreground={}", command, foreground);
         }
         return spawn_gui_app(&command, foreground);
     }
@@ -319,8 +319,8 @@ fn main() -> Result<()> {
     // If we're running inside a TUI terminal (like mc's subshell), don't intercept.
     // This prevents mc's internal fish subshell commands from being spawned as
     // separate terminals, which would break mc's communication with its subshell.
-    if env::var("COLUMN_COMPOSITOR_TUI").is_ok() {
-        if debug { eprintln!("[column-term] COLUMN_COMPOSITOR_TUI set, exit 2"); }
+    if env::var("TERMSTACK_TUI").is_ok() {
+        if debug { eprintln!("[termstack] TERMSTACK_TUI set, exit 2"); }
         // Exit with code 2 (shell command) so the shell integration runs `eval "$cmd"`,
         // allowing mc's subshell command to actually execute in the current shell.
         std::process::exit(EXIT_SHELL_COMMAND);
@@ -328,11 +328,11 @@ fn main() -> Result<()> {
 
     // Parse arguments
     let command = parse_command(&args)?;
-    if debug { eprintln!("[column-term] command: {:?}", command); }
+    if debug { eprintln!("[termstack] command: {:?}", command); }
 
     // Empty command = interactive shell, always use terminal
     if command.is_empty() {
-        if debug { eprintln!("[column-term] empty command, spawning shell"); }
+        if debug { eprintln!("[termstack] empty command, spawning shell"); }
         return spawn_in_terminal(&command);
     }
 
@@ -347,7 +347,7 @@ fn main() -> Result<()> {
     let normalized_command = if shell_name == "fish" {
         let normalized = normalize_fish_command(&command);
         if debug && normalized != command {
-            eprintln!("[column-term] normalized: '{}' -> '{}'", command, normalized);
+            eprintln!("[termstack] normalized: '{}' -> '{}'", command, normalized);
         }
         normalized
     } else {
@@ -358,7 +358,7 @@ fn main() -> Result<()> {
     let config = Config::load();
 
     if config.is_shell_command(&normalized_command) {
-        if debug { eprintln!("[column-term] shell command, exit 2"); }
+        if debug { eprintln!("[termstack] shell command, exit 2"); }
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
     }
@@ -366,13 +366,13 @@ fn main() -> Result<()> {
     // Check if command is syntactically complete
     // If not, let the shell handle it (show continuation prompt or syntax error)
     if !is_syntax_complete(&normalized_command) {
-        if debug { eprintln!("[column-term] incomplete syntax, exit 3"); }
+        if debug { eprintln!("[termstack] incomplete syntax, exit 3"); }
         std::process::exit(EXIT_INCOMPLETE_SYNTAX);
     }
 
     // Regular command, GUI app, or TUI app - spawn in new terminal
     // TUI apps are auto-detected via alternate screen mode and resized
-    if debug { eprintln!("[column-term] spawning in terminal"); }
+    if debug { eprintln!("[termstack] spawning in terminal"); }
     spawn_in_terminal(&normalized_command)
 }
 
@@ -383,8 +383,8 @@ fn main() -> Result<()> {
 fn send_resize_request(mode: &str) -> Result<()> {
     use std::io::{BufRead, BufReader};
 
-    let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")
-        .context("COLUMN_COMPOSITOR_SOCKET not set - are you running inside column-compositor?")?;
+    let socket_path = env::var("TERMSTACK_SOCKET")
+        .context("TERMSTACK_SOCKET not set - are you running inside termstack?")?;
 
     let mode_str = match mode {
         "full" => "full",
@@ -421,7 +421,7 @@ fn send_resize_request(mode: &str) -> Result<()> {
     Ok(())
 }
 
-/// Spawn command in a new column-term terminal
+/// Spawn command in a new termstack terminal
 ///
 /// The terminal starts small and grows with content. TUI apps are
 /// auto-detected via alternate screen mode and resized to full viewport.
@@ -429,9 +429,9 @@ fn spawn_in_terminal(command: &str) -> Result<()> {
     let debug = debug_enabled();
 
     // Get socket path from environment
-    let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")
-        .context("COLUMN_COMPOSITOR_SOCKET not set - are you running inside column-compositor?")?;
-    if debug { eprintln!("[column-term] socket path: {}", socket_path); }
+    let socket_path = env::var("TERMSTACK_SOCKET")
+        .context("TERMSTACK_SOCKET not set - are you running inside termstack?")?;
+    if debug { eprintln!("[termstack] socket path: {}", socket_path); }
 
     // Collect current environment
     let env_vars: std::collections::HashMap<String, String> = env::vars().collect();
@@ -441,7 +441,7 @@ fn spawn_in_terminal(command: &str) -> Result<()> {
         .context("failed to get current directory")?
         .to_string_lossy()
         .to_string();
-    if debug { eprintln!("[column-term] cwd: {}", cwd); }
+    if debug { eprintln!("[termstack] cwd: {}", cwd); }
 
     // Build JSON message
     let msg = serde_json::json!({
@@ -451,15 +451,15 @@ fn spawn_in_terminal(command: &str) -> Result<()> {
         "env": env_vars,
     });
 
-    if debug { eprintln!("[column-term] connecting to socket..."); }
+    if debug { eprintln!("[termstack] connecting to socket..."); }
     // Connect to compositor and send message
     let mut stream = UnixStream::connect(&socket_path)
         .with_context(|| format!("failed to connect to {}", socket_path))?;
-    if debug { eprintln!("[column-term] connected, sending message..."); }
+    if debug { eprintln!("[termstack] connected, sending message..."); }
 
     writeln!(stream, "{}", msg).context("failed to send message")?;
     stream.flush().context("failed to flush message")?;
-    if debug { eprintln!("[column-term] message sent successfully"); }
+    if debug { eprintln!("[termstack] message sent successfully"); }
 
     // Clear the command line from the invoking terminal
     if !command.is_empty() {
@@ -478,9 +478,9 @@ fn spawn_gui_app(command: &str, foreground: bool) -> Result<()> {
     let debug = debug_enabled();
 
     // Get socket path from environment
-    let socket_path = env::var("COLUMN_COMPOSITOR_SOCKET")
-        .context("COLUMN_COMPOSITOR_SOCKET not set - are you running inside column-compositor?")?;
-    if debug { eprintln!("[column-term] socket path: {}", socket_path); }
+    let socket_path = env::var("TERMSTACK_SOCKET")
+        .context("TERMSTACK_SOCKET not set - are you running inside termstack?")?;
+    if debug { eprintln!("[termstack] socket path: {}", socket_path); }
 
     // Collect current environment
     let env_vars: std::collections::HashMap<String, String> = env::vars().collect();
@@ -490,7 +490,7 @@ fn spawn_gui_app(command: &str, foreground: bool) -> Result<()> {
         .context("failed to get current directory")?
         .to_string_lossy()
         .to_string();
-    if debug { eprintln!("[column-term] cwd: {}", cwd); }
+    if debug { eprintln!("[termstack] cwd: {}", cwd); }
 
     // Build JSON message for gui_spawn
     let msg = serde_json::json!({
@@ -501,15 +501,15 @@ fn spawn_gui_app(command: &str, foreground: bool) -> Result<()> {
         "foreground": foreground,
     });
 
-    if debug { eprintln!("[column-term] connecting to socket for GUI spawn..."); }
+    if debug { eprintln!("[termstack] connecting to socket for GUI spawn..."); }
     // Connect to compositor and send message
     let mut stream = UnixStream::connect(&socket_path)
         .with_context(|| format!("failed to connect to {}", socket_path))?;
-    if debug { eprintln!("[column-term] connected, sending gui_spawn message..."); }
+    if debug { eprintln!("[termstack] connected, sending gui_spawn message..."); }
 
     writeln!(stream, "{}", msg).context("failed to send message")?;
     stream.flush().context("failed to flush message")?;
-    if debug { eprintln!("[column-term] gui_spawn message sent successfully"); }
+    if debug { eprintln!("[termstack] gui_spawn message sent successfully"); }
 
     // Clear the command line from the invoking terminal
     print!("\x1b[A\x1b[2K");
@@ -521,8 +521,8 @@ fn spawn_gui_app(command: &str, foreground: bool) -> Result<()> {
 /// Parse command from arguments
 ///
 /// Supports:
-/// - `column-term -c "command"` - run command
-/// - `column-term` - run interactive shell (empty command)
+/// - `termstack -c "command"` - run command
+/// - `termstack` - run interactive shell (empty command)
 fn parse_command(args: &[String]) -> Result<String> {
     if args.len() == 1 {
         // No arguments - spawn interactive shell
@@ -548,5 +548,5 @@ fn parse_command(args: &[String]) -> Result<String> {
         return Ok(args[1..].join(" "));
     }
 
-    bail!("usage: column-term [-c command]");
+    bail!("usage: termstack [-c command]");
 }

@@ -11,7 +11,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::coords::{RenderY, ScreenY};
 use crate::render::FOCUS_INDICATOR_WIDTH;
-use crate::state::{ColumnCell, ColumnCompositor, ResizeDrag, SurfaceKind, MIN_CELL_HEIGHT};
+use crate::state::{StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
@@ -29,7 +29,7 @@ const SCROLL_WHEEL_MULTIPLIER: f64 = 15.0;
 /// Check if a click is on the close button in a title bar
 fn is_click_on_close_button(
     render_y: f64,
-    cell_render_top: f64,
+    window_render_top: f64,
     click_x: f64,
     output_width: i32,
     has_ssd: bool,
@@ -39,7 +39,7 @@ fn is_click_on_close_button(
         return false;
     }
 
-    let title_bar_top = cell_render_top;
+    let title_bar_top = window_render_top;
     let title_bar_bottom = title_bar_top - TITLE_BAR_HEIGHT as f64;
     let in_title_bar = render_y <= title_bar_top && render_y > title_bar_bottom;
 
@@ -52,22 +52,22 @@ fn is_click_on_close_button(
 /// Convert render coordinates to terminal grid coordinates (col, row)
 ///
 /// - `render_x`, `render_y`: Position in render coordinates (Y=0 at bottom)
-/// - `cell_render_y`: The terminal cell's render Y position (bottom of cell)
-/// - `cell_height`: The terminal cell's height in pixels
+/// - `window_render_y`: The terminal cell's render Y position (bottom of cell)
+/// - `window_height`: The terminal cell's height in pixels
 /// - `char_width`, `char_height`: Character cell dimensions from the font
 fn render_to_grid_coords(
     render_x: f64,
     render_y: f64,
-    cell_render_y: f64,
-    cell_height: f64,
+    window_render_y: f64,
+    window_height: f64,
     char_width: u32,
     char_height: u32,
 ) -> (usize, usize) {
     // Convert render coords to terminal-local coords
     // Terminal has Y=0 at top, render has Y=0 at bottom
     // Content is offset by FOCUS_INDICATOR_WIDTH from left edge
-    let cell_render_end = cell_render_y + cell_height;
-    let local_y = (cell_render_end - render_y).max(0.0);
+    let window_render_end = window_render_y + window_height;
+    let local_y = (window_render_end - render_y).max(0.0);
     let local_x = (render_x - FOCUS_INDICATOR_WIDTH as f64).max(0.0);
 
     // Convert to grid coordinates
@@ -82,22 +82,22 @@ fn render_to_grid_coords(
 /// Returns the selection tracking state (terminal id, cell render y, cell height)
 /// which should be stored in `compositor.selecting` for drag tracking.
 fn start_terminal_selection(
-    compositor: &ColumnCompositor,
+    compositor: &TermStack,
     terminals: &mut TerminalManager,
     terminal_id: TerminalId,
-    cell_index: usize,
+    window_index: usize,
     render_x: f64,
     render_y: f64,
 ) -> Option<(TerminalId, i32, i32)> {
     let managed = terminals.get_mut(terminal_id)?;
-    let (cell_render_y, cell_height) = compositor.get_cell_render_position(cell_index);
+    let (window_render_y, window_height) = compositor.get_window_render_position(window_index);
 
     let (char_width, char_height) = managed.terminal.cell_size();
     let (col, row) = render_to_grid_coords(
         render_x,
         render_y,
-        cell_render_y,
-        cell_height as f64,
+        window_render_y,
+        window_height as f64,
         char_width,
         char_height,
     );
@@ -107,15 +107,15 @@ fn start_terminal_selection(
     managed.terminal.start_selection(col, row);
     managed.mark_dirty(); // Re-render to show selection highlight
 
-    Some((terminal_id, cell_render_y as i32, cell_height))
+    Some((terminal_id, window_render_y as i32, window_height))
 }
 
 /// Update an ongoing selection during pointer drag
 fn update_terminal_selection(
     terminals: &mut TerminalManager,
     terminal_id: TerminalId,
-    cell_render_y: i32,
-    cell_height: i32,
+    window_render_y: i32,
+    window_height: i32,
     render_x: f64,
     render_y: f64,
 ) {
@@ -124,8 +124,8 @@ fn update_terminal_selection(
         let (col, row) = render_to_grid_coords(
             render_x,
             render_y,
-            cell_render_y as f64,
-            cell_height as f64,
+            window_render_y as f64,
+            window_height as f64,
             char_width,
             char_height,
         );
@@ -196,7 +196,7 @@ fn parse_compositor_keybinding(modifiers: &ModifiersState, keysym: Keysym) -> Op
     None
 }
 
-impl ColumnCompositor {
+impl TermStack {
     /// Process an input event with terminal support
     pub fn process_input_event_with_terminals<I: InputBackend>(
         &mut self,
@@ -321,7 +321,7 @@ impl ColumnCompositor {
             // Forward to focused terminal if we got bytes
             if let Some((handled, Some(bytes))) = result {
                 if !handled {
-                    if let Some(terminal) = terminals.get_focused_mut(self.focused_cell.as_ref()) {
+                    if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
                         if let Err(e) = terminal.write(&bytes) {
                             tracing::error!(?e, "failed to write to terminal");
                         } else {
@@ -342,7 +342,7 @@ impl ColumnCompositor {
                 if let Some(ref mut clipboard) = self.clipboard {
                     match clipboard.get_text() {
                         Ok(text) => {
-                            if let Some(terminal) = terminals.get_focused_mut(self.focused_cell.as_ref()) {
+                            if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
                                 if let Err(e) = terminal.write(text.as_bytes()) {
                                     tracing::error!(?e, "failed to paste to terminal");
                                 } else {
@@ -361,7 +361,7 @@ impl ColumnCompositor {
             if self.pending_copy {
                 self.pending_copy = false;
                 if let Some(ref mut clipboard) = self.clipboard {
-                    if let Some(terminal) = terminals.get_focused_mut(self.focused_cell.as_ref()) {
+                    if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
                         // Prefer selection text, fall back to entire grid content
                         let text = if let Some(selected) = terminal.terminal.selection_text() {
                             tracing::debug!(len = selected.len(), "copying selection to clipboard");
@@ -474,12 +474,12 @@ impl ColumnCompositor {
             CompositorAction::FocusNext => {
                 tracing::debug!("focus next");
                 self.focus_next();
-                self.update_keyboard_focus_for_focused_cell();
+                self.update_keyboard_focus_for_focused_window();
             }
             CompositorAction::FocusPrev => {
                 tracing::debug!("focus prev");
                 self.focus_prev();
-                self.update_keyboard_focus_for_focused_cell();
+                self.update_keyboard_focus_for_focused_window();
             }
             // Other actions not used in global bindings
             _ => return false,
@@ -517,27 +517,27 @@ impl ColumnCompositor {
 
         // Handle resize drag if active
         if let Some(drag) = &self.resizing {
-            let cell_index = drag.cell_index;
+            let window_index = drag.window_index;
             let delta = screen_y.value() as i32 - drag.start_screen_y;
-            let new_height = (drag.start_height + delta).max(MIN_CELL_HEIGHT);
+            let new_height = (drag.start_height + delta).max(MIN_WINDOW_HEIGHT);
 
             // Get the cell type to determine how to resize
-            let cell_type = self.layout_nodes.get(cell_index).and_then(|node| {
+            let window_type = self.layout_nodes.get(window_index).and_then(|node| {
                 match &node.cell {
-                    ColumnCell::Terminal(id) => Some(*id),
-                    ColumnCell::External(_) => None,
+                    StackWindow::Terminal(id) => Some(*id),
+                    StackWindow::External(_) => None,
                 }
             });
 
-            match cell_type {
+            match window_type {
                 Some(id) => {
                     // Terminal
-                    let cell_height = terminals.cell_height;
+                    let char_height = terminals.cell_height;
                     if let Some(terminal) = terminals.get_mut(id) {
-                        terminal.resize_to_height(new_height as u32, cell_height);
+                        terminal.resize_to_height(new_height as u32, char_height);
                     }
                     // Update cached height in layout
-                    if let Some(node) = self.layout_nodes.get_mut(cell_index) {
+                    if let Some(node) = self.layout_nodes.get_mut(window_index) {
                         node.height = new_height;
                     }
                 }
@@ -553,12 +553,12 @@ impl ColumnCompositor {
 
                     // Update cached height for layout positioning (visual feedback)
                     // Window will render at committed size but be positioned at target size
-                    if let Some(node) = self.layout_nodes.get_mut(cell_index) {
+                    if let Some(node) = self.layout_nodes.get_mut(window_index) {
                         node.height = new_height;
                     }
 
                     tracing::trace!(
-                        cell_index,
+                        window_index,
                         new_height,
                         "drag motion - updating layout positions"
                     );
@@ -569,8 +569,8 @@ impl ColumnCompositor {
         }
 
         // Update selection if we're in a drag operation
-        if let Some((term_id, cell_render_y, cell_height)) = self.selecting {
-            update_terminal_selection(terminals, term_id, cell_render_y, cell_height, screen_x, render_y);
+        if let Some((term_id, window_render_y, window_height)) = self.selecting {
+            update_terminal_selection(terminals, term_id, window_render_y, window_height, screen_x, render_y);
         }
 
         let serial = SERIAL_COUNTER.next_serial();
@@ -637,14 +637,14 @@ impl ColumnCompositor {
                 let final_target = drag.target_height as u32;
 
                 tracing::info!(
-                    cell_index = drag.cell_index,
+                    window_index = drag.window_index,
                     final_target,
                     "RESIZE DRAG ENDED - sending final configure"
                 );
 
                 if final_target > 0 {
                     // Use force=true to bypass pending check
-                    self.request_resize(drag.cell_index, final_target, true);
+                    self.request_resize(drag.window_index, final_target, true);
                 }
                 return; // Don't process further
             }
@@ -668,17 +668,17 @@ impl ColumnCompositor {
 
             // Check for resize handle before normal cell hit detection
             if button == BTN_LEFT {
-                if let Some(cell_index) = self.find_resize_handle_at(screen_y.value() as i32, &self.cached_actual_heights) {
+                if let Some(window_index) = self.find_resize_handle_at(screen_y.value() as i32, &self.cached_actual_heights) {
                     // Start resize drag
-                    let start_height = self.get_cell_height(cell_index).unwrap_or(100);
+                    let start_height = self.get_window_height(window_index).unwrap_or(100);
                     tracing::info!(
-                        cell_index,
+                        window_index,
                         screen_y = screen_y.value(),
                         start_height,
                         "RESIZE DRAG STARTED"
                     );
                     self.resizing = Some(ResizeDrag {
-                        cell_index,
+                        window_index,
                         start_screen_y: screen_y.value() as i32,
                         start_height,
                         last_configure_time: std::time::Instant::now(),
@@ -687,20 +687,20 @@ impl ColumnCompositor {
                     });
                     // Clear any pending external_window_resized for this cell
                     // to prevent stale resize events from overwriting our drag updates
-                    if self.external_window_resized.as_ref().map(|(idx, _)| *idx) == Some(cell_index) {
+                    if self.external_window_resized.as_ref().map(|(idx, _)| *idx) == Some(window_index) {
                         self.external_window_resized = None;
-                        tracing::debug!(cell_index, "cleared pending external_window_resized on drag start");
+                        tracing::debug!(window_index, "cleared pending external_window_resized on drag start");
                     }
                     return; // Don't process as normal click
                 }
             }
 
-            if let Some(index) = self.cell_at(render_location) {
+            if let Some(index) = self.window_at(render_location) {
                 // Clicked on a cell - focus it
                 self.set_focus_by_index(index);
 
                 // Calculate cell's render position for close button detection
-                let cell_render_top = {
+                let window_render_top = {
                     let screen_height = self.output_size.h as f64;
                     let mut content_y = -self.scroll_offset;
                     for node in self.layout_nodes.iter().take(index) {
@@ -712,7 +712,7 @@ impl ColumnCompositor {
 
                 // Extract cell info before doing mutable operations
                 // For terminals, check if they have a title bar
-                let terminal_has_title_bar = if let ColumnCell::Terminal(id) = &self.layout_nodes[index].cell {
+                let terminal_has_title_bar = if let StackWindow::Terminal(id) = &self.layout_nodes[index].cell {
                     terminals.as_ref()
                         .and_then(|tm| tm.get(*id))
                         .map(|t| t.show_title_bar)
@@ -733,14 +733,14 @@ impl ColumnCompositor {
                     },
                 }
 
-                let cell_info = match &self.layout_nodes[index].cell {
-                    ColumnCell::External(entry) => {
+                let window_info = match &self.layout_nodes[index].cell {
+                    StackWindow::External(entry) => {
                         CellClickInfo::External {
                             surface: &entry.surface,
                             has_ssd: !entry.uses_csd,
                         }
                     }
-                    ColumnCell::Terminal(id) => {
+                    StackWindow::Terminal(id) => {
                         CellClickInfo::Terminal {
                             id: *id,
                             has_ssd: terminal_has_title_bar,
@@ -748,12 +748,12 @@ impl ColumnCompositor {
                     }
                 };
 
-                match cell_info {
+                match window_info {
                     CellClickInfo::External { surface, has_ssd } => {
                         // Check if click is on close button in title bar
                         if is_click_on_close_button(
                             render_location.y,
-                            cell_render_top,
+                            window_render_top,
                             render_location.x,
                             self.output_size.w,
                             has_ssd,
@@ -765,13 +765,13 @@ impl ColumnCompositor {
                         }
 
                         // Update keyboard focus (handles both Wayland and X11)
-                        self.update_keyboard_focus_for_focused_cell();
+                        self.update_keyboard_focus_for_focused_window();
                     }
                     CellClickInfo::Terminal { id, has_ssd } => {
                         // Check if click is on close button in title bar (for terminals with title bars)
                         if is_click_on_close_button(
                             render_location.y,
-                            cell_render_top,
+                            window_render_top,
                             render_location.x,
                             self.output_size.w,
                             has_ssd,
@@ -823,16 +823,16 @@ impl ColumnCompositor {
                     }
 
                     // Last cell's bottom in render coords: screen_height - content_y
-                    let last_cell_bottom = screen_height - content_y;
+                    let last_window_bottom = screen_height - content_y;
 
                     // If click is below the last cell's bottom, focus the last cell
-                    if render_location.y < last_cell_bottom {
+                    if render_location.y < last_window_bottom {
                         let last_index = self.layout_nodes.len() - 1;
                         self.set_focus_by_index(last_index);
 
                         tracing::debug!(
                             render_y = render_location.y,
-                            last_cell_bottom,
+                            last_window_bottom,
                             last_index,
                             "clicked below all cells, focusing last cell"
                         );
@@ -890,8 +890,8 @@ impl ColumnCompositor {
                 // Scroll the terminal under the pointer, not the focused one
                 if let Some(terminals) = terminals {
                     // Find which cell is under the pointer
-                    if let Some(cell_idx) = self.cell_at(self.pointer_position) {
-                        if let Some(ColumnCell::Terminal(term_id)) = self.layout_nodes.get(cell_idx).map(|n| &n.cell) {
+                    if let Some(window_idx) = self.window_at(self.pointer_position) {
+                        if let Some(StackWindow::Terminal(term_id)) = self.layout_nodes.get(window_idx).map(|n| &n.cell) {
                             if let Some(term) = terminals.get_mut(*term_id) {
                                 // Convert scroll amount to lines
                                 // Positive vertical = wheel down = scroll toward newer output
@@ -953,7 +953,7 @@ impl ColumnCompositor {
         // First check all popups (they're on top of windows)
         // We need to check popups for ALL external windows, not just the one under the point
         for (idx, node) in self.layout_nodes.iter().enumerate() {
-            if let crate::state::ColumnCell::External(entry) = &node.cell {
+            if let crate::state::StackWindow::External(entry) = &node.cell {
                 // Calculate window position
                 let output_height = self.output_size.h as f64;
                 let mut content_y = -self.scroll_offset;
@@ -1013,14 +1013,14 @@ impl ColumnCompositor {
         // No popup hit, check main window
         let index = self.window_at(point)?;
 
-        let crate::state::ColumnCell::External(entry) = &self.layout_nodes[index].cell else {
+        let crate::state::StackWindow::External(entry) = &self.layout_nodes[index].cell else {
             return None;
         };
 
         tracing::debug!(
             render_point = ?point,
             scroll_offset = self.scroll_offset,
-            cell_count = self.layout_nodes.len(),
+            window_count = self.layout_nodes.len(),
             hit_index = index,
             "surface_under: checking point"
         );
@@ -1036,7 +1036,7 @@ impl ColumnCompositor {
             content_y += node.height as f64;
         }
 
-        let cell_height = self.get_cell_height(index).unwrap_or(0) as f64;
+        let window_height = self.get_window_height(index).unwrap_or(0) as f64;
 
         // With Y-flip, the cell's position in render coordinates:
         // - render_y = output_height - content_y - height (bottom of cell in render)
@@ -1053,7 +1053,7 @@ impl ColumnCompositor {
         tracing::debug!(
             index,
             content_y,
-            cell_height,
+            window_height,
             render_end,
             relative_y,
             relative_point = ?(relative_point.x, relative_point.y),

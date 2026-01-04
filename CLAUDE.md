@@ -18,8 +18,8 @@ cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland
 cargo +nightly build -Zchecksum-freshness                    # Debug build (fast compile)
 cargo +nightly nextest run -Zchecksum-freshness              # Run tests with nextest
 cargo +nightly clippy -Zchecksum-freshness                   # Linting
-cargo +nightly run -Zchecksum-freshness --bin column-compositor  # Run compositor
-RUST_LOG=column_compositor=debug cargo +nightly run -Zchecksum-freshness    # With debug logging
+cargo +nightly run -Zchecksum-freshness --bin termstack-compositor  # Run compositor
+RUST_LOG=termstack_compositor=debug cargo +nightly run -Zchecksum-freshness    # With debug logging
 ```
 
 Note: Using -Zchecksum-freshness to avoid mtime race conditions with automated edits.
@@ -38,7 +38,7 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
 
 - **compositor**: Smithay-based Wayland compositor with winit backend
   - `main.rs`: Event loop, rendering, frame handling
-  - `state.rs`: `ColumnCompositor` state machine, `ColumnCell` enum (Terminal/External)
+  - `state.rs`: `TermStack` state machine, `StackWindow` enum (Terminal/External)
   - `input.rs`: Keyboard/pointer event handling, coordinate conversion
   - `coords.rs`: Type-safe coordinate wrappers (ScreenY, RenderY, ContentY)
   - `layout.rs`: Pure function layout calculation
@@ -46,10 +46,10 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
   - `terminal_manager/`: Manages multiple terminal instances
   - `cursor.rs`: Cursor rendering and management
   - `title_bar.rs`: Title bar rendering using fontdue
-  - `ipc.rs`: IPC protocol for column-term communication
+  - `ipc.rs`: IPC protocol for termstack CLI communication
   - `config.rs`: Configuration file handling
 
-- **column-term**: CLI tool for spawning terminals in the compositor
+- **termstack**: CLI tool for spawning terminals in the compositor
   - Shell integration for automatic command routing
   - IPC client for communicating with compositor
   - TUI app detection and automatic resizing
@@ -78,15 +78,15 @@ The compositor uses three coordinate systems that must not be mixed:
 
 The Y-flip formula: `render_y = screen_height - screen_y`
 
-Cell positioning with Y-flip: `render_y = screen_height - content_y - cell_height`
+Window positioning with Y-flip: `render_y = screen_height - content_y - window_height`
 
-### Cells Model
+### Windows Model
 
-Windows and terminals are unified in a single `cells: Vec<ColumnCell>` list:
-- `ColumnCell::Terminal(TerminalId)` - internal terminal
-- `ColumnCell::External(WindowEntry)` - Wayland client window
+Windows and terminals are unified in a single `layout_nodes: Vec<LayoutNode>` list:
+- `StackWindow::Terminal(TerminalId)` - internal terminal
+- `StackWindow::External(WindowEntry)` - Wayland client window
 
-Cell index 0 appears at TOP of screen (highest render Y).
+Window index 0 appears at TOP of screen (highest render Y).
 
 ### Height Consistency
 

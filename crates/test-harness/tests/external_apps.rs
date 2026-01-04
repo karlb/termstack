@@ -17,7 +17,7 @@ use std::{env, thread};
 /// Get the IPC socket path for the test compositor
 fn ipc_socket_path() -> PathBuf {
     let uid = rustix::process::getuid().as_raw();
-    PathBuf::from(format!("/run/user/{}/column-compositor.sock", uid))
+    PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
 }
 
 /// Wait for the compositor's IPC socket to become available
@@ -81,7 +81,7 @@ fn test_foot_connects() {
 
     // Build compositor
     let status = Command::new("cargo")
-        .args(["build", "--release", "-p", "compositor", "--bin", "column-compositor"])
+        .args(["build", "--release", "-p", "compositor", "--bin", "termstack-compositor"])
         .current_dir(&workspace_root)
         .status()
         .expect("Failed to run cargo build");
@@ -99,7 +99,7 @@ fn test_foot_connects() {
     let _ = std::fs::remove_file(&wayland_lock);
 
     // Start compositor
-    let compositor_bin = workspace_root.join("target/release/column-compositor");
+    let compositor_bin = workspace_root.join("target/release/termstack-compositor");
     let mut compositor = Command::new(&compositor_bin)
         .env("DISPLAY", &display)
         .env("RUST_LOG", "compositor=info")

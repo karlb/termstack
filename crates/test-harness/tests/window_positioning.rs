@@ -1959,7 +1959,7 @@ fn exact_bug_scenario_seq_then_gnome_maps() {
         scroll_offset: 480.0,  // Scrolled to show parent bottom
     };
 
-    // === User launches gnome-maps (via column-term from parent) ===
+    // === User launches gnome-maps (via termstack from parent) ===
     // add_window inserts at focused_index
     let insert_index = state.focused_index.unwrap_or(state.cells.len());  // 1
     state.cells.insert(insert_index, "gnome-maps");  // Insert at index 1

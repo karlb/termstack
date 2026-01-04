@@ -4,14 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-default-run = "column-compositor"
+default-run = "termstack-compositor"
 
 [lib]
 name = "compositor"
 path = "src/lib.rs"
 
 [[bin]]
-name = "column-compositor"
+name = "termstack-compositor"
 path = "src/main.rs"
 
 [dependencies]

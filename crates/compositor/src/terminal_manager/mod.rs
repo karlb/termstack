@@ -476,12 +476,12 @@ impl TerminalManager {
         Self::new_with_size(800, 600, Theme::default())
     }
 
-    /// Get the focused terminal mutably based on the compositor's focused cell
-    pub fn get_focused_mut(&mut self, focused_cell: Option<&crate::state::FocusedCell>) -> Option<&mut ManagedTerminal> {
-        use crate::state::FocusedCell;
-        let id = match focused_cell? {
-            FocusedCell::Terminal(id) => *id,
-            FocusedCell::External(_) => return None,
+    /// Get the focused terminal mutably based on the compositor's focused window
+    pub fn get_focused_mut(&mut self, focused_window: Option<&crate::state::FocusedWindow>) -> Option<&mut ManagedTerminal> {
+        use crate::state::FocusedWindow;
+        let id = match focused_window? {
+            FocusedWindow::Terminal(id) => *id,
+            FocusedWindow::External(_) => return None,
         };
         self.terminals.get_mut(&id)
     }

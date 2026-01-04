@@ -1,10 +1,10 @@
-# Column Compositor
+# TermStack
 
-A Wayland compositor with content-aware, dynamically-sizing terminal windows arranged in a scrollable vertical column.
+A Wayland compositor with content-aware, dynamically-sizing terminal windows arranged in a scrollable vertical stack.
 
 ## Overview
 
-Column Compositor is a specialized Wayland compositor designed for terminal-centric workflows. Unlike traditional tiling window managers, it arranges all windows in a single vertical column and dynamically resizes terminal windows based on their content.
+TermStack is a specialized Wayland compositor designed for terminal-centric workflows. Unlike traditional tiling window managers, it arranges all windows in a single vertical stack and dynamically resizes terminal windows based on their content.
 
 ### Key Features
 
@@ -16,10 +16,10 @@ Column Compositor is a specialized Wayland compositor designed for terminal-cent
 ## Architecture
 
 ```
-column-compositor/
+termstack/
 ├── crates/
 │   ├── compositor/     # Smithay-based Wayland compositor
-│   ├── column-term/    # CLI tool for spawning terminals
+│   ├── termstack/         # CLI tool for spawning terminals
 │   ├── terminal/       # Terminal emulation using alacritty_terminal
 │   └── test-harness/   # Testing infrastructure with tests/ subdirectory
 └── scripts/
@@ -71,19 +71,19 @@ cargo install --git https://github.com/Supreeeme/xwayland-satellite.git xwayland
 # Build all binaries
 cargo build --release
 
-# Or build specific binary
-cargo build --release --bin column-compositor
-cargo build --release --bin column-term
+# Or build specific binaries
+cargo build --release --bin termstack-compositor
+cargo build --release --bin termstack
 ```
 
 ## Running
 
 ```bash
 # Start the compositor (opens in a winit window for development)
-cargo run --release --bin column-compositor
+cargo run --release --bin termstack-compositor
 
 # Or run on real hardware (requires seat access)
-SMITHAY_BACKEND=udev cargo run --release --bin column-compositor
+SMITHAY_BACKEND=udev cargo run --release --bin termstack-compositor
 ```
 
 ## Key Bindings
@@ -117,7 +117,7 @@ The built-in integration enables automatic command routing:
 
 ### Configuration
 
-Optional: Create `~/.config/column-compositor/config.toml`:
+Optional: Create `~/.config/termstack/config.toml`:
 
 ```toml
 # Color theme
