@@ -512,7 +512,7 @@ impl ColumnCompositor {
 
         // Check if pointer is on a resize handle (for cursor change)
         // Do this before checking for active resize drag
-        let on_resize_handle = self.find_resize_handle_at(screen_y.value() as i32).is_some();
+        let on_resize_handle = self.find_resize_handle_at(screen_y.value() as i32, &self.cached_actual_heights).is_some();
         self.cursor_on_resize_handle = on_resize_handle || self.resizing.is_some();
 
         // Handle resize drag if active
@@ -668,7 +668,7 @@ impl ColumnCompositor {
 
             // Check for resize handle before normal cell hit detection
             if button == BTN_LEFT {
-                if let Some(cell_index) = self.find_resize_handle_at(screen_y.value() as i32) {
+                if let Some(cell_index) = self.find_resize_handle_at(screen_y.value() as i32, &self.cached_actual_heights) {
                     // Start resize drag
                     let start_height = self.get_cell_height(cell_index).unwrap_or(100);
                     tracing::info!(

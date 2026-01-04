@@ -173,6 +173,9 @@ pub struct ColumnCompositor {
     /// Index and new height of resized external window (for scroll adjustment)
     pub external_window_resized: Option<(usize, i32)>,
 
+    /// Cached actual heights including title bars (updated each frame for resize handle detection)
+    pub cached_actual_heights: Vec<i32>,
+
     /// Pending output terminal to link with the next external window
     /// Set when spawning a GUI app command, consumed by add_window()
     pub pending_window_output_terminal: Option<TerminalId>,
@@ -448,6 +451,7 @@ impl ColumnCompositor {
             new_external_window_index: None,
             new_window_needs_keyboard_focus: false,
             external_window_resized: None,
+            cached_actual_heights: Vec::new(),
             pending_window_output_terminal: None,
             pending_window_command: None,
             pending_gui_spawn_requests: Vec::new(),
@@ -1353,7 +1357,7 @@ impl ColumnCompositor {
     ///
     /// The resize handle is at the bottom edge of each cell (except the last).
     /// In screen coordinates (Y=0 at top): handle zone is [cell_bottom - HANDLE_SIZE/2, cell_bottom + HANDLE_SIZE/2]
-    pub fn find_resize_handle_at(&self, screen_y: i32) -> Option<usize> {
+    pub fn find_resize_handle_at(&self, screen_y: i32, actual_heights: &[i32]) -> Option<usize> {
         // Don't allow resizing the last cell (no border below it)
         if self.layout_nodes.len() < 2 {
             tracing::debug!(
@@ -1376,7 +1380,8 @@ impl ColumnCompositor {
         );
 
         for i in 0..self.layout_nodes.len() {
-            let height = self.layout_nodes[i].height;
+            // Use actual_heights which includes title bar height for terminals
+            let height = actual_heights.get(i).copied().unwrap_or(self.layout_nodes[i].height);
             let bottom_y = content_y + height;
 
             tracing::debug!(

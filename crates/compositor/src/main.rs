@@ -602,6 +602,9 @@ fn main() -> anyhow::Result<()> {
                 scale,
             );
 
+            // Cache actual heights for resize handle detection in input.rs
+            compositor.cached_actual_heights = actual_heights.clone();
+
             // Build heights for positioning:
             // - Terminals: use actual_heights (includes title bar height from collect_cell_data)
             // - External windows being resized: use drag target height
