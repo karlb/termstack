@@ -21,89 +21,97 @@ use crate::coords::RenderY;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TerminalId(pub u32);
 
-/// Terminal visibility state machine.
+/// Reason for terminal visibility state.
 ///
-/// Replaces the old `hidden` + `has_had_output` boolean pair with an explicit
-/// state machine. This makes the visibility rules clear and documents all
-/// valid transitions.
-///
-/// # State Transitions
-///
-/// ```text
-/// Shell: new() ──────────────────────────> AlwaysVisible
-///                                               │
-///                                        (gui foreground)
-///                                               │
-///                                               v
-///                                    HiddenForForegroundGui
-///                                               │
-///                                          (gui exit)
-///                                               │
-///                                               v
-///                                         AlwaysVisible
-///
-/// Command: new_with_command() ──────────> WaitingForOutput
-///                                               │
-///                     ┌─────────────────────────┼─────────────────────────┐
-///                     │                         │                         │
-///                 (output)               (alt-screen)                  (exit)
-///                     │                         │                         │
-///                     v                         v                         v
-///                 HasOutput               HasOutput                 ExitedEmpty
-/// ```
+/// Documents the lifecycle and purpose of a terminal without controlling visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VisibilityState {
-    /// Shell terminal - always visible from creation
-    AlwaysVisible,
+pub enum VisibilityReason {
+    /// Shell terminal - always visible
+    Shell,
 
     /// Command terminal waiting for first output before becoming visible
     WaitingForOutput,
 
-    /// Command terminal that has produced output - visible forever
+    /// Command terminal that has produced output
     HasOutput,
+
+    /// Launching terminal hidden while a foreground GUI app is running
+    ForegroundGui,
 
     /// Command terminal that exited without ever producing output
     ExitedEmpty,
+}
 
-    /// Launching terminal hidden while a foreground GUI app is running
-    HiddenForForegroundGui,
+/// Terminal visibility state.
+///
+/// Separates "what" (is visible?) from "why" (lifecycle reason).
+/// This is simpler than the previous 5-state enum approach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibilityState {
+    /// Whether the terminal should be rendered
+    pub visible: bool,
+
+    /// Why the terminal is visible or hidden
+    pub reason: VisibilityReason,
 }
 
 impl VisibilityState {
+    /// Create state for shell terminal (always visible)
+    pub fn new_shell() -> Self {
+        Self {
+            visible: true,
+            reason: VisibilityReason::Shell,
+        }
+    }
+
+    /// Create state for command terminal (hidden until output)
+    pub fn new_command() -> Self {
+        Self {
+            visible: false,
+            reason: VisibilityReason::WaitingForOutput,
+        }
+    }
+
     /// Returns whether the terminal should be rendered
     pub fn is_visible(&self) -> bool {
-        matches!(self, Self::AlwaysVisible | Self::HasOutput)
+        self.visible
     }
 
     /// Transition when first output arrives
-    pub fn on_output(self) -> Self {
-        match self {
-            Self::WaitingForOutput => Self::HasOutput,
-            other => other,
+    pub fn on_output(&mut self) {
+        if self.reason == VisibilityReason::WaitingForOutput {
+            self.visible = true;
+            self.reason = VisibilityReason::HasOutput;
         }
     }
 
     /// Transition when entering alternate screen (TUI apps like fzf)
-    pub fn on_alt_screen_enter(self) -> Self {
-        match self {
-            Self::WaitingForOutput => Self::HasOutput,
-            other => other,
+    pub fn on_alt_screen_enter(&mut self) {
+        if self.reason == VisibilityReason::WaitingForOutput {
+            self.visible = true;
+            self.reason = VisibilityReason::HasOutput;
         }
     }
 
     /// Transition when process exits
-    pub fn on_exit(self) -> Self {
-        match self {
-            Self::WaitingForOutput => Self::ExitedEmpty,
-            other => other,
+    pub fn on_exit(&mut self) {
+        if self.reason == VisibilityReason::WaitingForOutput {
+            self.reason = VisibilityReason::ExitedEmpty;
+            // visible already false
         }
     }
 
-    /// Transition when a foreground GUI app exits - restore visibility
-    pub fn on_gui_exit(self) -> Self {
-        match self {
-            Self::HiddenForForegroundGui => Self::AlwaysVisible,
-            other => other,
+    /// Hide for foreground GUI launch
+    pub fn hide_for_gui(&mut self) {
+        self.visible = false;
+        self.reason = VisibilityReason::ForegroundGui;
+    }
+
+    /// Restore visibility after GUI exits
+    pub fn on_gui_exit(&mut self) {
+        if self.reason == VisibilityReason::ForegroundGui {
+            self.visible = true;
+            self.reason = VisibilityReason::Shell;
         }
     }
 }
@@ -182,7 +190,7 @@ impl ManagedTerminal {
             dirty: true,
             keep_open: false,
             exited: false,
-            visibility: VisibilityState::AlwaysVisible,
+            visibility: VisibilityState::new_shell(),
             parent: None,
             prev_alt_screen: false,
             manually_sized: false,
@@ -221,7 +229,7 @@ impl ManagedTerminal {
             dirty: true,
             keep_open: true, // Command terminals stay open after exit
             exited: false,
-            visibility: VisibilityState::WaitingForOutput,
+            visibility: VisibilityState::new_command(),
             parent,
             prev_alt_screen: false,
             manually_sized: false,
@@ -236,7 +244,7 @@ impl ManagedTerminal {
     /// Returns whether this terminal has ever produced output.
     /// Once true, stays true forever.
     pub fn has_had_output(&self) -> bool {
-        matches!(self.visibility, VisibilityState::AlwaysVisible | VisibilityState::HasOutput)
+        matches!(self.visibility.reason, VisibilityReason::Shell | VisibilityReason::HasOutput)
     }
 
     /// Process PTY output and mark dirty if needed
@@ -248,8 +256,8 @@ impl ManagedTerminal {
         }
 
         // If terminal has output for the first time, transition visibility state
-        if self.visibility == VisibilityState::WaitingForOutput && self.terminal.has_meaningful_content() {
-            self.visibility = self.visibility.on_output();
+        if self.visibility.reason == VisibilityReason::WaitingForOutput && self.terminal.has_meaningful_content() {
+            self.visibility.on_output();
             tracing::info!(id = self.id.0, "terminal has meaningful output, now permanently visible");
         }
 
@@ -285,8 +293,8 @@ impl ManagedTerminal {
 
         if transitioned_to_alt {
             // Make visible when entering alternate screen (TUI apps like fzf)
-            if self.visibility == VisibilityState::WaitingForOutput {
-                self.visibility = self.visibility.on_alt_screen_enter();
+            if self.visibility.reason == VisibilityReason::WaitingForOutput {
+                self.visibility.on_alt_screen_enter();
                 tracing::info!(
                     id = self.id.0,
                     "terminal entered alternate screen, now visible"
@@ -782,7 +790,7 @@ impl TerminalManager {
                         // Transition visibility state on exit
                         // WaitingForOutput -> ExitedEmpty (hidden)
                         // HasOutput -> HasOutput (stays visible)
-                        if term.visibility == VisibilityState::WaitingForOutput {
+                        if term.visibility.reason == VisibilityReason::WaitingForOutput {
                             terminals_to_transition.push(id);
                             tracing::info!(id = id.0, "command terminal exited without output");
                         }
@@ -798,7 +806,7 @@ impl TerminalManager {
         // Transition visibility for exited terminals
         for id in terminals_to_transition {
             if let Some(term) = self.terminals.get_mut(&id) {
-                term.visibility = term.visibility.on_exit();
+                term.visibility.on_exit();
             }
         }
 

@@ -1123,8 +1123,6 @@ fn handle_gui_spawn_requests(
     compositor: &mut TermStack,
     terminal_manager: &mut TerminalManager,
 ) {
-    use crate::terminal_manager::VisibilityState;
-
     while let Some(request) = compositor.pending_gui_spawn_requests.pop() {
         // Get the launching terminal (currently focused)
         use crate::state::FocusedWindow;
@@ -1172,7 +1170,7 @@ fn handle_gui_spawn_requests(
                 if request.foreground {
                     if let Some(launcher_id) = launching_terminal {
                         if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
-                            launcher.visibility = VisibilityState::HiddenForForegroundGui;
+                            launcher.visibility.hide_for_gui();
                             tracing::info!(
                                 launcher_id = launcher_id.0,
                                 "hid launching terminal for foreground GUI"
@@ -1804,7 +1802,7 @@ fn handle_output_terminal_cleanup(
         // Check if this was a foreground GUI session and restore the launcher
         if let Some((launcher_id, _window_was_linked)) = compositor.foreground_gui_sessions.remove(&term_id) {
             if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
-                launcher.visibility = launcher.visibility.on_gui_exit();
+                launcher.visibility.on_gui_exit();
                 tracing::info!(
                     launcher_id = launcher_id.0,
                     output_terminal_id = term_id.0,
@@ -1861,7 +1859,7 @@ fn cleanup_and_sync_focus(
                 // No window was ever linked - this is the fallback case
                 // (e.g., GUI command failed before opening a window)
                 if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
-                    launcher.visibility = launcher.visibility.on_gui_exit();
+                    launcher.visibility.on_gui_exit();
                     tracing::info!(
                         launcher_id = launcher_id.0,
                         output_terminal_id = dead_id.0,
