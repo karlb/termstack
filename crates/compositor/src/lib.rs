@@ -15,6 +15,7 @@ pub mod state;
 pub mod terminal_manager;
 pub mod terminal_output;
 pub mod title_bar;
+pub mod window_height;
 pub mod window_lifecycle;
 pub mod xwayland_lifecycle;
 
