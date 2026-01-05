@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use compositor::coords::{RenderPoint, ScreenPoint};
+use compositor::coords::{content_to_render_y, RenderPoint, ScreenPoint};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -159,30 +159,13 @@ impl TestCompositor {
             let cell_height = height as f64;
 
             // Calculate render Y for this cell (same formula as state.rs window_at)
-            let render_y = screen_height - content_y - cell_height;
+            let render_y = content_to_render_y(content_y, cell_height, screen_height);
             let render_end = render_y + cell_height;
 
             if y >= render_y && y < render_end {
                 return Some(i);
             }
             content_y += cell_height;
-        }
-        None
-    }
-
-    /// Get window under a point using CACHED heights (OLD buggy behavior)
-    pub fn window_at_cached(&self, y: f64) -> Option<usize> {
-        let terminal_height = self.terminal_total_height as f64;
-        let mut window_y = terminal_height - self.scroll_offset;
-
-        for (i, &height) in self.cached_window_heights.iter().enumerate() {
-            let window_height = height as f64;
-            let window_screen_end = window_y + window_height;
-
-            if y >= window_y && y < window_screen_end {
-                return Some(i);
-            }
-            window_y += window_height;
         }
         None
     }
@@ -198,23 +181,9 @@ impl TestCompositor {
             .iter()
             .map(|&height| {
                 // Apply Y-flip: render_y = screen_height - content_y - height
-                let render_y = screen_height - content_y - height;
+                let render_y = content_to_render_y(content_y as f64, height as f64, screen_height as f64) as i32;
                 content_y += height;
                 (render_y, height)
-            })
-            .collect()
-    }
-
-    /// Get render positions using CACHED heights (OLD buggy behavior)
-    /// This shows where click detection THINKS windows are
-    pub fn render_positions_cached(&self) -> Vec<(i32, i32)> {
-        let mut window_y = -(self.scroll_offset as i32) + self.terminal_total_height;
-        self.cached_window_heights
-            .iter()
-            .map(|&height| {
-                let y = window_y;
-                window_y += height;
-                (y, height)
             })
             .collect()
     }
@@ -232,7 +201,7 @@ impl TestCompositor {
             .map(|&height| {
                 let cell_height = height as f64;
                 // Apply Y-flip: render_y = screen_height - content_y - height
-                let render_y = screen_height - content_y - cell_height;
+                let render_y = content_to_render_y(content_y, cell_height, screen_height);
                 let render_end = render_y + cell_height;
                 content_y += cell_height;
                 (render_y, render_end)

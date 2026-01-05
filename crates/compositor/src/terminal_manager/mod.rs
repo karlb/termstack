@@ -844,13 +844,13 @@ impl TerminalManager {
     pub fn terminal_at_y(&self, render_y: RenderY, scroll_offset: f64) -> Option<TerminalId> {
         // Convert render Y to content Y (accounting for scroll)
         // content_y = render_y + scroll_offset
-        let content_y = render_y.to_content(scroll_offset);
+        let content_y = render_y.value() + scroll_offset;
 
         let mut y = 0.0;
         for id in self.visible_ids() {
             if let Some(term) = self.terminals.get(&id) {
                 let height = term.height as f64;
-                if content_y.value() >= y && content_y.value() < y + height {
+                if content_y >= y && content_y < y + height {
                     return Some(id);
                 }
                 y += height;

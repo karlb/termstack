@@ -905,36 +905,6 @@ fn multiple_complex_windows_no_overlap() {
     assert_eq!(elements.len(), 6, "should have 2 + 3 + 1 = 6 elements");
 }
 
-/// Test: Window with element that extends beyond CACHED window bounds
-/// This shows how actual elements can be larger than what bbox() reports
-#[test]
-fn element_exceeding_cached_window_bounds_detected() {
-    let mut tc = TestCompositor::new_headless(1280, 720);
-
-    // Add window with element taller than cached height (200)
-    // but actual element is 300px
-    tc.add_window_with_elements(200, vec![
-        (0, 300),  // Element is 300px but cached height is only 200px
-    ]);
-
-    let elements = tc.rendered_elements();
-    let elem = &elements[0];
-
-    // Element height exceeds the CACHED height (not render height, which uses actual)
-    let cached_pos = tc.render_positions_cached();
-    let (_window_y, cached_height) = cached_pos[0];
-
-    assert!(elem.height > cached_height,
-        "element height {} should exceed cached window height {}",
-        elem.height, cached_height);
-
-    // But render_positions uses actual heights, so they match
-    let actual_pos = tc.render_positions();
-    let (_, actual_height) = actual_pos[0];
-    assert_eq!(elem.height, actual_height,
-        "element height should match actual render height");
-}
-
 /// Test simulating the exact scenario from the screenshot
 /// Terminal in middle, with gnome-maps elements appearing both above and below
 #[test]
