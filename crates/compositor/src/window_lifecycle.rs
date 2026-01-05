@@ -4,7 +4,7 @@
 //! output terminal management, and focus synchronization.
 
 use crate::state::{StackWindow, TermStack};
-use crate::terminal_manager::{TerminalId, TerminalManager};
+use crate::terminal_manager::TerminalManager;
 use crate::terminal_output::{find_terminal_window_index, is_window_bottom_visible};
 use crate::title_bar::TITLE_BAR_HEIGHT;
 

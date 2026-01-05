@@ -122,7 +122,7 @@ fn start_terminal_selection(
     managed.terminal.start_selection(col, row);
     managed.mark_dirty(); // Re-render to show selection highlight
 
-    Some((terminal_id, window_render_y as i32, window_height))
+    Some((terminal_id, window_render_y.value() as i32, window_height))
 }
 
 /// Update an ongoing selection during pointer drag
@@ -713,6 +713,7 @@ impl TermStack {
             // Convert render Y back to screen Y for resize handle detection
             let screen_y = RenderY::new(render_y).to_screen(self.output_size.h);
             let render_y_wrapped = RenderY::new(render_y);
+            let render_location: Point<f64, Logical> = Point::from((screen_x, render_y));
 
             // Check for resize handle before normal cell hit detection
             if button == BTN_LEFT {

@@ -32,13 +32,12 @@ use crate::config::Config;
 use crate::cursor::CursorManager;
 use crate::render::{
     CellRenderData, prerender_terminals, prerender_title_bars,
-    collect_window_data, build_render_data, log_frame_state,
-    heights_changed_significantly, render_terminal, render_external,
+    collect_window_data, build_render_data, log_frame_state, render_terminal, render_external,
     TitleBarCache,
 };
 use crate::state::{ClientState, StackWindow, TermStack};
 use crate::xwayland_lifecycle;
-use crate::terminal_manager::{TerminalId, TerminalManager};
+use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 
 /// Popup render data: (x, y, geo_offset_x, geo_offset_y, elements)
