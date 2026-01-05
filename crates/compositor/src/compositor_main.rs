@@ -599,9 +599,6 @@ pub fn run_compositor() -> anyhow::Result<()> {
                 scale,
             );
 
-            // Cache actual heights for resize handle detection in input.rs
-            compositor.cached_actual_heights = actual_heights.clone();
-
             // Build heights for positioning:
             // - Terminals being resized: use node.height for instant visual feedback
             // - Terminals NOT resizing: use actual_heights (includes title bar from collect_window_data)

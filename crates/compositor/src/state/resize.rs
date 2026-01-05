@@ -281,7 +281,7 @@ impl TermStack {
     }
 
     /// Find resize handle at screen Y coordinate, returns window index above the handle
-    pub fn find_resize_handle_at(&self, screen_y: i32, actual_heights: &[i32]) -> Option<usize> {
+    pub fn find_resize_handle_at(&self, screen_y: i32) -> Option<usize> {
         // Don't allow resizing the last cell (no border below it)
         if self.layout_nodes.len() < 2 {
             tracing::debug!(
@@ -304,8 +304,8 @@ impl TermStack {
         );
 
         for i in 0..self.layout_nodes.len() {
-            // Use actual_heights which includes title bar height for terminals
-            let height = actual_heights.get(i).copied().unwrap_or(self.layout_nodes[i].height);
+            // Use layout_nodes height which includes title bar for terminals
+            let height = self.layout_nodes[i].height;
             let bottom_y = content_y + height;
 
             tracing::debug!(

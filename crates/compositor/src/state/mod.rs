@@ -197,9 +197,6 @@ pub struct TermStack {
     /// Index and new height of resized external window (for scroll adjustment)
     pub external_window_resized: Option<(usize, i32)>,
 
-    /// Cached actual heights including title bars (updated each frame for resize handle detection)
-    pub cached_actual_heights: Vec<i32>,
-
     /// Pending output terminal to link with the next external window
     /// Set when spawning a GUI app command, consumed by add_window()
     pub pending_window_output_terminal: Option<TerminalId>,
@@ -475,7 +472,6 @@ impl TermStack {
             new_external_window_index: None,
             new_window_needs_keyboard_focus: false,
             external_window_resized: None,
-            cached_actual_heights: Vec::new(),
             pending_window_output_terminal: None,
             pending_window_command: None,
             pending_gui_spawn_requests: Vec::new(),
@@ -554,13 +550,8 @@ impl TermStack {
 
     /// Calculate maximum scroll offset based on content height
     fn max_scroll(&self) -> f64 {
-        // Use cached_actual_heights which includes title bars for terminals
-        let total_height: i32 = if !self.cached_actual_heights.is_empty() {
-            self.cached_actual_heights.iter().sum()
-        } else {
-            // Fallback to node.height if cache not populated yet (shouldn't happen in practice)
-            self.layout_nodes.iter().map(|node| node.height).sum()
-        };
+        // Use layout_nodes height which includes title bars for terminals
+        let total_height: i32 = self.layout_nodes.iter().map(|node| node.height).sum();
         (total_height as f64 - self.output_size.h as f64).max(0.0)
     }
 
