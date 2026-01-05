@@ -24,6 +24,32 @@ pub enum SizingAction {
 ///
 /// LEARNING: Explicit state prevents double-counting bugs from v1.
 /// Content rows only increments in Stable state.
+///
+/// # Design Note: Why Not Unified with WindowState?
+///
+/// This state machine enforces content correctness during terminal resize.
+/// External windows have a separate `WindowState` that tracks Wayland protocol.
+///
+/// The key difference:
+/// - TerminalSizingState: Correctness guarantee (prevents content double-counting)
+/// - WindowState: Protocol coordination (Wayland configure/commit handshake)
+///
+/// This state machine exists specifically to prevent this v1 bug:
+/// ```ignore
+/// // v1 BUG: content_rows incremented in multiple states
+/// on_new_line() { content_rows += 1 }  // Wrong!
+///
+/// // v2 FIX: state machine ensures single increment point
+/// on_new_line() {
+///     match state {
+///         Stable => content_rows += 1,  // ONLY here!
+///         GrowthRequested | Resizing => pending_scrollback += 1,
+///     }
+/// }
+/// ```
+///
+/// Unifying with WindowState would risk losing this correctness guarantee by
+/// abstracting away the "why" behind the state machine.
 #[derive(Debug, Clone)]
 pub enum TerminalSizingState {
     /// Terminal is stable at current size

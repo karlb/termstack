@@ -341,6 +341,23 @@ pub struct WindowEntry {
 pub const RESIZE_TIMEOUT_MS: u128 = 500;
 
 /// Explicit window state machine - prevents implicit state bugs from v1
+///
+/// # Design Note: Why Not Unified with TerminalSizingState?
+///
+/// This state machine tracks the Wayland resize protocol (configure/commit handshake).
+/// Terminals have a separate `TerminalSizingState` that tracks content correctness.
+///
+/// These serve fundamentally different purposes:
+/// - WindowState: External protocol coordination (Wayland client handshake)
+/// - TerminalSizingState: Internal correctness (prevent content double-counting)
+///
+/// We considered unifying them but concluded:
+/// - Different purposes: Protocol tracking vs correctness guarantee
+/// - Different data: Windows need serial/timeout; terminals need content_rows/scrollback
+/// - Forced unification would obscure their distinct purposes
+/// - Terminal state machine prevents v1 bugs; making it generic risks losing that
+///
+/// The asymmetry is honest - they solve different problems with different requirements.
 #[derive(Debug, Clone)]
 pub enum WindowState {
     /// Window is stable, accepting input
@@ -374,6 +391,23 @@ impl WindowState {
 }
 
 /// A cell in the column layout - either a terminal or external window
+///
+/// # Design Note: Intentional Asymmetry
+///
+/// This enum uses different storage patterns for terminals vs external windows:
+/// - Terminals: ID-based (data in TerminalManager)
+/// - External windows: Inline ownership (Box<WindowEntry>)
+///
+/// This asymmetry is intentional and reflects their different needs:
+/// - Terminals have complex state (PTY, parser, renderer) requiring centralized
+///   management with heavy cross-component mutation (input, output, resize)
+/// - External windows are simpler Wayland surfaces with minimal shared state
+///
+/// We considered unifying to WindowId + WindowManager for symmetry, but concluded:
+/// - Inline ownership for windows is actually cleaner (no lookups needed)
+/// - Asymmetry honestly reflects complexity differences
+/// - Unification would add indirection without clear benefit
+/// - The ID pattern for terminals is necessary; for windows it would be ceremony
 pub enum StackWindow {
     /// An internal terminal, referenced by ID (actual terminal data in TerminalManager)
     Terminal(TerminalId),
