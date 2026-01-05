@@ -122,7 +122,7 @@ fn auto_resize_alt_screen_terminals(
 }
 
 /// Find the cell index for a terminal ID.
-fn find_terminal_window_index(compositor: &TermStack, id: TerminalId) -> Option<usize> {
+pub fn find_terminal_window_index(compositor: &TermStack, id: TerminalId) -> Option<usize> {
     compositor.layout_nodes.iter().enumerate().find_map(|(i, node)| {
         if let StackWindow::Terminal(tid) = node.cell {
             if tid == id {
@@ -134,7 +134,7 @@ fn find_terminal_window_index(compositor: &TermStack, id: TerminalId) -> Option<
 }
 
 /// Check if a window's bottom edge is visible in the viewport.
-fn is_window_bottom_visible(compositor: &TermStack, window_idx: usize) -> bool {
+pub fn is_window_bottom_visible(compositor: &TermStack, window_idx: usize) -> bool {
     let cell_top_y: i32 = compositor
         .layout_nodes
         .iter()
