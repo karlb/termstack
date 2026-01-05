@@ -8,6 +8,7 @@ use smithay::utils::{Size, SERIAL_COUNTER};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use super::{StackWindow, TermStack, WindowState};
+use crate::coords::ScreenY;
 
 // Constants
 const RESIZE_TIMEOUT_MS: u128 = 5000;
@@ -281,11 +282,13 @@ impl TermStack {
     }
 
     /// Find resize handle at screen Y coordinate, returns window index above the handle
-    pub fn find_resize_handle_at(&self, screen_y: i32) -> Option<usize> {
+    pub fn find_resize_handle_at(&self, screen_y: ScreenY) -> Option<usize> {
+        let screen_y_value = screen_y.value() as i32;
+
         // Don't allow resizing the last cell (no border below it)
         if self.layout_nodes.len() < 2 {
             tracing::debug!(
-                screen_y,
+                screen_y = screen_y_value,
                 cells = self.layout_nodes.len(),
                 "find_resize_handle_at: too few cells"
             );
@@ -296,7 +299,7 @@ impl TermStack {
         let half_handle = RESIZE_HANDLE_SIZE / 2;
 
         tracing::debug!(
-            screen_y,
+            screen_y = screen_y_value,
             scroll_offset = self.scroll_offset,
             initial_content_y = content_y,
             half_handle,
@@ -315,20 +318,20 @@ impl TermStack {
                 bottom_y,
                 handle_min = bottom_y - half_handle,
                 handle_max = bottom_y + half_handle,
-                screen_y,
-                in_range = (screen_y >= bottom_y - half_handle && screen_y <= bottom_y + half_handle),
+                screen_y = screen_y_value,
+                in_range = (screen_y_value >= bottom_y - half_handle && screen_y_value <= bottom_y + half_handle),
                 "find_resize_handle_at: checking cell"
             );
 
             // Check if screen_y is in the handle zone around this cell's bottom edge
             // But not for the last cell (nothing below to resize into)
             if i < self.layout_nodes.len() - 1
-                && screen_y >= bottom_y - half_handle
-                && screen_y <= bottom_y + half_handle
+                && screen_y_value >= bottom_y - half_handle
+                && screen_y_value <= bottom_y + half_handle
             {
                 tracing::info!(
                     i,
-                    screen_y,
+                    screen_y = screen_y_value,
                     bottom_y,
                     "RESIZE HANDLE FOUND at cell index"
                 );
@@ -338,7 +341,7 @@ impl TermStack {
             content_y = bottom_y;
         }
 
-        tracing::debug!(screen_y, "find_resize_handle_at: no handle found");
+        tracing::debug!(screen_y = screen_y_value, "find_resize_handle_at: no handle found");
         None
     }
 }

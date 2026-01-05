@@ -56,7 +56,7 @@ impl TermStack {
     ///
     /// Filters window_at() results to only return external windows, not terminals.
     pub fn external_window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
-        self.window_at(point).filter(|&i| {
+        self.window_at(crate::coords::RenderY::new(point.y)).filter(|&i| {
             matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, StackWindow::External(_)))
         })
     }

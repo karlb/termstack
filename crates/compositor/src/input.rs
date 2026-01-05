@@ -111,7 +111,7 @@ fn start_terminal_selection(
     let (col, row) = render_to_grid_coords(
         render_x,
         render_y,
-        window_render_y,
+        window_render_y.value(),
         window_height as f64,
         char_width,
         char_height,
@@ -533,7 +533,7 @@ impl TermStack {
 
         // Check if pointer is on a resize handle (for cursor change)
         // Do this before checking for active resize drag
-        let on_resize_handle = self.find_resize_handle_at(screen_y.value() as i32).is_some();
+        let on_resize_handle = self.find_resize_handle_at(screen_y).is_some();
         self.cursor_on_resize_handle = on_resize_handle || self.resizing.is_some();
 
         // Handle resize drag if active
@@ -712,11 +712,11 @@ impl TermStack {
 
             // Convert render Y back to screen Y for resize handle detection
             let screen_y = RenderY::new(render_y).to_screen(self.output_size.h);
-            let render_location: Point<f64, Logical> = Point::from((screen_x, render_y));
+            let render_y_wrapped = RenderY::new(render_y);
 
             // Check for resize handle before normal cell hit detection
             if button == BTN_LEFT {
-                if let Some(window_index) = self.find_resize_handle_at(screen_y.value() as i32) {
+                if let Some(window_index) = self.find_resize_handle_at(screen_y) {
                     // Start resize drag
                     let raw_height = self.get_window_height(window_index).unwrap_or(100);
 
@@ -777,7 +777,7 @@ impl TermStack {
                 }
             }
 
-            if let Some(index) = self.window_at(render_location) {
+            if let Some(index) = self.window_at(render_y_wrapped) {
                 // Clicked on a cell - focus it
                 self.set_focus_by_index(index);
 
@@ -972,7 +972,7 @@ impl TermStack {
                 // Scroll the terminal under the pointer, not the focused one
                 if let Some(terminals) = terminals {
                     // Find which cell is under the pointer
-                    if let Some(window_idx) = self.window_at(self.pointer_position) {
+                    if let Some(window_idx) = self.window_at(RenderY::new(self.pointer_position.y)) {
                         if let Some(StackWindow::Terminal(term_id)) = self.layout_nodes.get(window_idx).map(|n| &n.cell) {
                             if let Some(term) = terminals.get_mut(*term_id) {
                                 // Convert scroll amount to lines
@@ -1093,7 +1093,7 @@ impl TermStack {
         }
 
         // No popup hit, check main window
-        let index = self.window_at(point)?;
+        let index = self.window_at(RenderY::new(point.y))?;
 
         let crate::state::StackWindow::External(entry) = &self.layout_nodes[index].cell else {
             return None;

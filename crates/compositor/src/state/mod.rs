@@ -681,7 +681,8 @@ impl TermStack {
     ///
     /// This uses our own coordinate calculation (not Smithay's Space.element_under)
     /// to ensure consistent behavior with Y-flip coordinates.
-    pub fn window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
+    pub fn window_at(&self, render_y: crate::coords::RenderY) -> Option<usize> {
+        let render_y_value = render_y.value();
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
@@ -689,14 +690,14 @@ impl TermStack {
             let window_height = self.layout_nodes[i].height as f64;
 
             // Calculate render Y for this cell (same formula as main.rs rendering)
-            let render_y = crate::coords::content_to_render_y(content_y, window_height, screen_height);
-            let render_end = render_y + window_height;
+            let cell_render_y = crate::coords::content_to_render_y(content_y, window_height, screen_height);
+            let render_end = cell_render_y + window_height;
 
-            if point.y >= render_y && point.y < render_end {
+            if render_y_value >= cell_render_y && render_y_value < render_end {
                 tracing::debug!(
                     index = i,
-                    point = ?(point.x, point.y),
-                    render_y,
+                    render_y = render_y_value,
+                    cell_render_y,
                     render_end,
                     content_y,
                     "window_at: hit"
@@ -710,14 +711,14 @@ impl TermStack {
 
     /// Check if a point is on a terminal cell
     pub fn is_on_terminal(&self, point: Point<f64, smithay::utils::Logical>) -> bool {
-        self.window_at(point)
+        self.window_at(crate::coords::RenderY::new(point.y))
             .map(|i| matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, StackWindow::Terminal(_))))
             .unwrap_or(false)
     }
 
     /// Get the render position (render_y, height) for a cell at the given index
     /// Returns (render_y, height) where render_y is in render coordinates (Y=0 at bottom)
-    pub fn get_window_render_position(&self, index: usize) -> (f64, i32) {
+    pub fn get_window_render_position(&self, index: usize) -> (crate::coords::RenderY, i32) {
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
@@ -725,13 +726,13 @@ impl TermStack {
             if i == index {
                 let height = self.layout_nodes[i].height;
                 let render_y = crate::coords::content_to_render_y(content_y, height as f64, screen_height);
-                return (render_y, height);
+                return (crate::coords::RenderY::new(render_y), height);
             }
             content_y += self.layout_nodes[i].height as f64;
         }
 
         // Fallback if index out of bounds
-        (0.0, 0)
+        (crate::coords::RenderY::new(0.0), 0)
     }
 
     /// Get the screen bounds (top_y, bottom_y) for a cell at the given index
