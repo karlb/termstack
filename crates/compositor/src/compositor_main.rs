@@ -442,10 +442,18 @@ pub fn run_compositor() -> anyhow::Result<()> {
         handle_terminal_spawn(&mut compositor, &mut terminal_manager);
 
         // Handle command spawn requests from IPC (termstack)
-        handle_ipc_spawn_requests(&mut compositor, &mut terminal_manager);
+        crate::spawn_handler::handle_ipc_spawn_requests(
+            &mut compositor,
+            &mut terminal_manager,
+            calculate_window_heights,
+        );
 
         // Handle GUI spawn requests from IPC (termstack gui)
-        handle_gui_spawn_requests(&mut compositor, &mut terminal_manager);
+        crate::spawn_handler::handle_gui_spawn_requests(
+            &mut compositor,
+            &mut terminal_manager,
+            calculate_window_heights,
+        );
 
         // Handle resize requests from IPC (termstack --resize)
         handle_ipc_resize_request(&mut compositor, &mut terminal_manager);
@@ -997,145 +1005,6 @@ fn handle_terminal_spawn(
     }
 }
 
-/// Handle IPC spawn requests from termstack.
-///
-/// Processes pending spawn requests, sets up environment, and spawns
-/// command terminals with proper parent hiding.
-fn handle_ipc_spawn_requests(
-    compositor: &mut TermStack,
-    terminal_manager: &mut TerminalManager,
-) {
-    while let Some(request) = compositor.pending_spawn_requests.pop() {
-        if let Some(id) = process_spawn_request(compositor, terminal_manager, request) {
-            // Focus the new command terminal
-            for (i, node) in compositor.layout_nodes.iter().enumerate() {
-                if let StackWindow::Terminal(tid) = node.cell {
-                    if tid == id {
-                        compositor.set_focus_by_index(i);
-                        tracing::info!(id = id.0, index = i, "focused new command terminal");
-                        break;
-                    }
-                }
-            }
-
-            // Update cell heights
-            let new_heights = calculate_window_heights(compositor, terminal_manager);
-            compositor.update_layout_heights(new_heights);
-
-            // Scroll to show the new terminal
-            if let Some(focused_idx) = compositor.focused_index() {
-                if let Some(new_scroll) = compositor.scroll_to_show_window_bottom(focused_idx) {
-                    tracing::info!(
-                        id = id.0,
-                        focused_idx,
-                        new_scroll,
-                        "spawned command terminal, scrolling to show"
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Handle GUI spawn requests from IPC (termstack gui).
-///
-/// Spawns GUI app commands with foreground/background mode support.
-/// In foreground mode, the launching terminal is hidden until the GUI exits.
-fn handle_gui_spawn_requests(
-    compositor: &mut TermStack,
-    terminal_manager: &mut TerminalManager,
-) {
-    while let Some(request) = compositor.pending_gui_spawn_requests.pop() {
-        // Get the launching terminal (currently focused)
-        use crate::state::FocusedWindow;
-        let launching_terminal = compositor.focused_window.as_ref().and_then(|cell| match cell {
-            FocusedWindow::Terminal(id) => Some(*id),
-            FocusedWindow::External(_) => None,
-        });
-
-        // Extract foreground flag (guaranteed to be Some for GUI spawns)
-        let foreground = request.foreground.unwrap_or(true);
-
-        // Modify environment for GUI apps
-        let mut env = request.env.clone();
-        if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
-            env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
-        }
-        if let Ok(gdk_backend) = std::env::var("GDK_BACKEND") {
-            env.insert("GDK_BACKEND".to_string(), gdk_backend);
-        }
-        if let Ok(qt_platform) = std::env::var("QT_QPA_PLATFORM") {
-            env.insert("QT_QPA_PLATFORM".to_string(), qt_platform);
-        }
-        if let Ok(shell) = std::env::var("SHELL") {
-            env.insert("SHELL".to_string(), shell);
-        }
-
-        // Create output terminal with WaitingForOutput visibility
-        let parent = launching_terminal;
-        match terminal_manager.spawn_command(&request.command, &request.cwd, &env, parent) {
-            Ok(output_terminal_id) => {
-                tracing::info!(
-                    output_terminal_id = output_terminal_id.0,
-                    launching_terminal = ?launching_terminal,
-                    foreground,
-                    command = %request.command,
-                    "spawned GUI command terminal"
-                );
-
-                // Add output terminal to layout
-                compositor.add_terminal(output_terminal_id);
-
-                // Set up for window linking
-                compositor.pending_window_output_terminal = Some(output_terminal_id);
-                compositor.pending_window_command = Some(request.command.clone());
-                compositor.pending_gui_foreground = foreground;
-
-                // If foreground mode, hide launching terminal and track the session
-                if foreground {
-                    if let Some(launcher_id) = launching_terminal {
-                        if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
-                            launcher.visibility.hide_for_gui();
-                            tracing::info!(
-                                launcher_id = launcher_id.0,
-                                "hid launching terminal for foreground GUI"
-                            );
-                        }
-
-                        // Track the session: output_terminal_id -> (launcher_id, window_was_linked=false)
-                        compositor.foreground_gui_sessions.insert(
-                            output_terminal_id,
-                            (launcher_id, false),
-                        );
-                    }
-                }
-
-                // Update cell heights
-                let new_heights = calculate_window_heights(compositor, terminal_manager);
-                compositor.update_layout_heights(new_heights);
-
-                // spawn_command auto-focuses the new terminal, but for GUI spawns we want different behavior:
-                // - Foreground mode: GUI window will get focus when created (in add_window)
-                // - Background mode: focus stays on launcher terminal
-                //
-                // In both cases, restore focus to the launcher terminal now.
-                // For foreground mode, add_window will focus the GUI window when it's created.
-                if let Some(launcher_id) = launching_terminal {
-                    use crate::state::FocusedWindow;
-                    compositor.focused_window = Some(FocusedWindow::Terminal(launcher_id));
-                    tracing::debug!(
-                        launcher_id = launcher_id.0,
-                        "restored terminal focus to launcher after gui_spawn"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::error!(command = %request.command, error = ?e, "failed to spawn GUI command");
-            }
-        }
-    }
-}
-
 /// Handle key repeat for terminal input.
 ///
 /// When a key is held down, this sends repeat events at regular intervals.
@@ -1341,106 +1210,6 @@ fn check_and_handle_height_changes(
                     "scroll adjusted due to actual height change (bottom was visible)"
                 );
             }
-        }
-    }
-}
-
-/// Process a single spawn request, returning the new terminal ID if successful.
-fn process_spawn_request(
-    compositor: &mut TermStack,
-    terminal_manager: &mut TerminalManager,
-    request: crate::ipc::SpawnRequest,
-) -> Option<TerminalId> {
-    // Decide what command to run
-    // Title bar now shows the command, so no need for echo prefix
-    let command = if request.command.is_empty() {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-    } else {
-        request.command.clone()
-    };
-
-    // Modify environment
-    let mut env = request.env.clone();
-    env.insert("GIT_PAGER".to_string(), "cat".to_string());
-    env.insert("PAGER".to_string(), "cat".to_string());
-    env.insert("LESS".to_string(), "-FRX".to_string());
-    if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
-        env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
-    }
-    // Force GTK/Qt apps to use Wayland backend
-    if let Ok(gdk_backend) = std::env::var("GDK_BACKEND") {
-        env.insert("GDK_BACKEND".to_string(), gdk_backend);
-    }
-    if let Ok(qt_platform) = std::env::var("QT_QPA_PLATFORM") {
-        env.insert("QT_QPA_PLATFORM".to_string(), qt_platform);
-    }
-    // Pass SHELL so spawn_command uses the correct shell for syntax
-    // This ensures fish loops work when user's shell is fish
-    if let Ok(shell) = std::env::var("SHELL") {
-        env.insert("SHELL".to_string(), shell);
-    }
-
-    // Add scripts directory to PATH so helper scripts (like 'gui') are available
-    // Scripts are extracted from embedded content at runtime
-    match get_or_create_scripts_dir() {
-        Ok(scripts_dir) => {
-            let scripts_dir_str = scripts_dir.display().to_string();
-            if let Some(current_path) = env.get("PATH") {
-                // Prepend scripts directory to existing PATH
-                env.insert("PATH".to_string(), format!("{}:{}", scripts_dir_str, current_path));
-            } else {
-                // No PATH set, create one with just scripts directory
-                env.insert("PATH".to_string(), scripts_dir_str);
-            }
-        }
-        Err(e) => {
-            // Log warning but don't fail spawn - terminal will work, just without helper scripts
-            tracing::warn!(?e, "failed to create scripts directory, helper scripts unavailable");
-        }
-    }
-
-    use crate::state::FocusedWindow;
-    let parent = compositor.focused_window.as_ref().and_then(|cell| match cell {
-        FocusedWindow::Terminal(id) => Some(*id),
-        FocusedWindow::External(_) => None,
-    });
-
-    // Reject spawns from alternate screen terminals (TUI apps)
-    if let Some(parent_id) = parent {
-        if let Some(parent_term) = terminal_manager.get(parent_id) {
-            if parent_term.terminal.is_alternate_screen() {
-                tracing::info!(command = %command, "rejecting spawn from alternate screen terminal");
-                return None;
-            }
-        }
-    }
-
-    tracing::info!(
-        command = %command,
-        ?parent,
-        "spawning command terminal"
-    );
-
-    match terminal_manager.spawn_command(&command, &request.cwd, &env, parent) {
-        Ok(id) => {
-            if let Some(term) = terminal_manager.get(id) {
-                let (cols, pty_rows) = term.terminal.dimensions();
-                tracing::info!(id = id.0, cols, pty_rows, height = term.height, "terminal created");
-            }
-            compositor.add_terminal(id);
-
-            // Set this terminal as the pending output terminal for GUI windows.
-            // If the command opens a GUI window, that window will be linked to this terminal.
-            // The terminal will be hidden until it has output, then promoted to a standalone cell.
-            compositor.pending_window_output_terminal = Some(id);
-            compositor.pending_window_command = Some(request.command.clone());
-            tracing::info!(id = id.0, command = %request.command, "set as pending output terminal for GUI windows");
-
-            Some(id)
-        }
-        Err(e) => {
-            tracing::error!(error = ?e, "failed to spawn command terminal");
-            None
         }
     }
 }
@@ -1846,50 +1615,3 @@ fn cleanup_and_sync_focus(
     false
 }
 
-/// Get or create the termstack scripts directory and extract embedded scripts
-///
-/// Scripts are extracted from `scripts/bin/*` (embedded at compile time) and written
-/// to a runtime directory. This directory should be added to PATH for spawned terminals.
-///
-/// Returns the PathBuf to the scripts directory that should be added to PATH.
-fn get_or_create_scripts_dir() -> Result<std::path::PathBuf, std::io::Error> {
-    use std::os::unix::fs::PermissionsExt;
-
-    // Determine runtime directory: Try XDG_RUNTIME_DIR first, fall back to /tmp
-    let base_dir = if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
-        std::path::PathBuf::from(xdg)
-    } else {
-        // Fall back to /tmp with user ID for isolation
-        let uid = rustix::process::getuid().as_raw();
-        std::path::PathBuf::from(format!("/tmp/termstack-{}", uid))
-    };
-
-    let scripts_dir = base_dir.join("termstack").join("bin");
-
-    // Create directory if it doesn't exist
-    std::fs::create_dir_all(&scripts_dir)?;
-
-    // Extract and write all scripts from scripts/bin/*
-    // Currently we have: gui
-    // Future scripts can be added here as additional include_str! calls
-    let scripts = vec![
-        ("gui", include_str!("../../../scripts/bin/gui")),
-    ];
-
-    for (name, content) in scripts {
-        let script_path = scripts_dir.join(name);
-
-        // Always write to ensure script is up-to-date with current version
-        std::fs::write(&script_path, content)?;
-
-        // Make executable (0o755 = rwxr-xr-x)
-        let mut perms = std::fs::metadata(&script_path)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script_path, perms)?;
-
-        tracing::debug!(path = ?script_path, "extracted script");
-    }
-
-    tracing::debug!(scripts_dir = ?scripts_dir, "scripts directory initialized");
-    Ok(scripts_dir)
-}

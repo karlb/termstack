@@ -130,7 +130,7 @@ impl Config {
     }
 
     /// Check if a command is a shell builtin that should run in current shell
-    fn is_shell_command(&self, command: &str, shell: &dyn Shell) -> bool {
+    pub fn is_shell_command(&self, command: &str, shell: &dyn Shell) -> bool {
         shell.is_builtin(command, &self.shell_commands)
     }
 }

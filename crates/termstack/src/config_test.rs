@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{shell::{Shell, FishShell, detect_shell}, Config};
+    use crate::{shell::{Shell, FishShell, detect_shell}, cli::Config};
 
     #[test]
     fn shell_commands_from_config() {
