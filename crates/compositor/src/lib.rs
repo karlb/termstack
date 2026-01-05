@@ -13,6 +13,7 @@ pub mod render;
 pub mod spawn_handler;
 pub mod state;
 pub mod terminal_manager;
+pub mod terminal_output;
 pub mod title_bar;
 pub mod xwayland_lifecycle;
 
