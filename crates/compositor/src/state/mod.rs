@@ -67,7 +67,7 @@ use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
 use std::collections::HashMap;
-use crate::ipc::{GuiSpawnRequest, ResizeMode, SpawnRequest};
+use crate::ipc::{ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
@@ -181,8 +181,11 @@ pub struct TermStack {
     /// Scroll request (in pixels, positive = down)
     pub scroll_requested: f64,
 
-    /// Pending spawn requests from IPC (termstack commands)
+    /// Pending terminal spawn requests from IPC (termstack commands with foreground=None)
     pub pending_spawn_requests: Vec<SpawnRequest>,
+
+    /// Pending GUI spawn requests from IPC (termstack commands with foreground=Some(_))
+    pub pending_gui_spawn_requests: Vec<SpawnRequest>,
 
     /// Pending resize request from IPC (termstack resize)
     /// Includes the stream for sending acknowledgement after resize completes
@@ -204,9 +207,6 @@ pub struct TermStack {
     /// Pending command string for the next external window's title bar
     /// Set when spawning a GUI app command, consumed by add_window()
     pub pending_window_command: Option<String>,
-
-    /// Pending GUI spawn requests from IPC
-    pub pending_gui_spawn_requests: Vec<GuiSpawnRequest>,
 
     /// Whether the next window should be treated as a foreground GUI
     /// Set when processing a gui_spawn request, consumed by add_window()

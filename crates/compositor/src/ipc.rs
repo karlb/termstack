@@ -46,28 +46,18 @@ pub enum ResizeMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum IpcMessage {
-    /// Spawn a new terminal with a specific command
+    /// Spawn a new terminal or GUI window
     #[serde(rename = "spawn")]
     Spawn {
-        /// Command to execute (passed to /bin/sh -c)
+        /// Command to execute
         command: String,
         /// Working directory for the command
         cwd: String,
         /// Environment variables to inherit
         env: HashMap<String, String>,
-    },
-    /// Spawn a GUI app with foreground/background mode
-    #[serde(rename = "gui_spawn")]
-    GuiSpawn {
-        /// Command to execute (the GUI app)
-        command: String,
-        /// Working directory for the command
-        cwd: String,
-        /// Environment variables to inherit
-        env: HashMap<String, String>,
-        /// True = foreground mode (hide launching terminal)
-        /// False = background mode (keep launching terminal visible)
-        foreground: bool,
+        /// GUI mode: None = terminal spawn, Some(true) = foreground GUI, Some(false) = background GUI
+        #[serde(skip_serializing_if = "Option::is_none")]
+        foreground: Option<bool>,
     },
     /// Resize the focused terminal
     #[serde(rename = "resize")]
@@ -80,10 +70,8 @@ pub enum IpcMessage {
 /// Request ready for processing by the compositor
 #[derive(Debug)]
 pub enum IpcRequest {
-    /// Spawn a new terminal
+    /// Spawn a new terminal or GUI window
     Spawn(SpawnRequest),
-    /// Spawn a GUI app
-    GuiSpawn(GuiSpawnRequest),
     /// Resize the focused terminal
     Resize(ResizeMode),
 }
@@ -97,20 +85,8 @@ pub struct SpawnRequest {
     pub cwd: PathBuf,
     /// Environment variables
     pub env: HashMap<String, String>,
-}
-
-/// GUI spawn request ready for processing by the compositor
-#[derive(Debug)]
-pub struct GuiSpawnRequest {
-    /// Command to execute (the GUI app)
-    pub command: String,
-    /// Working directory
-    pub cwd: PathBuf,
-    /// Environment variables
-    pub env: HashMap<String, String>,
-    /// True = foreground mode (hide launching terminal)
-    /// False = background mode (keep launching terminal visible)
-    pub foreground: bool,
+    /// GUI mode: None = terminal spawn, Some(true) = foreground GUI, Some(false) = background GUI
+    pub foreground: Option<bool>,
 }
 
 /// Read a request from a Unix stream
@@ -161,17 +137,14 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
     let stream = reader.into_inner();
 
     match message {
-        IpcMessage::Spawn { command, cwd, env } => {
-            tracing::info!(command = %command, cwd = %cwd, "spawn request received");
+        IpcMessage::Spawn { command, cwd, env, foreground } => {
+            let spawn_type = match foreground {
+                None => "terminal",
+                Some(true) => "gui (foreground)",
+                Some(false) => "gui (background)",
+            };
+            tracing::info!(command = %command, cwd = %cwd, spawn_type, "spawn request received");
             Ok((IpcRequest::Spawn(SpawnRequest {
-                command,
-                cwd: PathBuf::from(cwd),
-                env,
-            }), stream))
-        }
-        IpcMessage::GuiSpawn { command, cwd, env, foreground } => {
-            tracing::info!(command = %command, cwd = %cwd, foreground, "gui spawn request received");
-            Ok((IpcRequest::GuiSpawn(GuiSpawnRequest {
                 command,
                 cwd: PathBuf::from(cwd),
                 env,

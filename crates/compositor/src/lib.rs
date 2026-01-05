@@ -13,6 +13,7 @@ pub mod render;
 pub mod state;
 pub mod terminal_manager;
 pub mod title_bar;
+pub mod xwayland_lifecycle;
 
 // Re-export main compositor functions for unified binary
 mod compositor_main;

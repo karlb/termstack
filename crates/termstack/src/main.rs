@@ -26,6 +26,7 @@
 use std::env;
 
 mod cli;
+mod shell;
 
 #[cfg(test)]
 mod config_test;

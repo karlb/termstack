@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{is_syntax_complete, normalize_fish_command, Config};
+    use crate::{shell::{Shell, FishShell, detect_shell}, Config};
 
     #[test]
     fn shell_commands_from_config() {
@@ -11,11 +11,12 @@ mod tests {
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
+        let shell = detect_shell();
 
-        assert!(config.is_shell_command("cd"), "cd should be detected as shell command");
-        assert!(config.is_shell_command("export"), "export should be detected as shell command");
-        assert!(config.is_shell_command("source"), "source should be detected as shell command");
-        assert!(!config.is_shell_command("ls"), "ls should NOT be detected as shell command");
+        assert!(config.is_shell_command("cd", shell.as_ref()), "cd should be detected as shell command");
+        assert!(config.is_shell_command("export", shell.as_ref()), "export should be detected as shell command");
+        assert!(config.is_shell_command("source", shell.as_ref()), "source should be detected as shell command");
+        assert!(!config.is_shell_command("ls", shell.as_ref()), "ls should NOT be detected as shell command");
     }
 
     #[test]
@@ -25,20 +26,22 @@ mod tests {
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
+        let shell = detect_shell();
 
-        assert!(config.is_shell_command("cd /tmp"), "cd with args should be detected");
-        assert!(config.is_shell_command("export FOO=bar"), "export with args should be detected");
+        assert!(config.is_shell_command("cd /tmp", shell.as_ref()), "cd with args should be detected");
+        assert!(config.is_shell_command("export FOO=bar", shell.as_ref()), "export with args should be detected");
     }
 
     #[test]
     fn default_shell_commands() {
         let config = Config::default();
+        let shell = detect_shell();
 
         // Default shell commands should be populated
-        assert!(config.is_shell_command("cd"), "cd should be in default shell commands");
-        assert!(config.is_shell_command("export"), "export should be in default shell commands");
-        assert!(config.is_shell_command("source"), "source should be in default shell commands");
-        assert!(config.is_shell_command("alias"), "alias should be in default shell commands");
+        assert!(config.is_shell_command("cd", shell.as_ref()), "cd should be in default shell commands");
+        assert!(config.is_shell_command("export", shell.as_ref()), "export should be in default shell commands");
+        assert!(config.is_shell_command("source", shell.as_ref()), "source should be in default shell commands");
+        assert!(config.is_shell_command("alias", shell.as_ref()), "alias should be in default shell commands");
     }
 
     #[test]
@@ -142,34 +145,37 @@ mod tests {
     #[test]
     fn syntax_check_complete_commands() {
         // Simple complete commands should be valid in any shell
-        assert!(is_syntax_complete("echo hello"), "simple echo should be complete");
-        assert!(is_syntax_complete("ls -la"), "ls with args should be complete");
-        assert!(is_syntax_complete("cat /etc/passwd"), "cat should be complete");
+        let shell = detect_shell();
+        assert!(shell.is_syntax_complete("echo hello"), "simple echo should be complete");
+        assert!(shell.is_syntax_complete("ls -la"), "ls with args should be complete");
+        assert!(shell.is_syntax_complete("cat /etc/passwd"), "cat should be complete");
     }
 
     #[test]
     fn syntax_check_incomplete_commands() {
         // These are incomplete in fish
         // Skip test if not using fish
-        let shell = std::env::var("SHELL").unwrap_or_default();
-        if !shell.ends_with("fish") {
+        let shell_name = std::env::var("SHELL").unwrap_or_default();
+        if !shell_name.ends_with("fish") {
             eprintln!("Skipping test: not using fish shell");
             return;
         }
 
+        let shell = detect_shell();
         // (unterminated string)
-        assert!(!is_syntax_complete("echo 'hello"), "unterminated single quote");
-        assert!(!is_syntax_complete("echo \"hello"), "unterminated double quote");
+        assert!(!shell.is_syntax_complete("echo 'hello"), "unterminated single quote");
+        assert!(!shell.is_syntax_complete("echo \"hello"), "unterminated double quote");
     }
 
     #[test]
     fn syntax_check_shell_specific_incomplete() {
         // Test fish-specific incomplete syntax
-        let shell = std::env::var("SHELL").unwrap_or_default();
+        let shell_name = std::env::var("SHELL").unwrap_or_default();
 
-        if shell.ends_with("fish") {
-            assert!(!is_syntax_complete("begin"), "fish begin without end");
-            assert!(is_syntax_complete("begin; echo hi; end"), "fish complete begin/end");
+        if shell_name.ends_with("fish") {
+            let shell = detect_shell();
+            assert!(!shell.is_syntax_complete("begin"), "fish begin without end");
+            assert!(shell.is_syntax_complete("begin; echo hi; end"), "fish complete begin/end");
         }
     }
 
@@ -188,20 +194,21 @@ mod tests {
         }
 
         std::env::set_var("SHELL", "fish");
+        let shell = FishShell::new();
 
         // Single-line version (with semicolons)
         let singleline = "begin; echo a; echo b; end";
 
         // Multi-line version (with newlines) - normalize first
-        let multiline = normalize_fish_command("begin\n  echo a\n  echo b\nend");
+        let multiline = shell.normalize_command("begin\n  echo a\n  echo b\nend");
 
         // Space-separated version (what Fish's commandline returns) - normalize first
-        let space_separated = normalize_fish_command("begin echo a echo b end");
+        let space_separated = shell.normalize_command("begin echo a echo b end");
 
         // All three should be syntactically complete
-        let singleline_complete = is_syntax_complete(singleline);
-        let multiline_complete = is_syntax_complete(&multiline);
-        let space_separated_complete = is_syntax_complete(&space_separated);
+        let singleline_complete = shell.is_syntax_complete(singleline);
+        let multiline_complete = shell.is_syntax_complete(&multiline);
+        let space_separated_complete = shell.is_syntax_complete(&space_separated);
 
         assert_eq!(
             singleline_complete, multiline_complete,

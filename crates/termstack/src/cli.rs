@@ -65,6 +65,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use crate::shell::{detect_shell, Shell};
+
 /// Configuration for termstack
 #[derive(Debug, Deserialize)]
 pub(crate) struct Config {
@@ -127,21 +129,9 @@ impl Config {
             .join("config.toml")
     }
 
-    /// Extract the program name from a command (first word, without path)
-    fn program_name(command: &str) -> &str {
-        command
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .rsplit('/')
-            .next()
-            .unwrap_or("")
-    }
-
     /// Check if a command is a shell builtin that should run in current shell
-    fn is_shell_command(&self, command: &str) -> bool {
-        let program = Self::program_name(command);
-        self.shell_commands.iter().any(|cmd| cmd == program)
+    fn is_shell_command(&self, command: &str, shell: &dyn Shell) -> bool {
+        shell.is_builtin(command, &self.shell_commands)
     }
 }
 
@@ -158,100 +148,6 @@ fn debug_enabled() -> bool {
     use std::sync::OnceLock;
     static DEBUG: OnceLock<bool> = OnceLock::new();
     *DEBUG.get_or_init(|| env::var("DEBUG_TSTACK").is_ok())
-}
-
-/// Check if a command is syntactically complete for the current shell
-///
-/// Normalize Fish commands by converting space-separated blocks to semicolon-separated.
-/// Fish's `commandline` sometimes strips newlines from multi-line input, converting
-/// "begin\n  echo a\nend" to "begin echo a end". This breaks syntax checking since
-/// "begin echo a end" is invalid (Fish thinks "echo a end" is arguments to begin).
-/// We fix this by inserting semicolons after keywords.
-pub(crate) fn normalize_fish_command(command: &str) -> String {
-    // Keywords that start blocks and need semicolons after them
-    let block_keywords = [
-        "begin", "if", "while", "for", "function", "switch",
-    ];
-
-    // Keywords that end blocks and need semicolons before them
-    let end_keywords = [
-        "end", "else", "case",
-    ];
-
-    let mut result = String::new();
-    let mut words = command.split_whitespace().peekable();
-    let mut needs_semicolon_before = false;
-
-    while let Some(word) = words.next() {
-        // Add semicolon before end keywords (unless at start)
-        if !result.is_empty() && end_keywords.contains(&word) && needs_semicolon_before {
-            result.push_str("; ");
-            needs_semicolon_before = false;
-        } else if !result.is_empty() {
-            result.push(' ');
-        }
-
-        result.push_str(word);
-
-        // Add semicolon after block keywords (unless at end)
-        if block_keywords.contains(&word) && words.peek().is_some() {
-            result.push(';');
-            needs_semicolon_before = true;
-        } else if !end_keywords.contains(&word) {
-            needs_semicolon_before = true;
-        }
-    }
-
-    result
-}
-
-/// Uses fish's syntax check (-n flag) to determine if the command
-/// is complete. Returns false if incomplete (like `begin` without `end`)
-/// or if there's a syntax error.
-///
-/// NOTE: For Fish commands, pass the normalized version (with semicolons)
-/// not the space-separated version that Fish's commandline returns.
-pub(crate) fn is_syntax_complete(command: &str) -> bool {
-    use std::process::Command;
-
-    let shell = env::var("SHELL").unwrap_or_else(|_| "fish".to_string());
-    let shell_name = std::path::Path::new(&shell)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("fish");
-
-    let debug = debug_enabled();
-    if debug {
-        eprintln!("[termstack] syntax check: shell={}, shell_name={}", shell, shell_name);
-    }
-
-    // Only support fish
-    if shell_name != "fish" {
-        if debug {
-            eprintln!("[termstack] syntax check: non-fish shell, assuming complete");
-        }
-        return true;
-    }
-
-    let result = Command::new(&shell)
-        .args(["-n", "-c", command])
-        .output();
-
-    match result {
-        Ok(output) => {
-            let complete = output.status.success();
-            if debug {
-                eprintln!("[termstack] syntax check: exit={:?}, complete={}", output.status.code(), complete);
-            }
-            complete
-        }
-        Err(e) => {
-            if debug {
-                eprintln!("[termstack] syntax check: error running shell: {}", e);
-            }
-            true // If we can't run the shell, assume syntax is complete
-        }
-    }
 }
 
 pub fn run() -> Result<()> {
@@ -333,28 +229,17 @@ pub fn run() -> Result<()> {
         return spawn_in_terminal(&command);
     }
 
-    // For Fish, normalize space-separated blocks (e.g., "begin echo a end" -> "begin; echo a; end")
-    // This fixes the issue where Fish's commandline builtin strips newlines from multi-line input
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let shell_name = std::path::Path::new(&shell)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("sh");
-
-    let normalized_command = if shell_name == "fish" {
-        let normalized = normalize_fish_command(&command);
-        if debug && normalized != command {
-            eprintln!("[termstack] normalized: '{}' -> '{}'", command, normalized);
-        }
-        normalized
-    } else {
-        command.clone()
-    };
+    // Detect shell and normalize command
+    let shell = detect_shell();
+    let normalized_command = shell.normalize_command(&command);
+    if debug && normalized_command != command {
+        eprintln!("[termstack] normalized: '{}' -> '{}'", command, normalized_command);
+    }
 
     // Load config and check command type
     let config = Config::load();
 
-    if config.is_shell_command(&normalized_command) {
+    if config.is_shell_command(&normalized_command, shell.as_ref()) {
         if debug { eprintln!("[termstack] shell command, exit 2"); }
         // Shell builtin - signal to run in current shell
         std::process::exit(EXIT_SHELL_COMMAND);
@@ -362,7 +247,7 @@ pub fn run() -> Result<()> {
 
     // Check if command is syntactically complete
     // If not, let the shell handle it (show continuation prompt or syntax error)
-    if !is_syntax_complete(&normalized_command) {
+    if !shell.is_syntax_complete(&normalized_command) {
         if debug { eprintln!("[termstack] incomplete syntax, exit 3"); }
         std::process::exit(EXIT_INCOMPLETE_SYNTAX);
     }
@@ -489,9 +374,9 @@ fn spawn_gui_app(command: &str, foreground: bool) -> Result<()> {
         .to_string();
     if debug { eprintln!("[termstack] cwd: {}", cwd); }
 
-    // Build JSON message for gui_spawn
+    // Build JSON message for GUI spawn (unified with terminal spawn)
     let msg = serde_json::json!({
-        "type": "gui_spawn",
+        "type": "spawn",
         "command": command,
         "cwd": cwd,
         "env": env_vars,
