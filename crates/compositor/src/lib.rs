@@ -7,6 +7,7 @@ pub mod config;
 pub mod coords;
 pub mod cursor;
 pub mod input;
+pub mod input_handler;
 pub mod ipc;
 pub mod layout;
 pub mod render;
