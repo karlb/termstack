@@ -70,6 +70,7 @@ fn is_click_on_close_button(
 /// - `window_render_y`: The terminal cell's render Y position (bottom of cell)
 /// - `window_height`: The terminal cell's height in pixels
 /// - `char_width`, `char_height`: Character cell dimensions from the font
+/// - `title_bar_height`: Height of the title bar in pixels (0 if no title bar)
 fn render_to_grid_coords(
     render_x: f64,
     render_y: f64,
@@ -77,12 +78,13 @@ fn render_to_grid_coords(
     window_height: f64,
     char_width: u32,
     char_height: u32,
+    title_bar_height: u32,
 ) -> (usize, usize) {
     // Convert render coords to terminal-local coords
     // Terminal has Y=0 at top, render has Y=0 at bottom
     // Content is offset by FOCUS_INDICATOR_WIDTH from left edge
     let window_render_end = window_render_y + window_height;
-    let local_y = (window_render_end - render_y).max(0.0);
+    let local_y = (window_render_end - render_y - title_bar_height as f64).max(0.0);
     let local_x = (render_x - FOCUS_INDICATOR_WIDTH as f64).max(0.0);
 
     // Convert to grid coordinates
@@ -94,7 +96,7 @@ fn render_to_grid_coords(
 
 /// Start a text selection on a terminal at the given render coordinates
 ///
-/// Returns the selection tracking state (terminal id, cell render y, cell height)
+/// Returns the selection tracking state (terminal id, cell render y, cell height, col, row, timestamp)
 /// which should be stored in `compositor.selecting` for drag tracking.
 fn start_terminal_selection(
     compositor: &TermStack,
@@ -103,11 +105,17 @@ fn start_terminal_selection(
     window_index: usize,
     render_x: f64,
     render_y: f64,
-) -> Option<(TerminalId, i32, i32)> {
+) -> Option<(TerminalId, i32, i32, usize, usize, std::time::Instant)> {
     let managed = terminals.get_mut(terminal_id)?;
     let (window_render_y, window_height) = compositor.get_window_render_position(window_index);
 
     let (char_width, char_height) = managed.terminal.cell_size();
+    let title_bar_height = if managed.show_title_bar {
+        TITLE_BAR_HEIGHT
+    } else {
+        0
+    };
+
     let (col, row) = render_to_grid_coords(
         render_x,
         render_y,
@@ -115,6 +123,7 @@ fn start_terminal_selection(
         window_height as f64,
         char_width,
         char_height,
+        title_bar_height,
     );
 
     // Clear any previous selection and start new one
@@ -122,10 +131,12 @@ fn start_terminal_selection(
     managed.terminal.start_selection(col, row);
     managed.mark_dirty(); // Re-render to show selection highlight
 
-    Some((terminal_id, window_render_y.value() as i32, window_height))
+    Some((terminal_id, window_render_y.value() as i32, window_height, col, row, std::time::Instant::now()))
 }
 
 /// Update an ongoing selection during pointer drag
+///
+/// Returns Some((col, row)) if the selection coordinates changed, None otherwise
 fn update_terminal_selection(
     terminals: &mut TerminalManager,
     terminal_id: TerminalId,
@@ -133,20 +144,32 @@ fn update_terminal_selection(
     window_height: i32,
     render_x: f64,
     render_y: f64,
-) {
-    if let Some(managed) = terminals.get_mut(terminal_id) {
-        let (char_width, char_height) = managed.terminal.cell_size();
-        let (col, row) = render_to_grid_coords(
-            render_x,
-            render_y,
-            window_render_y as f64,
-            window_height as f64,
-            char_width,
-            char_height,
-        );
+    title_bar_height: u32,
+    last_col: usize,
+    last_row: usize,
+) -> Option<(usize, usize)> {
+    let managed = terminals.get_mut(terminal_id)?;
 
+    let (char_width, char_height) = managed.terminal.cell_size();
+    let (col, row) = render_to_grid_coords(
+        render_x,
+        render_y,
+        window_render_y as f64,
+        window_height as f64,
+        char_width,
+        char_height,
+        title_bar_height,
+    );
+
+    // Only update if coordinates actually changed
+    if col != last_col || row != last_row {
         managed.terminal.update_selection(col, row);
-        managed.mark_dirty(); // Re-render to show updated selection
+        // Mark selection dirty - this queues exactly ONE render, avoiding backlog
+        // If another coordinate change happens before rendering, it just sets the flag again (no extra render)
+        managed.mark_selection_dirty();
+        Some((col, row))
+    } else {
+        None
     }
 }
 
@@ -608,8 +631,47 @@ impl TermStack {
         }
 
         // Update selection if we're in a drag operation
-        if let Some((term_id, window_render_y, window_height)) = self.selecting {
-            update_terminal_selection(terminals, term_id, window_render_y, window_height, screen_x, render_y);
+        if let Some((term_id, window_render_y, window_height, last_col, last_row, last_update_time)) = self.selecting {
+            // Throttle at input level: Only process motion events every 16ms (~60 FPS)
+            // This prevents backlog by skipping motion events entirely if we're behind
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(last_update_time);
+
+            if elapsed >= std::time::Duration::from_millis(16) {
+                let title_bar_height = terminals.get(term_id)
+                    .map(|t| if t.show_title_bar { TITLE_BAR_HEIGHT } else { 0 })
+                    .unwrap_or(0);
+
+                if let Some((new_col, new_row)) = update_terminal_selection(
+                    terminals,
+                    term_id,
+                    window_render_y,
+                    window_height,
+                    screen_x,
+                    render_y,
+                    title_bar_height,
+                    last_col,
+                    last_row,
+                ) {
+                    // Update the stored coordinates and timestamp for next motion event
+                    tracing::debug!(
+                        elapsed_ms = elapsed.as_millis(),
+                        new_col,
+                        new_row,
+                        "selection updated (throttled)"
+                    );
+                    self.selecting = Some((term_id, window_render_y, window_height, new_col, new_row, now));
+                } else {
+                    // Coordinates didn't change, but update timestamp to keep throttle working
+                    self.selecting = Some((term_id, window_render_y, window_height, last_col, last_row, now));
+                }
+            } else {
+                tracing::trace!(
+                    elapsed_ms = elapsed.as_millis(),
+                    "skipping motion event (throttled)"
+                );
+            }
+            // If not enough time has passed, skip this motion event entirely
         }
 
         let serial = SERIAL_COUNTER.next_serial();
@@ -713,7 +775,6 @@ impl TermStack {
             // Convert render Y back to screen Y for resize handle detection
             let screen_y = RenderY::new(render_y).to_screen(self.output_size.h);
             let render_y_wrapped = RenderY::new(render_y);
-            let render_location: Point<f64, Logical> = Point::from((screen_x, render_y));
 
             // Check for resize handle before normal cell hit detection
             if button == BTN_LEFT {
@@ -835,9 +896,9 @@ impl TermStack {
                     CellClickInfo::External { surface, has_ssd } => {
                         // Check if click is on close button in title bar
                         if is_click_on_close_button(
-                            render_location.y,
+                            render_y,
                             window_render_top,
-                            render_location.x,
+                            screen_x,
                             self.output_size.w,
                             has_ssd,
                             button,
@@ -853,9 +914,9 @@ impl TermStack {
                     CellClickInfo::Terminal { id, has_ssd } => {
                         // Check if click is on close button in title bar (for terminals with title bars)
                         if is_click_on_close_button(
-                            render_location.y,
+                            render_y,
                             window_render_top,
-                            render_location.x,
+                            screen_x,
                             self.output_size.w,
                             has_ssd,
                             button,
@@ -886,8 +947,8 @@ impl TermStack {
                                     terminals,
                                     id,
                                     index,
-                                    render_location.x,
-                                    render_location.y,
+                                    screen_x,
+                                    render_y,
                                 );
                             }
                         }
@@ -909,26 +970,26 @@ impl TermStack {
                     let last_window_bottom = screen_height - content_y;
 
                     // If click is below the last cell's bottom, focus the last cell
-                    if render_location.y < last_window_bottom {
+                    if render_y < last_window_bottom {
                         let last_index = self.layout_nodes.len() - 1;
                         self.set_focus_by_index(last_index);
 
                         tracing::debug!(
-                            render_y = render_location.y,
+                            render_y,
                             last_window_bottom,
                             last_index,
                             "clicked below all cells, focusing last cell"
                         );
                     } else {
                         tracing::debug!(
-                            render_y = render_location.y,
+                            render_y,
                             screen_y = screen_y.value(),
                             "handle_pointer_button: click not on terminal or window"
                         );
                     }
                 } else {
                     tracing::debug!(
-                        render_y = render_location.y,
+                        render_y,
                         screen_y = screen_y.value(),
                         "handle_pointer_button: click not on terminal or window"
                     );

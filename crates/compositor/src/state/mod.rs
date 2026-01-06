@@ -230,9 +230,10 @@ pub struct TermStack {
     /// Pending copy request (set by keybinding, handled in input loop)
     pub pending_copy: bool,
 
-    /// Active selection state: (terminal_id, terminal_y_offset, terminal_height)
+    /// Active selection state: (terminal_id, window_render_y, window_height, last_col, last_row, last_update_time)
     /// Set when mouse button is pressed on a terminal, cleared on release
-    pub selecting: Option<(TerminalId, i32, i32)>,
+    /// Tracks last grid coordinates and update time to throttle motion events
+    pub selecting: Option<(TerminalId, i32, i32, usize, usize, std::time::Instant)>,
 
     /// Active resize drag state
     /// Set when mouse button is pressed on a resize handle, cleared on release

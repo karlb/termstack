@@ -147,6 +147,12 @@ pub struct ManagedTerminal {
     /// Whether the terminal needs re-rendering
     dirty: bool,
 
+    /// Last time terminal was marked dirty (for rate limiting during selection drag)
+    last_dirty_time: std::time::Instant,
+
+    /// Whether selection coordinates changed since last render (for efficient selection rendering)
+    selection_dirty: bool,
+
     /// Keep window open after process exits (for command terminals)
     pub keep_open: bool,
 
@@ -188,6 +194,8 @@ impl ManagedTerminal {
             show_title_bar: false, // Shell terminals don't show title bar
             texture: None,
             dirty: true,
+            last_dirty_time: std::time::Instant::now(),
+            selection_dirty: false,
             keep_open: false,
             exited: false,
             visibility: VisibilityState::new_shell(),
@@ -227,6 +235,8 @@ impl ManagedTerminal {
             show_title_bar: true, // Command terminals show title bar
             texture: None,
             dirty: true,
+            last_dirty_time: std::time::Instant::now(),
+            selection_dirty: false,
             keep_open: true, // Command terminals stay open after exit
             exited: false,
             visibility: VisibilityState::new_command(),
@@ -385,7 +395,9 @@ impl ManagedTerminal {
 
     /// Render terminal to texture
     pub fn render(&mut self, renderer: &mut GlesRenderer) -> Option<&GlesTexture> {
-        if !self.dirty && self.texture.is_some() {
+        // Re-render if dirty OR if selection coordinates changed
+        // This ensures we only regenerate texture when selection actually moves, not every frame
+        if !self.dirty && !self.selection_dirty && self.texture.is_some() {
             return self.texture.as_ref();
         }
 
@@ -420,6 +432,7 @@ impl ManagedTerminal {
             Ok(texture) => {
                 self.texture = Some(texture);
                 self.dirty = false;
+                self.selection_dirty = false; // Clear after rendering
                 self.texture.as_ref()
             }
             Err(e) => {
@@ -432,6 +445,25 @@ impl ManagedTerminal {
     /// Mark terminal as needing re-render
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.last_dirty_time = std::time::Instant::now();
+    }
+
+    /// Mark dirty only if enough time has passed (for rate limiting during selection drag)
+    /// Returns true if marked dirty, false if skipped due to rate limit
+    pub fn mark_dirty_throttled(&mut self, min_interval_ms: u64) -> bool {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_dirty_time).as_millis() >= min_interval_ms as u128 {
+            self.dirty = true;
+            self.last_dirty_time = now;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mark that selection coordinates changed (needs re-render)
+    pub fn mark_selection_dirty(&mut self) {
+        self.selection_dirty = true;
     }
 
     /// Check if terminal needs re-render
