@@ -252,9 +252,9 @@ pub fn run() -> Result<()> {
         std::process::exit(EXIT_INCOMPLETE_SYNTAX);
     }
 
-    // Regular command, GUI app, or TUI app - spawn in new terminal
-    // TUI apps are auto-detected via alternate screen mode and resized
-    if debug { eprintln!("[termstack] spawning in terminal"); }
+    // Regular command - spawn terminal in termstack, but GUI windows go to host
+    // Only commands with 'gui' prefix should have windows inside termstack
+    if debug { eprintln!("[termstack] spawning in terminal (GUI windows go to host)"); }
     spawn_in_terminal(&normalized_command)
 }
 

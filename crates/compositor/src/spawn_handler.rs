@@ -73,6 +73,13 @@ pub fn handle_gui_spawn_requests(
         if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
             env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
         }
+        // Preserve host display variables for consistency
+        if let Ok(host_wayland) = std::env::var("HOST_WAYLAND_DISPLAY") {
+            env.insert("HOST_WAYLAND_DISPLAY".to_string(), host_wayland);
+        }
+        if let Ok(host_x11) = std::env::var("HOST_DISPLAY") {
+            env.insert("HOST_DISPLAY".to_string(), host_x11);
+        }
         if let Ok(gdk_backend) = std::env::var("GDK_BACKEND") {
             env.insert("GDK_BACKEND".to_string(), gdk_backend);
         }
@@ -169,16 +176,20 @@ fn process_spawn_request(
     env.insert("GIT_PAGER".to_string(), "cat".to_string());
     env.insert("PAGER".to_string(), "cat".to_string());
     env.insert("LESS".to_string(), "-FRX".to_string());
-    if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
-        env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
+
+    // For regular terminal spawns (not gui spawns), use host display so GUI windows
+    // appear on the host desktop. Only 'gui' prefix should bring windows into termstack.
+    if let Ok(host_wayland) = std::env::var("HOST_WAYLAND_DISPLAY") {
+        env.insert("WAYLAND_DISPLAY".to_string(), host_wayland.clone());
+        env.insert("HOST_WAYLAND_DISPLAY".to_string(), host_wayland);
     }
-    // Force GTK/Qt apps to use Wayland backend
-    if let Ok(gdk_backend) = std::env::var("GDK_BACKEND") {
-        env.insert("GDK_BACKEND".to_string(), gdk_backend);
+    if let Ok(host_x11) = std::env::var("HOST_DISPLAY") {
+        env.insert("DISPLAY".to_string(), host_x11.clone());
+        env.insert("HOST_DISPLAY".to_string(), host_x11);
     }
-    if let Ok(qt_platform) = std::env::var("QT_QPA_PLATFORM") {
-        env.insert("QT_QPA_PLATFORM".to_string(), qt_platform);
-    }
+    // Don't force GTK/Qt backend - let apps use host defaults
+    env.remove("GDK_BACKEND");
+    env.remove("QT_QPA_PLATFORM");
     // Pass SHELL so spawn_command uses the correct shell for syntax
     // This ensures fish loops work when user's shell is fish
     if let Ok(shell) = std::env::var("SHELL") {
