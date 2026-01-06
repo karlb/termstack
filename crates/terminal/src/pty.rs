@@ -219,11 +219,6 @@ impl Pty {
             return Err(PtyError::Open(std::io::Error::last_os_error()));
         }
 
-        // Debug: log the shell and WAYLAND_DISPLAY being used
-        eprintln!("PTY spawn_command: shell={} WAYLAND_DISPLAY={}",
-                  shell,
-                  env.get("WAYLAND_DISPLAY").map(|s| s.as_str()).unwrap_or("(not set)"));
-
         // Spawn command with user's shell
         let child = unsafe {
             Command::new(shell)

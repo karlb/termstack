@@ -68,10 +68,14 @@ pub fn handle_gui_spawn_requests(
         // Extract foreground flag (guaranteed to be Some for GUI spawns)
         let foreground = request.foreground.unwrap_or(true);
 
-        // Modify environment for GUI apps
+        // Modify environment for GUI apps - use compositor's display, not host's
         let mut env = request.env.clone();
         if let Ok(wayland_display) = std::env::var("WAYLAND_DISPLAY") {
             env.insert("WAYLAND_DISPLAY".to_string(), wayland_display);
+        }
+        // Also set DISPLAY for X11 apps (via xwayland-satellite)
+        if let Ok(display) = std::env::var("DISPLAY") {
+            env.insert("DISPLAY".to_string(), display);
         }
         // Preserve host display variables for consistency
         if let Ok(host_wayland) = std::env::var("HOST_WAYLAND_DISPLAY") {
