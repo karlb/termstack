@@ -32,6 +32,10 @@ Configuration is in `.cargo/config.toml` and `rust-toolchain.toml`. The nightly 
 - Prefer improving the test suite to writing one-off tests.
 - When done, check for linting errors
 
+## Specifications
+
+Behavioral specs defining what the software should do are in [`specs/`](specs/index.md). Check the relevant spec before implementing or modifying features.
+
 ## Environment Variables
 
 ### Compositor-Set Variables
