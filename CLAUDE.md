@@ -32,6 +32,18 @@ Configuration is in `.cargo/config.toml` and `rust-toolchain.toml`. The nightly 
 - Prefer improving the test suite to writing one-off tests.
 - When done, check for linting errors
 
+## Environment Variables
+
+### Compositor-Set Variables
+
+The compositor automatically sets these environment variables for all spawned terminals:
+
+- **TERMSTACK_SOCKET**: Unix socket path for IPC communication (e.g., `/run/user/1000/termstack.sock`)
+- **TERMSTACK_BIN**: Absolute path to the termstack binary running the compositor
+  - Ensures spawned terminals use the same CLI version as the compositor
+  - Shell integration scripts use this instead of hardcoded `termstack`
+  - Falls back to `termstack` in PATH if not set (backwards compatibility)
+
 ## Architecture
 
 This is a Wayland compositor built with Smithay that arranges windows in a scrollable vertical column.

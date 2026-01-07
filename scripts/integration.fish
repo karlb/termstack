@@ -1,6 +1,10 @@
 # Only enable termstack integration inside termstack
 
 if set -q TERMSTACK_SOCKET
+    # Use TERMSTACK_BIN if set, otherwise fall back to 'termstack' in PATH
+    if not set -q TERMSTACK_BIN
+        set TERMSTACK_BIN termstack
+    end
     # Define 'gui' as a function for launching GUI apps
     # Usage: gui <command>           # foreground mode (launcher hidden until GUI exits)
     # Usage: gui -b <command>        # background mode (launcher stays visible)
@@ -30,9 +34,9 @@ if set -q TERMSTACK_SOCKET
         end
 
         if test $background -eq 1
-            TERMSTACK_GUI_BACKGROUND=1 termstack gui $args
+            TERMSTACK_GUI_BACKGROUND=1 $TERMSTACK_BIN gui $args
         else
-            termstack gui $args
+            $TERMSTACK_BIN gui $args
         end
 
         if set -q TERMSTACK_DEBUG
@@ -68,7 +72,7 @@ if set -q TERMSTACK_SOCKET
         #   0 = spawned in new terminal
         #   2 = shell builtin, run in current shell
         #   3 = incomplete/invalid syntax, let shell handle it
-        termstack -c "$cmd"
+        $TERMSTACK_BIN -c "$cmd"
         set -l ret $status
 
         switch $ret

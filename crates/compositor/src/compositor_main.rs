@@ -217,10 +217,16 @@ pub fn run_compositor() -> anyhow::Result<()> {
     // Set environment variable for child processes
     std::env::set_var("TERMSTACK_SOCKET", &ipc_socket_path);
 
+    // Set TERMSTACK_BIN so spawned terminals use matching CLI version
+    let binary_path = std::env::current_exe()
+        .expect("failed to determine binary path");
+    std::env::set_var("TERMSTACK_BIN", &binary_path);
+
     tracing::info!(
         path = ?ipc_socket_path,
         env_set = ?std::env::var("TERMSTACK_SOCKET"),
-        "IPC socket created, TERMSTACK_SOCKET env var set"
+        binary = ?binary_path,
+        "IPC socket created, TERMSTACK_SOCKET and TERMSTACK_BIN env vars set"
     );
 
     // Insert IPC socket source into event loop

@@ -44,10 +44,12 @@ if [ -n "$TERMSTACK_DEBUG" ]; then
 fi
 
 # Call termstack gui with appropriate environment
+# Use TERMSTACK_BIN if set, otherwise fall back to 'termstack' in PATH
+TERMSTACK="${TERMSTACK_BIN:-termstack}"
 if [ "$background" -eq 1 ]; then
-    TERMSTACK_GUI_BACKGROUND=1 termstack gui $args
+    TERMSTACK_GUI_BACKGROUND=1 "$TERMSTACK" gui $args
 else
-    termstack gui $args
+    "$TERMSTACK" gui $args
 fi
 
 exit_code=$?
