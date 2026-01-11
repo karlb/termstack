@@ -161,5 +161,5 @@ The test harness uses a mock `TestCompositor` that simulates the real compositor
 
 ## Additional Documentation
 
-- **[Glossary](docs/glossary.md)**: Terminology used throughout TermStack (stack, window, launcher terminal, etc.)
+- **[Glossary](specs/glossary.md)**: Terminology used throughout TermStack (stack, window, launcher terminal, etc.)
 - **[X11/XWayland Integration](docs/x11-integration.md)**: Historical documentation of Smithay X11Wm integration (pre-xwayland-satellite migration). Includes detailed notes on resize issues, coordinate transforms, and protocol workarounds. Now using xwayland-satellite instead (see XWayland Integration section above).

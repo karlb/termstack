@@ -8,6 +8,7 @@ Behavioral specs that define what the software should do. Reference these when i
 
 | Spec | Description |
 |------|-------------|
+| [Glossary](glossary.md) | Terminology used throughout termstack |
 | [GUI Window Routing](gui-window-routing.md) | How windows route to host vs termstack |
 | [Terminal Sizing](terminal-sizing.md) | Content-aware height, TUI detection, resize modes |
 | [Shell Integration](shell-integration.md) | Command interception, builtin detection, exit codes |
