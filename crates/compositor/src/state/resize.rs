@@ -329,11 +329,11 @@ impl TermStack {
                 && screen_y_value >= bottom_y - half_handle
                 && screen_y_value <= bottom_y + half_handle
             {
-                tracing::info!(
+                tracing::debug!(
                     i,
                     screen_y = screen_y_value,
                     bottom_y,
-                    "RESIZE HANDLE FOUND at cell index"
+                    "resize handle found at cell index"
                 );
                 return Some(i);
             }
