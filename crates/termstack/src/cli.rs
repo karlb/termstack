@@ -184,6 +184,16 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    // Handle diagnose subcommand for X11/Wayland diagnostics
+    if args.len() >= 2 && args[1] == "diagnose" {
+        return run_diagnostics();
+    }
+
+    // Handle test-x11 subcommand for testing X11 connectivity
+    if args.len() >= 2 && args[1] == "test-x11" {
+        return test_x11_connectivity();
+    }
+
     // Handle --resize flag first (before any command parsing)
     if args.len() >= 2 && args[1] == "--resize" {
         let mode = args.get(2).map(|s| s.as_str()).unwrap_or("full");
@@ -227,6 +237,15 @@ pub fn run() -> Result<()> {
     if command.is_empty() {
         if debug { eprintln!("[termstack] empty command, spawning shell"); }
         return spawn_in_terminal(&command);
+    }
+
+    // Check if command is a termstack subcommand - execute it directly
+    // This handles the case where fish integration intercepts "termstack test-x11"
+    // and calls "termstack -c 'termstack test-x11'" - we run the subcommand here
+    // instead of returning exit code 2 (which would use PATH, not TERMSTACK_BIN)
+    if let Some(subcommand) = extract_termstack_subcommand(&command) {
+        if debug { eprintln!("[termstack] executing termstack subcommand directly: {}", subcommand); }
+        return execute_subcommand(&subcommand);
     }
 
     // Detect shell and normalize command
@@ -400,6 +419,100 @@ fn spawn_gui_app(command: &str, foreground: bool) -> Result<()> {
     Ok(())
 }
 
+/// Extract termstack subcommand from a command string
+///
+/// When fish integration intercepts "termstack test-x11", it calls
+/// "termstack -c 'termstack test-x11'". We detect this and extract
+/// the subcommand args to execute directly (avoiding PATH lookup issues).
+///
+/// Returns the full subcommand string (e.g., "test-x11" or "gui firefox")
+fn extract_termstack_subcommand(command: &str) -> Option<String> {
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Check if first word is "termstack" (or path ending in termstack)
+    let first = parts[0];
+    let is_termstack = first == "termstack"
+        || first.ends_with("/termstack")
+        || first == "$TERMSTACK_BIN";
+
+    if !is_termstack {
+        return None;
+    }
+
+    // Check if second word is a known subcommand
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let subcommands = ["diagnose", "test-x11", "gui", "--status", "--resize", "--help", "-h"];
+    if subcommands.contains(&parts[1]) {
+        // Return everything after "termstack"
+        Some(parts[1..].join(" "))
+    } else {
+        None
+    }
+}
+
+/// Execute a termstack subcommand directly
+fn execute_subcommand(subcommand: &str) -> Result<()> {
+    let parts: Vec<&str> = subcommand.split_whitespace().collect();
+    if parts.is_empty() {
+        bail!("empty subcommand");
+    }
+
+    match parts[0] {
+        "diagnose" => run_diagnostics(),
+        "test-x11" => test_x11_connectivity(),
+        "--status" => {
+            // Inline the status output
+            let socket = env::var("TERMSTACK_SOCKET");
+            let shell = env::var("SHELL").unwrap_or_else(|_| "(not set)".to_string());
+
+            println!("termstack status:");
+            println!("  TERMSTACK_SOCKET: {}", match &socket {
+                Ok(path) => format!("{} (exists: {})", path, std::path::Path::new(path).exists()),
+                Err(_) => "NOT SET - shell integration will not activate".to_string(),
+            });
+            println!("  SHELL: {}", shell);
+            println!();
+
+            if socket.is_ok() {
+                println!("Shell integration should be active.");
+            } else {
+                println!("You are NOT inside termstack.");
+            }
+            Ok(())
+        }
+        "--resize" => {
+            let mode = parts.get(1).copied().unwrap_or("full");
+            send_resize_request(mode)
+        }
+        "gui" => {
+            if parts.len() < 2 {
+                bail!("usage: termstack gui <command>");
+            }
+            let gui_command = parts[1..].join(" ");
+            let foreground = env::var("TERMSTACK_GUI_BACKGROUND").is_err();
+            spawn_gui_app(&gui_command, foreground)
+        }
+        "--help" | "-h" => {
+            println!("termstack - Terminal compositor CLI");
+            println!();
+            println!("Subcommands:");
+            println!("  diagnose    Run X11/Wayland diagnostics");
+            println!("  test-x11    Test X11 connectivity");
+            println!("  gui <cmd>   Launch GUI app inside termstack");
+            println!("  --status    Show termstack status");
+            println!("  --resize    Resize focused terminal");
+            Ok(())
+        }
+        _ => bail!("unknown subcommand: {}", parts[0]),
+    }
+}
+
 /// Parse command from arguments
 ///
 /// Supports:
@@ -431,4 +544,322 @@ fn parse_command(args: &[String]) -> Result<String> {
     }
 
     bail!("usage: termstack [-c command]");
+}
+
+/// Run X11/Wayland diagnostics to help debug GUI app issues
+fn run_diagnostics() -> Result<()> {
+    use std::process::Command;
+
+    println!("=== TermStack Diagnostics ===\n");
+
+    // Check if we're inside termstack
+    let socket = env::var("TERMSTACK_SOCKET");
+    println!("Environment:");
+    println!("  TERMSTACK_SOCKET: {}", match &socket {
+        Ok(path) => {
+            let exists = std::path::Path::new(path).exists();
+            format!("{} (exists: {})", path, exists)
+        }
+        Err(_) => "NOT SET (not inside termstack)".to_string(),
+    });
+
+    // X11 diagnostics
+    println!("\nX11:");
+    let display = env::var("DISPLAY");
+    println!("  DISPLAY: {}", match &display {
+        Ok(d) => d.clone(),
+        Err(_) => "NOT SET".to_string(),
+    });
+
+    let xauthority = env::var("XAUTHORITY");
+    println!("  XAUTHORITY: {}", match &xauthority {
+        Ok(path) => {
+            let exists = std::path::Path::new(path).exists();
+            if exists {
+                format!("{} (OK)", path)
+            } else {
+                format!("{} (WARNING: file does not exist)", path)
+            }
+        }
+        Err(_) => "<not set> (WARNING: GTK apps may fail)".to_string(),
+    });
+
+    // Test X11 connection with xdpyinfo
+    if display.is_ok() {
+        print!("  X server test: ");
+        let mut cmd = Command::new("xdpyinfo");
+        // Use XAUTHORITY if set, otherwise try without
+        if let Ok(ref xa) = xauthority {
+            cmd.env("XAUTHORITY", xa);
+        }
+        match cmd
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => println!("OK"),
+            Ok(status) => println!("FAILED (exit code: {:?})", status.code()),
+            Err(e) => println!("FAILED ({})", e),
+        }
+    }
+
+    // Check for xwayland-satellite
+    print!("  xwayland-satellite: ");
+    match Command::new("pgrep")
+        .args(["-x", "xwayland-satel"]) // pgrep truncates to 15 chars
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            let pid = pids.trim().lines().next().unwrap_or("?");
+            println!("running (PID {})", pid);
+        }
+        _ => println!("not running"),
+    }
+
+    // Wayland diagnostics
+    println!("\nWayland:");
+    let wayland_display = env::var("WAYLAND_DISPLAY");
+    println!("  WAYLAND_DISPLAY: {}", match &wayland_display {
+        Ok(d) => d.clone(),
+        Err(_) => "NOT SET".to_string(),
+    });
+
+    if let Ok(ref wd) = wayland_display {
+        let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+        let socket_path = format!("{}/{}", runtime_dir, wd);
+        let exists = std::path::Path::new(&socket_path).exists();
+        println!("  Socket: {} (exists: {})", socket_path, exists);
+    }
+
+    // Summary
+    println!("\n=== Summary ===");
+    if socket.is_err() {
+        println!("You are NOT inside termstack. Start the compositor first.");
+    } else if display.is_err() {
+        println!("DISPLAY not set. XWayland may not have started properly.");
+    } else if xauthority.is_err() {
+        println!("WARNING: XAUTHORITY not set. GTK X11 apps may fail.");
+        println!("The compositor should create an xauth file on startup.");
+    } else {
+        println!("Configuration looks correct for X11 GUI apps.");
+    }
+
+    Ok(())
+}
+
+/// Systematically test X11 connectivity with detailed diagnostics
+fn test_x11_connectivity() -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    println!("=== X11 Connectivity Test ===\n");
+
+    // Step 1: Check environment
+    let display = env::var("DISPLAY");
+    let xauthority = env::var("XAUTHORITY");
+
+    println!("Step 1: Environment");
+    println!("  DISPLAY: {:?}", display);
+    println!("  XAUTHORITY: {:?}", xauthority);
+
+    let display = match display {
+        Ok(d) => d,
+        Err(_) => {
+            println!("\nFAILED: DISPLAY not set. Are you inside termstack?");
+            return Ok(());
+        }
+    };
+
+    // Step 2: Check xauth file
+    println!("\nStep 2: X Authority File");
+    if let Ok(ref path) = xauthority {
+        let exists = std::path::Path::new(path).exists();
+        println!("  File exists: {}", exists);
+        if exists {
+            // List entries
+            let output = Command::new("xauth")
+                .args(["-f", path, "list"])
+                .output();
+            if let Ok(out) = output {
+                let entries = String::from_utf8_lossy(&out.stdout);
+                for line in entries.lines() {
+                    println!("    {}", line);
+                }
+            }
+        } else {
+            println!("  WARNING: xauth file does not exist!");
+        }
+    } else {
+        println!("  No XAUTHORITY set");
+    }
+
+    // Step 3: Test X11 connection with different auth scenarios
+    println!("\nStep 3: X11 Connection Tests");
+
+    // Test 3a: With current XAUTHORITY
+    print!("  3a. xdpyinfo with current env: ");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let result = Command::new("xdpyinfo")
+        .env("DISPLAY", &display)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output();
+    match result {
+        Ok(out) if out.status.success() => println!("OK"),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            println!("FAILED: {}", stderr.lines().next().unwrap_or("unknown error"));
+        }
+        Err(e) => println!("FAILED: {}", e),
+    }
+
+    // Test 3b: Without XAUTHORITY
+    print!("  3b. xdpyinfo without XAUTHORITY: ");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let result = Command::new("xdpyinfo")
+        .env("DISPLAY", &display)
+        .env_remove("XAUTHORITY")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output();
+    match result {
+        Ok(out) if out.status.success() => println!("OK"),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            println!("FAILED: {}", stderr.lines().next().unwrap_or("unknown error"));
+        }
+        Err(e) => println!("FAILED: {}", e),
+    }
+
+    // Step 4: Test xeyes (simple X11 app)
+    println!("\nStep 4: Simple X11 App Test (xeyes)");
+    print!("  Spawning xeyes for 2 seconds: ");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let result = Command::new("timeout")
+        .args(["2", "xeyes"])
+        .env("DISPLAY", &display)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status();
+    match result {
+        Ok(status) if status.code() == Some(124) => println!("OK (killed after timeout)"),
+        Ok(status) if status.success() => println!("OK"),
+        Ok(status) => println!("FAILED (exit code: {:?})", status.code()),
+        Err(e) => println!("FAILED: {}", e),
+    }
+
+    // Step 5: Test surf specifically
+    println!("\nStep 5: Surf Browser Test");
+    let has_surf = Command::new("which")
+        .arg("surf")
+        .stdout(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if has_surf {
+        print!("  Testing surf with current env: ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let result = Command::new("timeout")
+            .args(["3", "surf", "about:blank"])
+            .env("DISPLAY", &display)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match result {
+            Ok(out) if out.status.code() == Some(124) => println!("OK (killed after timeout)"),
+            Ok(out) if out.status.success() => println!("OK"),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let first_line = stderr.lines().next().unwrap_or("unknown error");
+                println!("FAILED: {}", first_line);
+            }
+            Err(e) => println!("FAILED: {}", e),
+        }
+
+        print!("  Testing surf without XAUTHORITY: ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let result = Command::new("timeout")
+            .args(["3", "surf", "about:blank"])
+            .env("DISPLAY", &display)
+            .env_remove("XAUTHORITY")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match result {
+            Ok(out) if out.status.code() == Some(124) => println!("OK (killed after timeout)"),
+            Ok(out) if out.status.success() => println!("OK"),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let first_line = stderr.lines().next().unwrap_or("unknown error");
+                println!("FAILED: {}", first_line);
+            }
+            Err(e) => println!("FAILED: {}", e),
+        }
+        // Test with explicit GDK_BACKEND
+        print!("  Testing surf with GDK_BACKEND=wayland: ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let wayland_display = env::var("WAYLAND_DISPLAY").unwrap_or_default();
+        let xdg_runtime = env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+        let result = Command::new("timeout")
+            .args(["3", "surf", "about:blank"])
+            .env("WAYLAND_DISPLAY", &wayland_display)
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("GDK_BACKEND", "wayland")
+            .env_remove("DISPLAY")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match result {
+            Ok(out) if out.status.code() == Some(124) => println!("OK (killed after timeout)"),
+            Ok(out) if out.status.success() => println!("OK"),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let first_line = stderr.lines().next().unwrap_or("unknown error");
+                println!("FAILED: {}", first_line);
+            }
+            Err(e) => println!("FAILED: {}", e),
+        }
+
+        print!("  Testing surf with GDK_BACKEND=x11: ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let result = Command::new("timeout")
+            .args(["3", "surf", "about:blank"])
+            .env("DISPLAY", &display)
+            .env("GDK_BACKEND", "x11")
+            .env_remove("WAYLAND_DISPLAY")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match result {
+            Ok(out) if out.status.code() == Some(124) => println!("OK (killed after timeout)"),
+            Ok(out) if out.status.success() => println!("OK"),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let first_line = stderr.lines().next().unwrap_or("unknown error");
+                println!("FAILED: {}", first_line);
+            }
+            Err(e) => println!("FAILED: {}", e),
+        }
+    } else {
+        println!("  surf not found");
+    }
+
+    // Step 6: Wayland environment
+    println!("\nStep 6: Wayland Environment");
+    let wayland_display = env::var("WAYLAND_DISPLAY");
+    let xdg_runtime = env::var("XDG_RUNTIME_DIR");
+    let gdk_backend = env::var("GDK_BACKEND");
+    println!("  WAYLAND_DISPLAY: {:?}", wayland_display);
+    println!("  XDG_RUNTIME_DIR: {:?}", xdg_runtime);
+    println!("  GDK_BACKEND: {:?}", gdk_backend);
+
+    if let (Ok(wd), Ok(xdg)) = (&wayland_display, &xdg_runtime) {
+        let socket_path = format!("{}/{}", xdg, wd);
+        let socket_exists = std::path::Path::new(&socket_path).exists();
+        println!("  Wayland socket exists: {} ({})", socket_exists, socket_path);
+    }
+
+    println!("\n=== Test Complete ===");
+    Ok(())
 }

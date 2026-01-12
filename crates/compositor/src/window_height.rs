@@ -76,7 +76,7 @@ pub fn calculate_window_heights(
 /// manual resize to avoid overwriting the user's drag updates.
 pub fn check_and_handle_height_changes(
     compositor: &mut TermStack,
-    _actual_heights: Vec<i32>,
+    actual_heights: Vec<i32>,
 ) {
     let is_resizing = compositor.resizing.is_some();
 
@@ -89,8 +89,20 @@ pub fn check_and_handle_height_changes(
     let heights_to_apply: Vec<i32> = compositor.layout_nodes.iter().enumerate().map(|(i, node)| {
         match &node.cell {
             StackWindow::Terminal(_) => {
-                // Terminals: always use drag-updated height (instant resize)
-                node.height
+                // Check if this terminal is being resized
+                let is_terminal_resizing = compositor.resizing
+                    .as_ref()
+                    .map(|drag| drag.window_index == i)
+                    .unwrap_or(false);
+
+                if is_terminal_resizing {
+                    // Being resized: use cached node.height for instant visual feedback
+                    node.height
+                } else {
+                    // Not resizing: use actual_heights which correctly reflects visibility
+                    // and texture size changes. This ensures click detection matches rendering.
+                    actual_heights.get(i).copied().unwrap_or(node.height)
+                }
             }
             StackWindow::External(entry) => {
                 // Check if this is the window being resized

@@ -46,6 +46,12 @@ pub fn initialize_xwayland(
                 std::env::set_var("DISPLAY", format!(":{}", display_number));
                 compositor.x11_display_number = Some(display_number);
 
+                // Set up X authorization for GTK apps.
+                // XWayland accepts unauthenticated local connections (no -auth flag),
+                // but GTK apps require an xauth entry to exist. We create a dummy
+                // cookie that GTK will find, even though XWayland won't validate it.
+                setup_xauthority(display_number);
+
                 // Spawn xwayland-satellite (acts as X11 WM, presents windows as Wayland toplevels)
                 match spawn_xwayland_satellite(display_number) {
                     Ok(child) => {
@@ -158,6 +164,40 @@ pub fn monitor_xwayland_satellite_health(compositor: &mut TermStack) -> bool {
     }
 
     true // Continue running
+}
+
+/// Set up X authorization for GTK apps to connect to XWayland.
+///
+/// XWayland (started without -auth) accepts unauthenticated local connections,
+/// but GTK apps require an xauth entry to exist. We create a dummy cookie
+/// that satisfies GTK's check, even though XWayland won't validate it.
+fn setup_xauthority(display_number: u32) {
+    let xauth_path = if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        format!("{}/termstack-xauth", runtime_dir)
+    } else {
+        let uid = rustix::process::getuid().as_raw();
+        format!("/tmp/termstack-xauth-{}", uid)
+    };
+
+    // Create xauth entry with a dummy cookie (XWayland won't validate it)
+    let result = std::process::Command::new("xauth")
+        .args(["-f", &xauth_path, "add", &format!(":{}", display_number), "MIT-MAGIC-COOKIE-1", "0"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match result {
+        Ok(status) if status.success() => {
+            std::env::set_var("XAUTHORITY", &xauth_path);
+            tracing::info!(path = %xauth_path, display = display_number, "X authorization set up for GTK apps");
+        }
+        Ok(status) => {
+            tracing::warn!(?status, "xauth command failed, GTK X11 apps may not work");
+        }
+        Err(e) => {
+            tracing::warn!(?e, "Failed to run xauth, GTK X11 apps may not work");
+        }
+    }
 }
 
 /// Spawn xwayland-satellite process to act as X11 window manager

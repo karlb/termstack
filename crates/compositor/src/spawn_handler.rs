@@ -77,6 +77,11 @@ pub fn handle_gui_spawn_requests(
         if let Ok(display) = std::env::var("DISPLAY") {
             env.insert("DISPLAY".to_string(), display);
         }
+        // Set XAUTHORITY to our xauth file (created by setup_xauthority).
+        // GTK apps require an xauth entry to exist, even though XWayland doesn't validate it.
+        if let Ok(xauthority) = std::env::var("XAUTHORITY") {
+            env.insert("XAUTHORITY".to_string(), xauthority);
+        }
         // Preserve host display variables for consistency
         if let Ok(host_wayland) = std::env::var("HOST_WAYLAND_DISPLAY") {
             env.insert("HOST_WAYLAND_DISPLAY".to_string(), host_wayland);
@@ -84,15 +89,38 @@ pub fn handle_gui_spawn_requests(
         if let Ok(host_x11) = std::env::var("HOST_DISPLAY") {
             env.insert("HOST_DISPLAY".to_string(), host_x11);
         }
-        if let Ok(gdk_backend) = std::env::var("GDK_BACKEND") {
-            env.insert("GDK_BACKEND".to_string(), gdk_backend);
-        }
-        if let Ok(qt_platform) = std::env::var("QT_QPA_PLATFORM") {
-            env.insert("QT_QPA_PLATFORM".to_string(), qt_platform);
-        }
+        // Force X11 backend for GTK/Qt apps via the `gui` command.
+        // Our compositor doesn't implement all Wayland protocols GTK needs, so GTK apps
+        // fail on Wayland. XWayland works perfectly. Native Wayland apps (swayimg, etc.)
+        // ignore these variables and connect directly.
+        env.insert("GDK_BACKEND".to_string(), "x11".to_string());
+        env.insert("QT_QPA_PLATFORM".to_string(), "xcb".to_string());
         if let Ok(shell) = std::env::var("SHELL") {
             env.insert("SHELL".to_string(), shell);
         }
+        // XDG_RUNTIME_DIR is critical for Wayland - socket lives here
+        if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
+            env.insert("XDG_RUNTIME_DIR".to_string(), xdg_runtime);
+        }
+        // HOME is needed for many apps
+        if let Ok(home) = std::env::var("HOME") {
+            env.insert("HOME".to_string(), home);
+        }
+        // USER and LOGNAME for identity
+        if let Ok(user) = std::env::var("USER") {
+            env.insert("USER".to_string(), user);
+        }
+        if let Ok(logname) = std::env::var("LOGNAME") {
+            env.insert("LOGNAME".to_string(), logname);
+        }
+
+        tracing::debug!(
+            display = ?env.get("DISPLAY"),
+            xauthority = ?env.get("XAUTHORITY"),
+            gdk_backend = ?env.get("GDK_BACKEND"),
+            command = %request.command,
+            "GUI spawn environment"
+        );
 
         // Create output terminal with WaitingForOutput visibility
         let parent = launching_terminal;
@@ -248,12 +276,22 @@ fn process_spawn_request(
             }
             compositor.add_terminal(id);
 
-            // Set this terminal as the pending output terminal for GUI windows.
-            // If the command opens a GUI window, that window will be linked to this terminal.
-            // The terminal will be hidden until it has output, then promoted to a standalone cell.
-            compositor.pending_window_output_terminal = Some(id);
-            compositor.pending_window_command = Some(request.command.clone());
-            tracing::info!(id = id.0, command = %request.command, "set as pending output terminal for GUI windows");
+            // Set this terminal as the pending output terminal for GUI windows,
+            // but ONLY if no pending value is already set. This protects against
+            // a race where a GUI spawn sets pending_window_output_terminal, then
+            // a regular spawn (user typing elsewhere) overwrites it before the
+            // GUI window connects.
+            if compositor.pending_window_output_terminal.is_none() {
+                compositor.pending_window_output_terminal = Some(id);
+                compositor.pending_window_command = Some(request.command.clone());
+                tracing::info!(id = id.0, command = %request.command, "set as pending output terminal for GUI windows");
+            } else {
+                tracing::debug!(
+                    id = id.0,
+                    existing = ?compositor.pending_window_output_terminal,
+                    "not overwriting existing pending_window_output_terminal"
+                );
+            }
 
             Some(id)
         }

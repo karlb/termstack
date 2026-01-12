@@ -809,13 +809,8 @@ pub fn run_compositor() -> anyhow::Result<()> {
                         geo.size,
                     );
 
-                    // Flip source for OpenGL Y coordinates
-                    let flipped_src = Rectangle::new(
-                        Point::from((src.loc.x, src.loc.y + src.size.h)),
-                        Size::from((src.size.w, -src.size.h)),
-                    );
-
-                    element.draw(&mut frame, flipped_src, dest, &[damage], &[]).ok();
+                    // Use source rectangle directly - Smithay handles coordinate systems
+                    element.draw(&mut frame, src, dest, &[damage], &[]).ok();
                 }
             }
         }

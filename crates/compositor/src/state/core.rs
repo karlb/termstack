@@ -12,13 +12,14 @@ impl TermStack {
     pub fn add_window(&mut self, toplevel: ToplevelSurface) {
         let window = Window::new_wayland_window(toplevel.clone());
 
-        // Consume pending output terminal (if any)
-        let output_terminal = self.pending_window_output_terminal.take();
+        // Read pending values WITHOUT consuming them. This allows multi-window apps
+        // (like WebKitGTK-based surf) to have all their windows linked to the same
+        // output terminal. The values are cleared when a new GUI spawn happens.
+        let output_terminal = self.pending_window_output_terminal;
+        let command = self.pending_window_command.clone().unwrap_or_default();
 
-        // Consume pending command for title bar (if any)
-        let command = self.pending_window_command.take().unwrap_or_default();
-
-        // Consume pending foreground GUI flag
+        // Only consume foreground flag for the FIRST window - subsequent windows
+        // from the same app should not steal focus
         let is_foreground_gui = std::mem::take(&mut self.pending_gui_foreground);
 
         // Mark that this output terminal is now linked to a window
@@ -59,7 +60,7 @@ impl TermStack {
                 matches!(node.cell, StackWindow::Terminal(id) if id == term_id)
             });
             if let Some(pos) = output_pos {
-                tracing::info!(
+                tracing::debug!(
                     terminal_id = term_id.0,
                     output_pos = pos,
                     "inserting GUI window at output terminal position"
@@ -73,6 +74,7 @@ impl TermStack {
                 self.focused_or_last()
             }
         } else {
+            // No output terminal set - this window was not spawned via 'gui' command
             self.focused_or_last()
         };
 
@@ -100,9 +102,8 @@ impl TermStack {
         self.activate_toplevel(insert_index);
 
         tracing::info!(
-            window_count = self.layout_nodes.len(),
-            focused = ?self.focused_window,
             insert_index,
+            window_count = self.layout_nodes.len(),
             has_output_terminal = output_terminal.is_some(),
             command = %command,
             "external window added"

@@ -1247,9 +1247,12 @@ impl TermStack {
         // For client-local coordinates (Y=0 at top of window):
         // - Client Y=0 corresponds to render_end (top of cell in render coords)
         // - client_local_y = render_end - point.y = (output_height - content_y) - point.y
+        // - For SSD windows, subtract title bar height since surface starts below it
         let render_end = output_height - content_y;
-        let relative_x = point.x;
-        let relative_y = render_end - point.y;
+        let title_bar_offset = if entry.uses_csd { 0.0 } else { TITLE_BAR_HEIGHT as f64 };
+        // Subtract focus indicator width from X (content is offset from left edge)
+        let relative_x = (point.x - FOCUS_INDICATOR_WIDTH as f64).max(0.0);
+        let relative_y = render_end - point.y - title_bar_offset;
         let relative_point: Point<f64, Logical> = Point::from((relative_x, relative_y));
 
         tracing::debug!(
@@ -1275,13 +1278,13 @@ impl TermStack {
         // Return surface position in SCREEN coordinates (Y=0 at top)
         // This must match the coordinate system of MotionEvent.location
         //
-        // The cell's top in screen coords: screen_y = output_height - render_end
-        //                                          = output_height - (output_height - content_y)
-        //                                          = content_y
-        // But with scroll, content_y can be negative (scrolled off top)
-        let screen_surface_y = content_y;
+        // The cell's top in screen coords = content_y
+        // For SSD windows, the surface starts BELOW our title bar, so add title_bar_offset
+        // The X position is FOCUS_INDICATOR_WIDTH (content is offset from left edge)
+        let screen_surface_x = FOCUS_INDICATOR_WIDTH as f64;
+        let screen_surface_y = content_y + title_bar_offset;
 
-        result.map(|(surface, _pt)| (surface, Point::from((0.0, screen_surface_y))))
+        result.map(|(surface, _pt)| (surface, Point::from((screen_surface_x, screen_surface_y))))
     }
 }
 

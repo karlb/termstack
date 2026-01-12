@@ -714,6 +714,7 @@ impl TermStack {
                     render_y = render_y_value,
                     cell_render_y,
                     render_end,
+                    window_height,
                     content_y,
                     "window_at: hit"
                 );
@@ -835,7 +836,11 @@ impl XdgShellHandler for TermStack {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        tracing::info!("XDG toplevel created");
+        tracing::debug!(
+            pending_output_terminal = ?self.pending_window_output_terminal,
+            pending_gui_foreground = self.pending_gui_foreground,
+            "XDG toplevel created"
+        );
 
         // Configure the surface with initial size
         let size = Size::from((self.output_size.w, 200));
