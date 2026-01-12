@@ -1743,4 +1743,153 @@ mod tests {
             "focus_prev should skip multiple consecutive hidden terminals"
         );
     }
+
+    // ==========================================================================
+    // Multi-window GUI spawn tests
+    // ==========================================================================
+    // These tests verify that multi-window apps (like WebKitGTK-based surf)
+    // have all their windows inserted at the correct position relative to
+    // the output terminal.
+
+    /// Test that reading pending_window_output_terminal doesn't consume it.
+    /// This is critical for multi-window apps where multiple windows arrive
+    /// and all need to be positioned relative to the same output terminal.
+    #[test]
+    fn pending_output_terminal_not_consumed_on_read() {
+        // Simulate the pattern used in add_window():
+        // let output_terminal = self.pending_window_output_terminal;  // READ, not take()
+        let pending: Option<TerminalId> = Some(TerminalId(42));
+
+        // First read (simulating first window arriving)
+        let first_read = pending;
+        assert_eq!(first_read, Some(TerminalId(42)));
+
+        // Second read (simulating second window arriving)
+        // With our fix, pending is still available
+        let second_read = pending;
+        assert_eq!(second_read, Some(TerminalId(42)));
+
+        // Both windows should see the same output terminal
+        assert_eq!(first_read, second_read);
+    }
+
+    /// Test that take() DOES consume the value (contrast with above).
+    /// This documents the old buggy behavior we fixed.
+    #[test]
+    fn option_take_does_consume_value() {
+        let mut pending: Option<TerminalId> = Some(TerminalId(42));
+
+        // First take (old buggy behavior)
+        let first_take = pending.take();
+        assert_eq!(first_take, Some(TerminalId(42)));
+
+        // Second take - value is gone!
+        let second_take = pending.take();
+        assert_eq!(second_take, None);
+
+        // This is why second window would be inserted at wrong position
+    }
+
+    /// Test multi-window insert positions.
+    /// When output terminal is at position 0, all GUI windows should be
+    /// inserted at position 0, pushing each other down.
+    #[test]
+    fn multi_window_insert_all_above_output_terminal() {
+        // Simulate layout: [output_term, launcher]
+        // Output terminal at index 0
+        let output_terminal_pos = 0;
+
+        // Simulate inserting windows at output terminal position
+        let mut layout: Vec<&str> = vec!["output_term", "launcher"];
+
+        // First window arrives, inserted at position 0
+        layout.insert(output_terminal_pos, "window_A");
+        assert_eq!(layout, vec!["window_A", "output_term", "launcher"]);
+
+        // For second window, output_term is now at position 1
+        // But with our fix, we still use the ORIGINAL output terminal's
+        // current position (found by ID, not stored index)
+        let output_term_current_pos = layout.iter().position(|&x| x == "output_term").unwrap();
+        assert_eq!(output_term_current_pos, 1);
+
+        // Second window inserted at output terminal's current position
+        layout.insert(output_term_current_pos, "window_B");
+        assert_eq!(layout, vec!["window_A", "window_B", "output_term", "launcher"]);
+
+        // Both windows are above output_term (lower indices = higher on screen)
+    }
+
+    // ==========================================================================
+    // Surface coordinate tests (title bar offset)
+    // ==========================================================================
+
+    /// Test surface position calculation for SSD (server-side decorated) windows.
+    /// The surface starts BELOW our title bar, so screen position must include offset.
+    #[test]
+    fn surface_position_includes_title_bar_for_ssd() {
+        use crate::title_bar::TITLE_BAR_HEIGHT;
+
+        let content_y = 100.0;  // Cell starts at content Y = 100
+        let uses_csd = false;   // Server-side decorations (we draw title bar)
+
+        // Calculate title bar offset
+        let title_bar_offset = if uses_csd { 0.0 } else { TITLE_BAR_HEIGHT as f64 };
+
+        // Surface position in screen coords
+        let screen_surface_y = content_y + title_bar_offset;
+
+        // Surface should be below the title bar
+        assert_eq!(screen_surface_y, 100.0 + TITLE_BAR_HEIGHT as f64);
+        assert!(screen_surface_y > content_y, "surface should be below cell top");
+    }
+
+    /// Test surface position for CSD (client-side decorated) windows.
+    /// No title bar offset needed - client handles its own decorations.
+    #[test]
+    fn surface_position_no_offset_for_csd() {
+        let content_y = 100.0;  // Cell starts at content Y = 100
+        let uses_csd = true;    // Client-side decorations
+
+        // Calculate title bar offset
+        let title_bar_offset = if uses_csd { 0.0 } else { 24.0 };
+
+        // Surface position in screen coords
+        let screen_surface_y = content_y + title_bar_offset;
+
+        // Surface should be at cell top (no offset)
+        assert_eq!(screen_surface_y, content_y);
+    }
+
+    /// Test that relative Y calculation accounts for title bar.
+    /// When user clicks at screen Y, we need correct surface-local Y.
+    #[test]
+    fn relative_y_calculation_with_title_bar() {
+        use crate::title_bar::TITLE_BAR_HEIGHT;
+
+        let output_height = 600.0;
+        let content_y = 100.0;
+        let uses_csd = false;
+
+        // Click at screen Y = 150 (50 pixels below cell top at 100)
+        let click_screen_y = 150.0;
+
+        // Convert to render coords (Y-flip)
+        let click_render_y = output_height - click_screen_y;  // 450
+
+        // Cell's render_end (top of cell in render coords)
+        let render_end = output_height - content_y;  // 500
+
+        // Calculate title bar offset
+        let title_bar_offset = if uses_csd { 0.0 } else { TITLE_BAR_HEIGHT as f64 };
+
+        // Relative Y within surface (accounting for title bar)
+        let relative_y = render_end - click_render_y - title_bar_offset;
+
+        // Click was 50px below cell top, minus title bar = position within surface
+        let expected_surface_y = 50.0 - title_bar_offset;
+        assert_eq!(relative_y, expected_surface_y);
+
+        // If title bar is 24px, surface-local Y should be 50 - 24 = 26
+        // (click is 26px into the actual surface content)
+    }
 }

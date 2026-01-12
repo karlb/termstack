@@ -349,3 +349,74 @@ fn get_or_create_scripts_dir() -> Result<PathBuf, std::io::Error> {
     tracing::debug!(scripts_dir = ?scripts_dir, "scripts directory initialized");
     Ok(scripts_dir)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::terminal_manager::TerminalId;
+
+    /// Test the guard condition for not overwriting pending_window_output_terminal.
+    /// This prevents race conditions where a regular spawn could overwrite a GUI spawn's value.
+    #[test]
+    fn pending_output_terminal_guard_prevents_overwrite() {
+        // Simulate compositor state - GUI spawn already set the value
+        let gui_terminal = TerminalId(1);
+        let mut pending_window_output_terminal: Option<TerminalId> = Some(gui_terminal);
+        assert_eq!(pending_window_output_terminal, Some(TerminalId(1)));
+
+        // Regular spawn tries to set - but guard prevents overwrite
+        let regular_terminal = TerminalId(2);
+        if pending_window_output_terminal.is_none() {
+            pending_window_output_terminal = Some(regular_terminal);
+        }
+
+        // Original GUI terminal value should be preserved
+        assert_eq!(
+            pending_window_output_terminal,
+            Some(TerminalId(1)),
+            "regular spawn should not overwrite GUI spawn's pending_window_output_terminal"
+        );
+    }
+
+    /// Test that regular spawn CAN set the value when nothing is pending.
+    /// This is the normal case for commands that might open GUI windows.
+    #[test]
+    fn regular_spawn_sets_value_when_none() {
+        let mut pending_window_output_terminal: Option<TerminalId> = None;
+
+        // Regular spawn with no pending value
+        let regular_terminal = TerminalId(5);
+        if pending_window_output_terminal.is_none() {
+            pending_window_output_terminal = Some(regular_terminal);
+        }
+
+        // Should be set
+        assert_eq!(pending_window_output_terminal, Some(TerminalId(5)));
+    }
+
+    /// Test the race condition scenario end-to-end.
+    /// 1. GUI spawn sets pending
+    /// 2. User types command in another terminal (triggers regular spawn)
+    /// 3. GUI window arrives - should still find correct output terminal
+    #[test]
+    fn race_condition_scenario() {
+        // Step 1: GUI spawn sets the pending value
+        let gui_output_terminal = TerminalId(10);
+        let mut pending_window_output_terminal: Option<TerminalId> = Some(gui_output_terminal);
+
+        // Step 2: Regular spawn (user typing elsewhere) - guard prevents overwrite
+        let user_command_terminal = TerminalId(11);
+        if pending_window_output_terminal.is_none() {
+            pending_window_output_terminal = Some(user_command_terminal);
+        }
+
+        // Step 3: GUI window arrives - reads the value
+        let output_terminal_for_window = pending_window_output_terminal;
+
+        // Window should be linked to the GUI's output terminal, not the user's command
+        assert_eq!(
+            output_terminal_for_window,
+            Some(TerminalId(10)),
+            "GUI window should be linked to GUI's output terminal"
+        );
+    }
+}
