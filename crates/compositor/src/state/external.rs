@@ -3,7 +3,6 @@
 //! Handles external window-specific operations: CSD detection, activation, and hit testing.
 
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState;
-use smithay::utils::Point;
 use super::{StackWindow, TermStack};
 
 impl TermStack {
@@ -50,14 +49,5 @@ impl TermStack {
                 entry.surface.send_pending_configure();
             }
         }
-    }
-
-    /// Find external window at a given point (returns window index if hit)
-    ///
-    /// Filters window_at() results to only return external windows, not terminals.
-    pub fn external_window_at(&self, point: Point<f64, smithay::utils::Logical>) -> Option<usize> {
-        self.window_at(crate::coords::RenderY::new(point.y)).filter(|&i| {
-            matches!(self.layout_nodes.get(i), Some(node) if matches!(node.cell, StackWindow::External(_)))
-        })
     }
 }

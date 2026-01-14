@@ -29,6 +29,10 @@
 //! ```
 
 use std::env;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Check if a display is available for testing
 ///
@@ -107,6 +111,102 @@ impl Drop for TestEnvironment {
             }
         }
     }
+}
+
+// ============================================================================
+// Compositor process utilities for integration tests
+// ============================================================================
+
+/// Get the IPC socket path for the test compositor
+pub fn ipc_socket_path() -> PathBuf {
+    let uid = rustix::process::getuid().as_raw();
+    PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
+}
+
+/// Wait for the compositor's IPC socket to become available
+pub fn wait_for_socket(timeout: Duration) -> bool {
+    let socket_path = ipc_socket_path();
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if socket_path.exists() && UnixStream::connect(&socket_path).is_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// Wait for XWayland to become ready and return DISPLAY value
+///
+/// Reads the compositor's environment from /proc to detect when XWayland starts.
+pub fn wait_for_xwayland(compositor_pid: u32, timeout: Duration) -> Option<String> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        let environ_path = format!("/proc/{}/environ", compositor_pid);
+        if let Ok(environ_data) = std::fs::read(&environ_path) {
+            let env_vars: Vec<&[u8]> = environ_data.split(|&b| b == 0).collect();
+            for env_var in env_vars {
+                if let Ok(s) = std::str::from_utf8(env_var) {
+                    if let Some(display) = s.strip_prefix("DISPLAY=") {
+                        return Some(display.to_string());
+                    }
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    None
+}
+
+/// Find the workspace root by looking for Cargo.toml with [workspace]
+pub fn find_workspace_root() -> PathBuf {
+    let mut dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                if content.contains("[workspace]") {
+                    return dir;
+                }
+            }
+        }
+        if !dir.pop() {
+            return env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        }
+    }
+}
+
+/// Clean up any leftover sockets from previous runs
+pub fn cleanup_sockets() {
+    let socket_path = ipc_socket_path();
+    let _ = std::fs::remove_file(&socket_path);
+
+    // Also clean up wayland sockets
+    let uid = rustix::process::getuid().as_raw();
+    let runtime_dir = format!("/run/user/{}", uid);
+    for i in 0..10 {
+        let _ = std::fs::remove_file(format!("{}/wayland-{}", runtime_dir, i));
+        let _ = std::fs::remove_file(format!("{}/wayland-{}.lock", runtime_dir, i));
+    }
+}
+
+/// Check if an environment variable is set in a process's environment
+///
+/// Reads from /proc/{pid}/environ and returns the value if found.
+pub fn get_env_from_process(pid: u32, var_name: &str) -> Option<String> {
+    let environ_path = format!("/proc/{}/environ", pid);
+    if let Ok(environ_data) = std::fs::read(&environ_path) {
+        let prefix = format!("{}=", var_name);
+        let env_vars: Vec<&[u8]> = environ_data.split(|&b| b == 0).collect();
+        for env_var in env_vars {
+            if let Ok(s) = std::str::from_utf8(env_var) {
+                if s.starts_with(&prefix) {
+                    return Some(s[prefix.len()..].to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

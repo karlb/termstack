@@ -12,6 +12,7 @@ tracing.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 compositor = { path = "../compositor" }
+rustix.workspace = true
 
 [features]
 gui-tests = []

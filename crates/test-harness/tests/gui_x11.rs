@@ -12,101 +12,13 @@
 
 #![cfg(feature = "gui-tests")]
 
-use std::io::Read;
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{env, thread};
-
-/// Get the IPC socket path for the test compositor
-fn ipc_socket_path() -> PathBuf {
-    let uid = rustix::process::getuid().as_raw();
-    PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
-}
-
-/// Wait for the compositor's IPC socket to become available
-fn wait_for_socket(timeout: Duration) -> bool {
-    let socket_path = ipc_socket_path();
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if socket_path.exists() {
-            if UnixStream::connect(&socket_path).is_ok() {
-                return true;
-            }
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
-
-/// Wait for XWayland to become ready and return DISPLAY value
-fn wait_for_xwayland(compositor_pid: u32, timeout: Duration) -> Option<String> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        let environ_path = format!("/proc/{}/environ", compositor_pid);
-        if let Ok(environ_data) = std::fs::read(&environ_path) {
-            let env_vars: Vec<&[u8]> = environ_data.split(|&b| b == 0).collect();
-            for env_var in env_vars {
-                if let Ok(s) = std::str::from_utf8(env_var) {
-                    if s.starts_with("DISPLAY=") {
-                        return Some(s["DISPLAY=".len()..].to_string());
-                    }
-                }
-            }
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
-    None
-}
-
-/// Check if XAUTHORITY is set in compositor's environment
-fn check_xauthority_in_compositor(compositor_pid: u32) -> Option<String> {
-    let environ_path = format!("/proc/{}/environ", compositor_pid);
-    if let Ok(environ_data) = std::fs::read(&environ_path) {
-        let env_vars: Vec<&[u8]> = environ_data.split(|&b| b == 0).collect();
-        for env_var in env_vars {
-            if let Ok(s) = std::str::from_utf8(env_var) {
-                if s.starts_with("XAUTHORITY=") {
-                    return Some(s["XAUTHORITY=".len()..].to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Find the workspace root
-fn find_workspace_root() -> PathBuf {
-    let mut dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                if content.contains("[workspace]") {
-                    return dir;
-                }
-            }
-        }
-        if !dir.pop() {
-            return env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        }
-    }
-}
-
-/// Clean up any leftover sockets from previous runs
-fn cleanup_sockets() {
-    let socket_path = ipc_socket_path();
-    let _ = std::fs::remove_file(&socket_path);
-
-    // Also clean up wayland sockets
-    let uid = rustix::process::getuid().as_raw();
-    let runtime_dir = format!("/run/user/{}", uid);
-    for i in 0..10 {
-        let _ = std::fs::remove_file(format!("{}/wayland-{}", runtime_dir, i));
-        let _ = std::fs::remove_file(format!("{}/wayland-{}.lock", runtime_dir, i));
-    }
-}
+use test_harness::live::{
+    cleanup_sockets, find_workspace_root, get_env_from_process, wait_for_socket,
+    wait_for_xwayland,
+};
 
 #[test]
 #[ignore] // Run manually with: cargo test -p test-harness --features gui-tests --test gui_x11 -- --ignored
@@ -167,7 +79,7 @@ fn test_xauthority_not_set_in_compositor() {
     assert!(x_display.is_some(), "XWayland did not start");
 
     // Check that XAUTHORITY IS set in compositor environment (for GTK apps)
-    let xauthority = check_xauthority_in_compositor(compositor_pid);
+    let xauthority = get_env_from_process(compositor_pid, "XAUTHORITY");
     assert!(
         xauthority.is_some(),
         "XAUTHORITY should be set in compositor for GTK app support"
@@ -253,7 +165,7 @@ fn test_x11_connection_without_auth() {
     thread::sleep(Duration::from_millis(500));
 
     // Get XAUTHORITY from compositor environment
-    let xauthority = check_xauthority_in_compositor(compositor_pid);
+    let xauthority = get_env_from_process(compositor_pid, "XAUTHORITY");
 
     // Test X11 connection WITH our xauth file
     let mut cmd = Command::new("xdpyinfo");
@@ -261,10 +173,7 @@ fn test_x11_connection_without_auth() {
     if let Some(ref xa) = xauthority {
         cmd.env("XAUTHORITY", xa);
     }
-    let xdpyinfo_result = cmd
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let xdpyinfo_result = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status();
 
     let success = xdpyinfo_result.map(|s| s.success()).unwrap_or(false);
 

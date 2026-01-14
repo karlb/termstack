@@ -8,50 +8,10 @@
 #![cfg(feature = "gui-tests")]
 
 use std::io::Read;
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{env, thread};
-
-/// Get the IPC socket path for the test compositor
-fn ipc_socket_path() -> PathBuf {
-    let uid = rustix::process::getuid().as_raw();
-    PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
-}
-
-/// Wait for the compositor's IPC socket to become available
-fn wait_for_socket(timeout: Duration) -> bool {
-    let socket_path = ipc_socket_path();
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if socket_path.exists() {
-            if UnixStream::connect(&socket_path).is_ok() {
-                return true;
-            }
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
-
-/// Find the workspace root by looking for Cargo.toml with [workspace]
-fn find_workspace_root() -> PathBuf {
-    let mut dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                if content.contains("[workspace]") {
-                    return dir;
-                }
-            }
-        }
-        if !dir.pop() {
-            return env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        }
-    }
-}
+use test_harness::live::{cleanup_sockets, find_workspace_root, wait_for_socket};
 
 /// Test that foot terminal connects to the compositor successfully
 #[test]
@@ -91,12 +51,7 @@ fn test_foot_connects() {
     let uid = rustix::process::getuid().as_raw();
 
     // Clean up sockets from previous runs
-    let socket_path = ipc_socket_path();
-    let _ = std::fs::remove_file(&socket_path);
-    let wayland_socket = format!("/run/user/{}/wayland-1", uid);
-    let wayland_lock = format!("/run/user/{}/wayland-1.lock", uid);
-    let _ = std::fs::remove_file(&wayland_socket);
-    let _ = std::fs::remove_file(&wayland_lock);
+    cleanup_sockets();
 
     // Start compositor
     let compositor_bin = workspace_root.join("target/release/termstack");

@@ -754,7 +754,7 @@ impl TermStack {
                         StackWindow::External(_) => {
                             // External window: send final configure
                             if final_target > 0 {
-                                self.request_resize(window_index, final_target, true);
+                                self.request_resize(window_index, final_target);
                             }
                         }
                     }

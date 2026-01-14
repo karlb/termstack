@@ -99,13 +99,6 @@ pub struct ResizeDrag {
     pub last_sent_height: Option<u32>,
 }
 
-/// Size of the resize handle zone at cell borders (pixels)
-pub const RESIZE_HANDLE_SIZE: i32 = 8;
-
-/// Minimum time between configure requests during resize (milliseconds)
-/// This prevents overwhelming windows with too many resize requests
-pub const MIN_CONFIGURE_INTERVAL_MS: u64 = 16; // ~60fps
-
 /// Maximum time to wait for a window commit before sending next configure (milliseconds)
 /// If window doesn't commit within this timeout, we send another configure anyway
 /// This balances responsiveness (avoid >1s lag) with preventing window thrashing

@@ -17,7 +17,7 @@ const RESIZE_HANDLE_SIZE: i32 = 8;
 
 impl TermStack {
     /// Request a resize on an external window
-    pub fn request_resize(&mut self, index: usize, new_height: u32, _force: bool) {
+    pub fn request_resize(&mut self, index: usize, new_height: u32) {
         let Some(node) = self.layout_nodes.get_mut(index) else {
             tracing::warn!("request_resize: node not found at index {}", index);
             return;

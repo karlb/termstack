@@ -13,72 +13,12 @@
 #![cfg(feature = "gui-tests")]
 
 use std::io::Read;
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{env, thread};
-
-/// Get the IPC socket path for the test compositor
-fn ipc_socket_path() -> PathBuf {
-    let uid = rustix::process::getuid().as_raw();
-    PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
-}
-
-/// Wait for the compositor's IPC socket to become available
-fn wait_for_socket(timeout: Duration) -> bool {
-    let socket_path = ipc_socket_path();
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if socket_path.exists() {
-            if UnixStream::connect(&socket_path).is_ok() {
-                return true;
-            }
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    false
-}
-
-/// Wait for XWayland to become ready by checking DISPLAY environment
-fn wait_for_xwayland(compositor_pid: u32, timeout: Duration) -> Option<String> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        // Check compositor's environment for DISPLAY
-        let environ_path = format!("/proc/{}/environ", compositor_pid);
-        if let Ok(environ_data) = std::fs::read(&environ_path) {
-            // Parse null-terminated environment variables
-            let env_vars: Vec<&[u8]> = environ_data.split(|&b| b == 0).collect();
-            for env_var in env_vars {
-                if let Ok(s) = std::str::from_utf8(env_var) {
-                    if s.starts_with("DISPLAY=") {
-                        return Some(s["DISPLAY=".len()..].to_string());
-                    }
-                }
-            }
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
-    None
-}
-
-/// Find the workspace root by looking for Cargo.toml with [workspace]
-fn find_workspace_root() -> PathBuf {
-    let mut dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                if content.contains("[workspace]") {
-                    return dir;
-                }
-            }
-        }
-        if !dir.pop() {
-            return env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        }
-    }
-}
+use test_harness::live::{
+    cleanup_sockets, find_workspace_root, wait_for_socket, wait_for_xwayland,
+};
 
 /// Test that xeyes X11 app launches and connects successfully
 #[test]
@@ -137,12 +77,7 @@ fn test_xeyes_launches() {
     let uid = rustix::process::getuid().as_raw();
 
     // Clean up sockets from previous runs
-    let socket_path = ipc_socket_path();
-    let _ = std::fs::remove_file(&socket_path);
-    let wayland_socket = format!("/run/user/{}/wayland-1", uid);
-    let wayland_lock = format!("/run/user/{}/wayland-1.lock", uid);
-    let _ = std::fs::remove_file(&wayland_socket);
-    let _ = std::fs::remove_file(&wayland_lock);
+    cleanup_sockets();
 
     // Start compositor
     let compositor_bin = workspace_root.join("target/release/termstack");
@@ -294,12 +229,7 @@ fn test_multiple_x11_apps() {
     let uid = rustix::process::getuid().as_raw();
 
     // Clean up sockets
-    let socket_path = ipc_socket_path();
-    let _ = std::fs::remove_file(&socket_path);
-    let wayland_socket = format!("/run/user/{}/wayland-1", uid);
-    let wayland_lock = format!("/run/user/{}/wayland-1.lock", uid);
-    let _ = std::fs::remove_file(&wayland_socket);
-    let _ = std::fs::remove_file(&wayland_lock);
+    cleanup_sockets();
 
     // Start compositor
     let compositor_bin = workspace_root.join("target/release/termstack");
@@ -402,15 +332,8 @@ fn test_compositor_works_without_xwayland_satellite() {
 
     assert!(status.success(), "Compositor build failed");
 
-    let uid = rustix::process::getuid().as_raw();
-
     // Clean up sockets
-    let socket_path = ipc_socket_path();
-    let _ = std::fs::remove_file(&socket_path);
-    let wayland_socket = format!("/run/user/{}/wayland-1", uid);
-    let wayland_lock = format!("/run/user/{}/wayland-1.lock", uid);
-    let _ = std::fs::remove_file(&wayland_socket);
-    let _ = std::fs::remove_file(&wayland_lock);
+    cleanup_sockets();
 
     // Start compositor with PATH cleared (so xwayland-satellite can't be found)
     let compositor_bin = workspace_root.join("target/release/termstack");
