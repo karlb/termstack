@@ -16,7 +16,7 @@
 //! - Terminal content (delegates to `terminal_manager/`)
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, ButtonState, Event, InputBackend, InputEvent,
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
     KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
 };
 use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
@@ -38,8 +38,11 @@ const BTN_LEFT: u32 = 0x110;
 /// Scroll amount per key press (pixels)
 const SCROLL_STEP: f64 = 50.0;
 
-/// Scroll amount per scroll wheel tick (pixels)
-const SCROLL_WHEEL_MULTIPLIER: f64 = 15.0;
+/// Compositor column scroll: pixels per discrete scroll wheel notch
+const COMPOSITOR_SCROLL_PIXELS_PER_NOTCH: f64 = 100.0;
+
+/// Terminal scrollback: lines per discrete scroll wheel notch
+const TERMINAL_SCROLL_LINES_PER_NOTCH: f64 = 3.0;
 
 /// Check if a click is on the close button in a title bar
 fn is_click_on_close_button(
@@ -459,10 +462,10 @@ impl TermStack {
                 self.focus_change_requested = -1;
             }
             CompositorAction::ScrollDown => {
-                self.scroll_requested = SCROLL_STEP;
+                self.pending_scroll_delta += SCROLL_STEP;
             }
             CompositorAction::ScrollUp => {
-                self.scroll_requested = -SCROLL_STEP;
+                self.pending_scroll_delta += -SCROLL_STEP;
             }
             CompositorAction::ScrollToTop => {
                 self.scroll_to_top();
@@ -471,10 +474,10 @@ impl TermStack {
                 self.scroll_to_bottom();
             }
             CompositorAction::PageDown => {
-                self.scroll_requested = self.output_size.h as f64 * 0.9;
+                self.pending_scroll_delta += self.output_size.h as f64 * 0.9;
             }
             CompositorAction::PageUp => {
-                self.scroll_requested = -(self.output_size.h as f64 * 0.9);
+                self.pending_scroll_delta += -(self.output_size.h as f64 * 0.9);
             }
             CompositorAction::Copy => {
                 tracing::debug!("copy to clipboard requested");
@@ -1019,50 +1022,105 @@ impl TermStack {
         let source = event.source();
 
         // Handle vertical scroll
-        let vertical = event
-            .amount(Axis::Vertical)
-            .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) / 120.0 * 3.0);
+        // Smooth scroll (touchpad): amount() returns pixel amounts - use directly
+        // Discrete scroll (wheel): use v120 with our multiplier (ignore X11's amount() for wheels)
+        let amount = event.amount(Axis::Vertical);
+        let amount_v120 = event.amount_v120(Axis::Vertical);
 
-        if vertical != 0.0 {
-            // Get current modifier state directly from keyboard
-            let shift_held = self.seat.get_keyboard()
-                .map(|kb| kb.modifier_state().shift)
-                .unwrap_or(false);
+        // Debug: log raw input BEFORE any filtering
+        tracing::debug!(
+            ?source,
+            ?amount,
+            ?amount_v120,
+            scroll_offset = self.scroll_offset,
+            "raw scroll input"
+        );
 
-            if shift_held {
-                // Shift+Scroll: Terminal scrollback navigation
-                // Scroll the terminal under the pointer, not the focused one
-                if let Some(terminals) = terminals {
-                    // Find which cell is under the pointer
-                    if let Some(window_idx) = self.window_at(RenderY::new(self.pointer_position.y)) {
-                        if let Some(StackWindow::Terminal(term_id)) = self.layout_nodes.get(window_idx).map(|n| &n.cell) {
-                            if let Some(term) = terminals.get_mut(*term_id) {
-                                // Convert scroll amount to lines
-                                // Positive vertical = wheel down = scroll toward newer output
-                                // We negate because scroll_display positive = scroll up (into history)
-                                let lines = (vertical * 3.0).round() as i32;
-                                term.terminal.scroll_display(-lines);
-                                term.mark_dirty(); // Mark for re-render
-                                tracing::debug!(
-                                    vertical,
-                                    lines,
-                                    offset = term.terminal.display_offset(),
-                                    "terminal scrollback (Shift+Scroll)"
-                                );
-                            }
+        // Get current modifier state directly from keyboard
+        let shift_held = self.seat.get_keyboard()
+            .map(|kb| kb.modifier_state().shift)
+            .unwrap_or(false);
+
+        if shift_held {
+            // Shift+Scroll: Terminal scrollback navigation
+            // Calculate lines to scroll (using terminal-specific sensitivity)
+            let lines = match source {
+                AxisSource::Wheel | AxisSource::WheelTilt => {
+                    // Mouse wheel: use v120 with terminal-specific multiplier
+                    (amount_v120.unwrap_or(0.0) / 120.0 * TERMINAL_SCROLL_LINES_PER_NOTCH).round() as i32
+                }
+                _ => {
+                    // Touchpad/continuous: convert pixel amounts to lines (~5 pixels per line)
+                    (amount.unwrap_or(0.0) / 5.0).round() as i32
+                }
+            };
+
+            if lines == 0 {
+                return;
+            }
+
+            // Scroll the terminal under the pointer, not the focused one
+            if let Some(terminals) = terminals {
+                // Find which cell is under the pointer
+                if let Some(window_idx) = self.window_at(RenderY::new(self.pointer_position.y)) {
+                    if let Some(StackWindow::Terminal(term_id)) = self.layout_nodes.get(window_idx).map(|n| &n.cell) {
+                        if let Some(term) = terminals.get_mut(*term_id) {
+                            // Positive lines = wheel down = scroll toward newer output
+                            // We negate because scroll_display positive = scroll up (into history)
+                            term.terminal.scroll_display(-lines);
+                            term.mark_dirty(); // Mark for re-render
+                            tracing::debug!(
+                                lines,
+                                offset = term.terminal.display_offset(),
+                                "terminal scrollback (Shift+Scroll)"
+                            );
                         }
                     }
                 }
-            } else {
-                // Regular scroll: Compositor column navigation
-                // Positive vertical = wheel down = scroll content down (increase offset)
-                self.scroll_requested += vertical * SCROLL_WHEEL_MULTIPLIER;
-                tracing::info!(
-                    vertical,
-                    scroll_requested = self.scroll_requested,
-                    "handle_pointer_axis: compositor scroll"
-                );
             }
+        } else {
+            // Regular scroll: Compositor column navigation
+            // Calculate pixel delta (using compositor-specific sensitivity)
+            let vertical = match source {
+                AxisSource::Wheel | AxisSource::WheelTilt => {
+                    // Mouse wheel: use v120 with compositor-specific multiplier
+                    amount_v120.unwrap_or(0.0) / 120.0 * COMPOSITOR_SCROLL_PIXELS_PER_NOTCH
+                }
+                _ => {
+                    // Touchpad/continuous: use pixel amounts directly
+                    amount.unwrap_or(0.0)
+                }
+            };
+
+            // Skip zero-value events (gesture end signals, etc.)
+            if vertical == 0.0 {
+                return;
+            }
+
+            // Accumulate delta - applied once per frame to avoid repeated layout recalc
+            // Positive vertical = wheel down = scroll content down (increase offset)
+            let before = self.pending_scroll_delta;
+            self.pending_scroll_delta += vertical;
+
+            // Clamp pending delta so projected scroll stays in valid range.
+            // This prevents "scroll debt" from accumulating at boundaries that would
+            // need to be undone when reversing direction.
+            let max_scroll = self.max_scroll();
+            let projected = self.scroll_offset + self.pending_scroll_delta;
+            if projected < 0.0 {
+                self.pending_scroll_delta = -self.scroll_offset;
+            } else if projected > max_scroll {
+                self.pending_scroll_delta = max_scroll - self.scroll_offset;
+            }
+            tracing::debug!(
+                vertical,
+                before,
+                after = self.pending_scroll_delta,
+                scroll_offset = self.scroll_offset,
+                max_scroll,
+                projected,
+                "scroll event"
+            );
         }
 
         // Forward horizontal scroll to clients

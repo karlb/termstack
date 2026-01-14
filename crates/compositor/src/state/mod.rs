@@ -178,8 +178,8 @@ pub struct TermStack {
     /// Focus navigation request (1 = next, -1 = prev)
     pub focus_change_requested: i32,
 
-    /// Scroll request (in pixels, positive = down)
-    pub scroll_requested: f64,
+    /// Accumulated scroll delta from input events (applied once per frame to avoid repeated layout recalc)
+    pub pending_scroll_delta: f64,
 
     /// Pending terminal spawn requests from IPC (termstack commands with foreground=None)
     pub pending_spawn_requests: Vec<SpawnRequest>,
@@ -501,7 +501,7 @@ impl TermStack {
             running: true,
             spawn_terminal_requested: false,
             focus_change_requested: 0,
-            scroll_requested: 0.0,
+            pending_scroll_delta: 0.0,
             pending_spawn_requests: Vec::new(),
             pending_resize_request: None,
             new_external_window_index: None,
@@ -584,10 +584,22 @@ impl TermStack {
     }
 
     /// Calculate maximum scroll offset based on content height
-    fn max_scroll(&self) -> f64 {
+    pub fn max_scroll(&self) -> f64 {
         // Use layout_nodes height which includes title bars for terminals
         let total_height: i32 = self.layout_nodes.iter().map(|node| node.height).sum();
         (total_height as f64 - self.output_size.h as f64).max(0.0)
+    }
+
+    /// Apply any accumulated scroll delta (call once per frame after input processing)
+    /// Does NOT recalculate layout - caller should do that after
+    pub fn apply_pending_scroll(&mut self) {
+        if self.pending_scroll_delta != 0.0 {
+            // Pending delta is already clamped at accumulation time (in handle_pointer_axis)
+            // so this should always stay in valid range, but clamp defensively
+            let max_scroll = self.max_scroll();
+            self.scroll_offset = (self.scroll_offset + self.pending_scroll_delta).clamp(0.0, max_scroll);
+            self.pending_scroll_delta = 0.0;
+        }
     }
 
     /// Scroll by a delta (clamped to valid range)
@@ -600,12 +612,14 @@ impl TermStack {
     /// Scroll to the top (scroll_offset = 0)
     pub fn scroll_to_top(&mut self) {
         self.scroll_offset = 0.0;
+        self.pending_scroll_delta = 0.0; // Clear any pending scroll
         self.recalculate_layout();
     }
 
     /// Scroll to the bottom (scroll_offset = max)
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = self.max_scroll();
+        self.pending_scroll_delta = 0.0; // Clear any pending scroll
         self.recalculate_layout();
     }
 

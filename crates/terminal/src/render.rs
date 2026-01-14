@@ -235,7 +235,6 @@ impl TerminalRenderer {
 
         // Calculate viewport position
         let visible_rows = (height / self.cell_height).max(1);
-        let cursor_line = content.cursor.point.line.0 as u32;
 
         // Collect cells for two-pass processing (find last content line, then render)
         let cells: Vec<_> = content.display_iter.collect();
@@ -254,19 +253,18 @@ impl TerminalRenderer {
             last
         };
 
-        // If content fits in viewport, show from line 0
-        // If content exceeds viewport, show ending at last content line
-        let first_visible_line = if viewport_offset > 0 {
-            // User scrolled back
-            cursor_line
-                .saturating_sub(visible_rows - 1)
-                .saturating_sub(viewport_offset as u32)
-        } else if last_content_line < visible_rows {
-            // Content fits - show from beginning
+        // Calculate first visible line based on viewport offset
+        // viewport_offset=0 means showing live output (bottom of content)
+        // viewport_offset=N means scrolled N lines back into history
+        let first_visible_line = if last_content_line < visible_rows {
+            // Content fits in viewport - show from beginning
             0
         } else {
-            // Content exceeds viewport - show ending at last content
-            last_content_line.saturating_sub(visible_rows - 1)
+            // Content exceeds viewport
+            // Base position shows ending at last content line
+            let base_first_line = last_content_line.saturating_sub(visible_rows - 1);
+            // Scroll back by viewport_offset lines
+            base_first_line.saturating_sub(viewport_offset as u32)
         };
 
         // Get selection range for highlighting

@@ -110,6 +110,11 @@ pub struct Terminal {
     /// 0 = showing live output (cursor at bottom)
     /// >0 = scrolled into history (showing older content)
     viewport_offset: usize,
+
+    /// Visual rows from last render (for scroll clamping)
+    /// This is updated during render() and used by scroll_display()
+    /// to properly clamp the viewport offset to the visual maximum.
+    last_visual_rows: usize,
 }
 
 impl Terminal {
@@ -164,6 +169,7 @@ impl Terminal {
             _grid_rows: pty_rows,
             pty_rows,
             viewport_offset: 0,
+            last_visual_rows: rows as usize,
         })
     }
 
@@ -236,6 +242,7 @@ impl Terminal {
             _grid_rows: pty_rows,
             pty_rows,
             viewport_offset: 0,
+            last_visual_rows: visual_rows as usize,
         })
     }
 
@@ -424,6 +431,10 @@ impl Terminal {
 
     /// Render to pixel buffer
     pub fn render(&mut self, width: u32, height: u32, show_cursor: bool) {
+        // Update last_visual_rows for scroll clamping
+        let (_, cell_height) = self.renderer.cell_size();
+        self.last_visual_rows = (height / cell_height).max(1) as usize;
+
         let term = self.term.lock();
         self.renderer.render(&term, width, height, show_cursor, self.viewport_offset);
     }
@@ -677,9 +688,17 @@ impl Terminal {
             self.viewport_offset.saturating_sub((-lines) as usize)
         };
 
-        // Clamp to valid range (can't scroll past the beginning of content)
-        // Max offset = cursor_line (would show line 0 at top)
-        self.viewport_offset = new_offset.min(cursor_line);
+        // Clamp to valid visual range.
+        // The visual maximum is when first_visible_line would be 0.
+        // With the render formula: first_visible_line = (cursor_line + 1) - (visible_rows - 1) - viewport_offset
+        // Setting first_visible_line = 0: max_offset = cursor_line + 2 - visible_rows
+        let visible_rows = self.last_visual_rows;
+        let max_visual_offset = if visible_rows <= 1 {
+            cursor_line // degenerate case
+        } else {
+            (cursor_line + 1).saturating_sub(visible_rows - 1)
+        };
+        self.viewport_offset = new_offset.min(max_visual_offset);
     }
 
     /// Returns true if terminal has scrollback history available

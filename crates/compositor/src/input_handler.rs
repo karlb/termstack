@@ -1,7 +1,7 @@
 //! Input event processing and handling
 //!
-//! Handles key repeat for terminal input and processes focus change and
-//! scroll requests from the input handler.
+//! Handles key repeat for terminal input and processes focus change
+//! requests from the input handler.
 
 use crate::state::TermStack;
 use crate::terminal_manager::TerminalManager;
@@ -42,43 +42,35 @@ pub fn handle_key_repeat(
     compositor.key_repeat = Some((bytes_to_send, next));
 }
 
-/// Handle focus change and scroll requests from input handlers.
+/// Handle focus change requests from input handlers.
 ///
-/// This processes the `focus_change_requested` and `scroll_requested` fields
-/// set by the input handler, applying the changes to compositor state.
-pub fn handle_focus_and_scroll_requests(
+/// This processes the `focus_change_requested` field set by the input handler,
+/// applying focus changes to compositor state.
+///
+/// Note: Scroll is applied immediately in input handlers to avoid backlog.
+pub fn handle_focus_change_requests(
     compositor: &mut TermStack,
     terminal_manager: &mut TerminalManager,
 ) {
-    // Handle focus change requests
-    if compositor.focus_change_requested != 0 {
-        // Create visibility checker closure
-        let is_terminal_visible = |id| terminal_manager.is_terminal_visible(id);
-
-        if compositor.focus_change_requested > 0 {
-            compositor.focus_next(is_terminal_visible);
-        } else {
-            compositor.focus_prev(is_terminal_visible);
-        }
-        compositor.focus_change_requested = 0;
-
-        // Update keyboard focus to match the newly focused cell
-        compositor.update_keyboard_focus_for_focused_window();
-
-        // Scroll to show focused cell
-        if let Some(focused_idx) = compositor.focused_index() {
-            compositor.scroll_to_show_window_bottom(focused_idx);
-        }
+    if compositor.focus_change_requested == 0 {
+        return;
     }
 
-    // Handle scroll requests
-    if compositor.scroll_requested != 0.0 {
-        let delta = compositor.scroll_requested;
-        compositor.scroll_requested = 0.0;
-        compositor.scroll(delta);
-        tracing::debug!(
-            new_offset = compositor.scroll_offset,
-            "scroll processed"
-        );
+    // Create visibility checker closure
+    let is_terminal_visible = |id| terminal_manager.is_terminal_visible(id);
+
+    if compositor.focus_change_requested > 0 {
+        compositor.focus_next(is_terminal_visible);
+    } else {
+        compositor.focus_prev(is_terminal_visible);
+    }
+    compositor.focus_change_requested = 0;
+
+    // Update keyboard focus to match the newly focused cell
+    compositor.update_keyboard_focus_for_focused_window();
+
+    // Scroll to show focused cell
+    if let Some(focused_idx) = compositor.focused_index() {
+        compositor.scroll_to_show_window_bottom(focused_idx);
     }
 }

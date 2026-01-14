@@ -5,7 +5,7 @@
 
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
 use smithay::backend::allocator::dmabuf::DmabufAllocator;
@@ -357,6 +357,11 @@ pub fn run_compositor() -> anyhow::Result<()> {
     // Initial terminal will be spawned after XWayland is ready (in main loop)
     // This ensures DISPLAY is set correctly for X11 app support
 
+    // Frame timing for render rate limiting
+    // Skip renders when behind to avoid backlog, but always process events
+    let mut last_render_time = Instant::now();
+    const MIN_FRAME_TIME: Duration = Duration::from_millis(8); // ~120fps max
+
     // Main event loop
     while compositor.running {
         // Clear stale drag state if no pointer buttons are pressed
@@ -394,10 +399,52 @@ pub fn run_compositor() -> anyhow::Result<()> {
         // This ensures Space.element_under works correctly for click detection
         compositor.recalculate_layout();
 
-        // Process X11 input events from channel
-        while let Ok(input_event) = x11_event_rx.try_recv() {
-            compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
+        // Drain all pending X11 input events before rendering.
+        //
+        // WORKAROUND: Smithay's X11Source uses a bounded sync_channel(5) which causes
+        // scroll event backlog during fast touchpad scrolling. Events buffer in
+        // RustConnection while the channel is full, then trickle through 5 at a time.
+        // See: smithay/src/utils/x11rb.rs line 53
+        //
+        // CLEAN FIX: Fork Smithay and change sync_channel(5) to channel() (unbounded)
+        // in src/utils/x11rb.rs. This allows all buffered events to drain immediately.
+        //
+        // This workaround uses small timeouts between drain attempts to give the event
+        // thread time to refill the channel from RustConnection's buffer.
+        let drain_start = Instant::now();
+        let drain_max = Duration::from_millis(8);
+        let mut consecutive_empty = 0;
+
+        loop {
+            // Small timeout lets event thread refill channel from RustConnection buffer
+            event_loop
+                .dispatch(Some(Duration::from_micros(200)), &mut compositor)
+                .expect("event loop dispatch failed");
+
+            let mut batch_count = 0;
+            while let Ok(input_event) = x11_event_rx.try_recv() {
+                batch_count += 1;
+                compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
+            }
+
+            if batch_count == 0 {
+                consecutive_empty += 1;
+                // Break after 3 consecutive empty checks (~600µs of no events)
+                if consecutive_empty >= 3 {
+                    break;
+                }
+            } else {
+                consecutive_empty = 0;
+            }
+
+            // Hard timeout safety
+            if drain_start.elapsed() >= drain_max {
+                break;
+            }
         }
+
+        // Apply accumulated scroll delta (once per frame)
+        compositor.apply_pending_scroll();
 
         // Handle X11 resize events
         if let Some((new_w, new_h)) = compositor.compositor_window_resize_pending.take() {
@@ -464,8 +511,8 @@ pub fn run_compositor() -> anyhow::Result<()> {
         // Handle key repeat for terminals
         crate::input_handler::handle_key_repeat(&mut compositor, &mut terminal_manager);
 
-        // Handle focus and scroll requests from input
-        crate::input_handler::handle_focus_and_scroll_requests(&mut compositor, &mut terminal_manager);
+        // Handle focus change requests from input (scroll is applied immediately)
+        crate::input_handler::handle_focus_change_requests(&mut compositor, &mut terminal_manager);
 
         // Process terminal PTY output and handle sizing actions
         crate::terminal_output::process_terminal_output(&mut compositor, &mut terminal_manager);
@@ -479,6 +526,24 @@ pub fn run_compositor() -> anyhow::Result<()> {
         // Cleanup dead terminals and handle focus changes
         if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
             break;
+        }
+
+        // Frame rate limiting: wait until it's time to render
+        // This prevents busy-looping while still processing events at a steady rate
+        let now = Instant::now();
+        let elapsed = now.duration_since(last_render_time);
+        if elapsed < MIN_FRAME_TIME {
+            // Wait for remaining time, then process any events that arrived
+            let remaining = MIN_FRAME_TIME - elapsed;
+            event_loop
+                .dispatch(Some(remaining), &mut compositor)
+                .expect("event loop dispatch failed");
+            // Process events that arrived during the wait
+            while let Ok(input_event) = x11_event_rx.try_recv() {
+                compositor.process_input_event_with_terminals(input_event, &mut terminal_manager);
+            }
+            compositor.apply_pending_scroll();
+            continue;
         }
 
         // Get window size for rendering
@@ -759,6 +824,9 @@ pub fn run_compositor() -> anyhow::Result<()> {
         if let Err(e) = x11_surface.submit() {
             tracing::warn!(error = ?e, "Failed to submit X11 surface");
         }
+
+        // Update render timestamp for frame rate limiting
+        last_render_time = now;
 
         // Send frame callbacks to all toplevel surfaces and their popups
         let toplevel_count = compositor.xdg_shell_state.toplevel_surfaces().len();
