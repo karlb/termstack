@@ -334,10 +334,12 @@ impl Terminal {
         (actions, total_read)
     }
 
-    /// Write input to terminal
-    pub fn write(&mut self, data: &[u8]) -> Result<(), TerminalError> {
-        self.pty.write(data)?;
-        Ok(())
+    /// Write input to terminal (non-blocking)
+    ///
+    /// Returns the number of bytes written. May return less than `data.len()`
+    /// if the PTY buffer is full. Caller should buffer any unwritten data.
+    pub fn write(&mut self, data: &[u8]) -> Result<usize, TerminalError> {
+        Ok(self.pty.write(data)?)
     }
 
     /// Directly process bytes through terminal emulator (for testing)

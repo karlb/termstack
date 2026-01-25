@@ -13,11 +13,15 @@ const MIN_TERMINAL_ROWS: u16 = 1;
 /// Process terminal PTY output and handle sizing actions.
 ///
 /// Processes all terminal output, handles growth requests, and auto-resizes
-/// terminals that enter alternate screen mode.
+/// terminals that enter alternate screen mode. Also flushes any pending
+/// write buffers from paste operations.
 pub fn process_terminal_output(
     compositor: &mut TermStack,
     terminal_manager: &mut TerminalManager,
 ) {
+    // Flush any pending write buffers (from paste operations)
+    terminal_manager.flush_pending_writes();
+
     // Process PTY output and get sizing actions
     let sizing_actions = terminal_manager.process_all();
 

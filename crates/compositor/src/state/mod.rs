@@ -64,6 +64,7 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 
 use std::os::unix::net::UnixStream;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use std::collections::HashMap;
@@ -215,9 +216,17 @@ pub struct TermStack {
     pub pending_output_terminal_cleanup: Vec<TerminalId>,
 
     /// Host clipboard access (None if unavailable)
+    /// Note: Clipboard operations can block for several seconds waiting for the
+    /// clipboard owner to respond, so paste operations are done asynchronously
+    /// via clipboard_receiver.
     pub clipboard: Option<arboard::Clipboard>,
 
-    /// Pending paste request (set by keybinding, handled in input loop)
+    /// Receiver for async clipboard read results.
+    /// When pending_paste is triggered, a background thread reads the clipboard
+    /// and sends the result here to avoid blocking the compositor.
+    pub clipboard_receiver: Option<mpsc::Receiver<String>>,
+
+    /// Pending paste request (set by keybinding, triggers async clipboard read)
     pub pending_paste: bool,
 
     /// Pending copy request (set by keybinding, handled in input loop)
@@ -507,6 +516,7 @@ impl TermStack {
             foreground_gui_sessions: HashMap::new(),
             pending_output_terminal_cleanup: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
+            clipboard_receiver: None,
             pending_paste: false,
             pending_copy: false,
             selecting: None,

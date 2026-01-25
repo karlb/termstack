@@ -172,6 +172,10 @@ pub struct ManagedTerminal {
     /// Whether this terminal has been manually resized
     /// When true, auto-growth is disabled (user explicitly chose a size)
     pub manually_sized: bool,
+
+    /// Pending write buffer for data that couldn't be written due to full PTY buffer.
+    /// This prevents paste operations from blocking the compositor.
+    pending_write: Vec<u8>,
 }
 
 impl ManagedTerminal {
@@ -202,6 +206,7 @@ impl ManagedTerminal {
             parent: None,
             prev_alt_screen: false,
             manually_sized: false,
+            pending_write: Vec::new(),
         })
     }
 
@@ -243,6 +248,7 @@ impl ManagedTerminal {
             parent,
             prev_alt_screen: false,
             manually_sized: false,
+            pending_write: Vec::new(),
         })
     }
 
@@ -275,8 +281,58 @@ impl ManagedTerminal {
     }
 
     /// Write input to the terminal
+    ///
+    /// Buffers any data that couldn't be written due to a full PTY buffer.
+    /// Call `flush_pending_write()` in the event loop to drain the buffer.
     pub fn write(&mut self, data: &[u8]) -> Result<(), terminal::state::TerminalError> {
-        self.terminal.write(data)
+        // First try to flush any pending data
+        self.flush_pending_write()?;
+
+        // If there's still pending data, just buffer the new data
+        if !self.pending_write.is_empty() {
+            self.pending_write.extend_from_slice(data);
+            return Ok(());
+        }
+
+        // Try to write the new data
+        let written = self.terminal.write(data)?;
+        if written < data.len() {
+            // Buffer unwritten portion
+            self.pending_write.extend_from_slice(&data[written..]);
+            tracing::debug!(
+                id = self.id.0,
+                written,
+                buffered = data.len() - written,
+                "partial write, buffering remainder"
+            );
+        }
+        Ok(())
+    }
+
+    /// Flush any pending write data to the terminal
+    ///
+    /// Returns Ok(true) if all pending data was written, Ok(false) if some remains.
+    pub fn flush_pending_write(&mut self) -> Result<bool, terminal::state::TerminalError> {
+        if self.pending_write.is_empty() {
+            return Ok(true);
+        }
+
+        let written = self.terminal.write(&self.pending_write)?;
+        if written > 0 {
+            self.pending_write.drain(..written);
+            tracing::debug!(
+                id = self.id.0,
+                written,
+                remaining = self.pending_write.len(),
+                "flushed pending write"
+            );
+        }
+        Ok(self.pending_write.is_empty())
+    }
+
+    /// Check if there's pending write data
+    pub fn has_pending_write(&self) -> bool {
+        !self.pending_write.is_empty()
     }
 
     /// Directly inject bytes into terminal emulator (for testing)
@@ -747,6 +803,19 @@ impl TerminalManager {
     /// Number of visible terminals
     pub fn visible_count(&self) -> usize {
         self.terminals.values().filter(|t| t.is_visible()).count()
+    }
+
+    /// Flush pending writes for all terminals
+    ///
+    /// Called during the event loop to drain any buffered paste data.
+    pub fn flush_pending_writes(&mut self) {
+        for terminal in self.terminals.values_mut() {
+            if terminal.has_pending_write() {
+                if let Err(e) = terminal.flush_pending_write() {
+                    tracing::warn!(id = terminal.id.0, ?e, "failed to flush pending write");
+                }
+            }
+        }
     }
 
     /// Process all terminal PTY output

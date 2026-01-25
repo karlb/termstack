@@ -380,26 +380,72 @@ impl TermStack {
                 }
             }
 
-            // Paste from clipboard
+            // Paste from clipboard - spawn async read to avoid blocking
             if self.pending_paste {
                 self.pending_paste = false;
-                if let Some(ref mut clipboard) = self.clipboard {
-                    match clipboard.get_text() {
-                        Ok(text) => {
-                            if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
-                                // Only paste if terminal process is still running
-                                if terminal.has_exited() {
-                                    tracing::debug!("ignoring paste to exited terminal");
-                                } else if let Err(e) = terminal.write(text.as_bytes()) {
-                                    tracing::error!(?e, "failed to paste to terminal");
-                                } else {
-                                    tracing::debug!(len = text.len(), "pasted text to terminal");
+                if self.clipboard.is_some() && self.clipboard_receiver.is_none() {
+                    // Get the host DISPLAY for clipboard operations
+                    // (DISPLAY was unset for child processes, but we saved HOST_DISPLAY)
+                    let host_display = std::env::var("HOST_DISPLAY").ok();
+
+                    // Spawn a thread to read clipboard asynchronously
+                    // This prevents the compositor from freezing while waiting for
+                    // the clipboard owner to respond (can take several seconds)
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.clipboard_receiver = Some(rx);
+
+                    std::thread::spawn(move || {
+                        // Temporarily set DISPLAY for this thread so arboard can connect
+                        // to the host X11 clipboard
+                        if let Some(display) = host_display {
+                            std::env::set_var("DISPLAY", &display);
+                        }
+
+                        // Create a new clipboard instance in this thread
+                        // (arboard Clipboard is not Send)
+                        match arboard::Clipboard::new() {
+                            Ok(mut clipboard) => {
+                                match clipboard.get_text() {
+                                    Ok(text) => {
+                                        let _ = tx.send(text);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(?e, "failed to get clipboard text");
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                tracing::warn!(?e, "failed to create clipboard in paste thread");
+                            }
                         }
-                        Err(e) => {
-                            tracing::warn!(?e, "failed to get clipboard text");
+                    });
+                    tracing::debug!("spawned async clipboard read thread");
+                }
+            }
+
+            // Check for async clipboard read results
+            if let Some(ref receiver) = self.clipboard_receiver {
+                match receiver.try_recv() {
+                    Ok(text) => {
+                        self.clipboard_receiver = None; // Clear receiver, read complete
+                        if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
+                            // Only paste if terminal process is still running
+                            if terminal.has_exited() {
+                                tracing::debug!("ignoring paste to exited terminal");
+                            } else if let Err(e) = terminal.write(text.as_bytes()) {
+                                tracing::error!(?e, "failed to paste to terminal");
+                            } else {
+                                tracing::debug!(len = text.len(), "pasted text to terminal");
+                            }
                         }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        // Still waiting for clipboard read
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // Thread finished without sending (error case)
+                        self.clipboard_receiver = None;
+                        tracing::debug!("clipboard read thread disconnected without result");
                     }
                 }
             }

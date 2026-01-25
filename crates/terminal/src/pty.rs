@@ -291,9 +291,33 @@ impl Pty {
         }
     }
 
-    /// Write data to PTY
+    /// Write data to PTY (non-blocking)
+    ///
+    /// Returns the number of bytes written. If the PTY buffer is full, returns 0
+    /// instead of blocking. The caller should buffer any unwritten data and retry later.
     pub fn write(&mut self, data: &[u8]) -> Result<usize, PtyError> {
-        self.master.write(data).map_err(PtyError::Io)
+        // Get current flags
+        let flags = rustix::fs::fcntl_getfl(&self.master)
+            .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+
+        // Set non-blocking
+        rustix::fs::fcntl_setfl(
+            &self.master,
+            flags | rustix::fs::OFlags::NONBLOCK,
+        )
+        .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+
+        let result = self.master.write(data);
+
+        // Restore blocking mode
+        rustix::fs::fcntl_setfl(&self.master, flags)
+            .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+
+        match result {
+            Ok(n) => Ok(n),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
+            Err(e) => Err(PtyError::Io(e)),
+        }
     }
 
     /// Get the raw FD for polling
