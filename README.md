@@ -1,17 +1,18 @@
 # TermStack
 
-A Wayland compositor with content-aware, dynamically-sizing terminal windows arranged in a scrollable vertical stack.
-
 ## Overview
 
-TermStack is a specialized Wayland compositor designed for terminal-centric workflows. Unlike traditional tiling window managers, it arranges all windows in a single vertical stack and dynamically resizes terminal windows based on their content.
+TermStack keeps the traditional terminal workflow while adding support for full graphical applications. This is implemented by treating the output of every terminal command as its own window and stacking these windows inside a one-column tiling window manager. TermStack runs in a nested wayland session, so that all the components together behave like a normal terminal emulator in most ways.
 
 ### Key Features
 
 - **Content-aware sizing**: Terminal windows grow as they produce output
 - **Scrollable column**: All windows stack vertically and can be scrolled
 - **Auto-scroll**: Automatically scrolls to keep the active terminal visible
-- **No content loss**: Explicit state machine prevents double-counting bugs
+
+## Current State
+
+This is an LLM generated proof-of-concept. The focus is not on getting the best implementation, but to figure out the user experience and test the general desirability of this concept.
 
 ## Architecture
 
