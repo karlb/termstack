@@ -104,7 +104,7 @@ mod tests {
         // Step 5: Create TerminalManager and spawn command
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let cwd_path = std::path::Path::new(&cwd);
         let result = manager.spawn_command(&transformed_command, cwd_path, &spawn_env, None);
@@ -285,6 +285,7 @@ mod tests {
             output_width,
             output_height,
             terminal::Theme::default(),
+            14.0,
         );
 
         let cwd_path = std::path::Path::new(&cwd);

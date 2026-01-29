@@ -120,11 +120,16 @@ pub struct Terminal {
 impl Terminal {
     /// Create a new terminal running an interactive shell
     pub fn new(cols: u16, rows: u16) -> Result<Self, TerminalError> {
-        Self::new_with_theme(cols, rows, Theme::default())
+        Self::new_with_options(cols, rows, Theme::default(), 14.0)
     }
 
     /// Create a new terminal running an interactive shell with theme
     pub fn new_with_theme(cols: u16, rows: u16, theme: Theme) -> Result<Self, TerminalError> {
+        Self::new_with_options(cols, rows, theme, 14.0)
+    }
+
+    /// Create a new terminal running an interactive shell with theme and font size
+    pub fn new_with_options(cols: u16, rows: u16, theme: Theme, font_size: f32) -> Result<Self, TerminalError> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
         // Use 1000 rows for PTY and grid to prevent internal scrolling
@@ -152,7 +157,7 @@ impl Terminal {
         let parser = ansi::Processor::new();
 
         // Create renderer with font and theme
-        let font_config = crate::render::FontConfig::default_font();
+        let font_config = crate::render::FontConfig::default_font_with_size(font_size);
         let renderer = TerminalRenderer::with_font_and_theme(font_config, theme);
 
         // Create sizing state with visual row count (will grow as content arrives)
@@ -191,7 +196,7 @@ impl Terminal {
         working_dir: &Path,
         env: &HashMap<String, String>,
     ) -> Result<Self, TerminalError> {
-        Self::new_with_command_and_theme(cols, pty_rows, visual_rows, command, working_dir, env, Theme::default())
+        Self::new_with_command_options(cols, pty_rows, visual_rows, command, working_dir, env, Theme::default(), 14.0)
     }
 
     /// Create a new terminal running a specific command with theme
@@ -203,6 +208,21 @@ impl Terminal {
         working_dir: &Path,
         env: &HashMap<String, String>,
         theme: Theme,
+    ) -> Result<Self, TerminalError> {
+        Self::new_with_command_options(cols, pty_rows, visual_rows, command, working_dir, env, theme, 14.0)
+    }
+
+    /// Create a new terminal running a specific command with theme and font size
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_command_options(
+        cols: u16,
+        pty_rows: u16,
+        visual_rows: u16,
+        command: &str,
+        working_dir: &Path,
+        env: &HashMap<String, String>,
+        theme: Theme,
+        font_size: f32,
     ) -> Result<Self, TerminalError> {
         // Create PTY with large size (no scrolling)
         let pty = Pty::spawn_command(command, working_dir, env, cols, pty_rows)?;
@@ -225,7 +245,7 @@ impl Terminal {
         let parser = ansi::Processor::new();
 
         // Create renderer with font and theme
-        let font_config = crate::render::FontConfig::default_font();
+        let font_config = crate::render::FontConfig::default_font_with_size(font_size);
         let renderer = TerminalRenderer::with_font_and_theme(font_config, theme);
 
         // Create sizing state with VISUAL rows (triggers growth based on visual size)

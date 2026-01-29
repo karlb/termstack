@@ -6,7 +6,7 @@
         // All command terminals now start small - TUI apps are auto-detected via alternate screen
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a command terminal
         let env = HashMap::new();
@@ -38,7 +38,7 @@
         // All command terminals use 1000 PTY rows (no scrolling needed)
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -61,7 +61,7 @@
         // This test checks if max_rows is recalculated when cell dimensions change
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let initial_max_rows = manager.max_rows;
         let initial_cell_height = manager.cell_height;
@@ -92,7 +92,7 @@
     fn non_tui_terminal_has_small_height() {
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a non-TUI command
         let env = HashMap::new();
@@ -124,7 +124,7 @@
         // TUI apps are auto-detected via alternate screen and resized then
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -149,7 +149,7 @@
         // Non-TUI terminals use 1000 rows for PTY (no scrolling)
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -172,7 +172,7 @@
         // They also start hidden until they produce output
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a command terminal
         let env = HashMap::new();
@@ -209,7 +209,7 @@
         // mc (and other TUI apps) are auto-detected via alternate screen
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Simulate the environment modifications from main.rs
         let mut env = HashMap::new();
@@ -259,7 +259,7 @@
         // All command terminals have 1000 PTY rows for internal scrollback
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -296,7 +296,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a non-TUI terminal (like a shell)
         let env = HashMap::new();
@@ -372,7 +372,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a non-TUI terminal
         let env = HashMap::new();
@@ -427,7 +427,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a non-TUI terminal (like shell)
         let env = HashMap::new();
@@ -484,7 +484,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -523,7 +523,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a terminal that outputs content
         let env = HashMap::new();
@@ -576,7 +576,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -629,7 +629,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -673,7 +673,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a terminal that outputs a lot of content (triggers growth)
         let env = HashMap::new();
@@ -731,7 +731,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a shell that we can write to
         let env = HashMap::new();
@@ -782,7 +782,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -821,7 +821,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Use cat to simulate a terminal we can write to
         let env = HashMap::new();
@@ -915,7 +915,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a shell (non-TUI)
         let env = HashMap::new();
@@ -986,7 +986,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1051,7 +1051,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Start with a shell terminal
         let env = HashMap::new();
@@ -1138,7 +1138,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1187,7 +1187,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1256,7 +1256,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1342,7 +1342,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1395,7 +1395,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1520,7 +1520,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1568,7 +1568,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1621,7 +1621,7 @@
 
         let output_width = 800;
         let output_height = 720;  // 720/17 = 42 max_rows
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1736,7 +1736,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a terminal - we'll inject bytes directly instead of using PTY
         let env = HashMap::new();
@@ -1846,7 +1846,7 @@
     /// This is used for spawn rejection when TUI apps are running.
     #[test]
     fn is_alternate_screen_detection() {
-        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
@@ -1898,7 +1898,7 @@
     #[test]
     fn max_rows_does_not_imply_alternate_screen() {
         let max_height = 160; // 10 rows * 16 cell height
-        let mut manager = TerminalManager::new_with_size(800, max_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(800, max_height, terminal::Theme::default(), 14.0);
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
@@ -1925,7 +1925,7 @@
     /// This simulates the condition where spawns should be allowed.
     #[test]
     fn spawn_should_be_allowed_when_not_in_alternate_screen() {
-        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         let parent_id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
@@ -1948,7 +1948,7 @@
     /// When a TUI app is running (alternate screen), spawns should be rejected.
     #[test]
     fn spawn_should_be_rejected_when_in_alternate_screen() {
-        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         let parent_id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
@@ -1976,7 +1976,7 @@
     /// Test that check_alt_screen_resize_needed detects transition to alternate screen.
     #[test]
     fn check_alt_screen_resize_needed_detects_transition() {
-        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
@@ -2020,7 +2020,7 @@
     /// Test that entering alternate screen triggers resize when terminal is small.
     #[test]
     fn resize_needed_when_entering_alt_screen() {
-        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
 
@@ -2056,7 +2056,7 @@
     /// Test that exiting alternate screen does not trigger resize.
     #[test]
     fn exit_alternate_screen_does_not_trigger_resize() {
-        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
@@ -2105,7 +2105,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // Spawn a shell terminal like the compositor does
         let id = manager.spawn().expect("spawn shell terminal");
@@ -2196,7 +2196,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let id = manager.spawn().expect("spawn shell terminal");
 
@@ -2252,7 +2252,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // First spawn a parent shell terminal
         let parent_id = manager.spawn().expect("spawn parent");
@@ -2337,7 +2337,7 @@
 
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         // First spawn a parent shell terminal
         let parent_id = manager.spawn().expect("spawn parent");
@@ -2429,7 +2429,7 @@
     fn no_empty_trailing_row_after_echo() {
         let output_width = 800;
         let output_height = 720;
-        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default());
+        let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let env = std::collections::HashMap::new();
         let cwd = std::path::Path::new("/tmp");

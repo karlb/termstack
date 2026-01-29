@@ -85,9 +85,9 @@ impl FontConfig {
         })
     }
 
-    /// Create default font config
+    /// Create default font config with the given size
     /// Uses a system font or falls back to basic dimensions
-    pub fn default_font() -> Self {
+    pub fn default_font_with_size(size: f32) -> Self {
         // Try to load a monospace font from common locations
         let font_paths = [
             // DejaVu Sans Mono
@@ -111,8 +111,8 @@ impl FontConfig {
 
         for path in &font_paths {
             if let Ok(data) = std::fs::read(path) {
-                if let Some(config) = Self::from_bytes(&data, 14.0) {
-                    tracing::info!("Loaded font from: {}", path);
+                if let Some(config) = Self::from_bytes(&data, size) {
+                    tracing::info!("Loaded font from: {} (size {})", path, size);
                     return config;
                 }
             }
@@ -121,6 +121,12 @@ impl FontConfig {
 
         // Fallback to minimal config without font
         Self::minimal()
+    }
+
+    /// Create default font config with default size (14.0)
+    /// Uses a system font or falls back to basic dimensions
+    pub fn default_font() -> Self {
+        Self::default_font_with_size(14.0)
     }
 
     fn minimal() -> Self {

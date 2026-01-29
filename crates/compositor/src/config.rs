@@ -36,6 +36,9 @@ pub struct Config {
     /// Color theme (light or dark)
     pub theme: Theme,
 
+    /// Font size in pixels (default: 14.0)
+    pub font_size: f32,
+
     /// Background color (ARGB) - overrides theme default if set
     pub background_color: [f32; 4],
 
@@ -68,6 +71,7 @@ impl Default for Config {
         Self {
             background_color: theme.background_color(),
             theme,
+            font_size: 14.0,
             window_gap: 0,
             min_window_height: 50,
             max_window_height: 0,
