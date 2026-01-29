@@ -36,6 +36,33 @@ pub type TitleBarCache = HashMap<(String, u32), GlesTexture>;
 /// Focus indicator width in pixels (also used as left margin for content)
 pub const FOCUS_INDICATOR_WIDTH: i32 = 2;
 
+/// Calculate the visual/render height for a terminal.
+///
+/// This is the total height including the title bar (if shown).
+/// The title bar is shown when the terminal is visible and has `show_title_bar` set.
+///
+/// # Arguments
+/// * `content_height` - Height of the terminal content in pixels (may be 0)
+/// * `show_title_bar` - Whether the terminal should show a title bar
+/// * `is_visible` - Whether the terminal is visible (hidden terminals have 0 height)
+///
+/// # Returns
+/// The total visual height including title bar if applicable.
+pub fn calculate_terminal_render_height(
+    content_height: i32,
+    show_title_bar: bool,
+    is_visible: bool,
+) -> i32 {
+    if !is_visible {
+        return 0;
+    }
+    if show_title_bar {
+        content_height + TITLE_BAR_HEIGHT as i32
+    } else {
+        content_height
+    }
+}
+
 /// Draw focus indicator on left side of cell
 fn draw_focus_indicator(frame: &mut GlesFrame<'_, '_>, y: i32, height: i32) {
     let focus_rect = Rectangle::new(
@@ -186,7 +213,7 @@ pub fn collect_window_data(
     for node in layout_nodes.iter() {
         match &node.cell {
             StackWindow::Terminal(id) => {
-                let (content_height, show_title_bar) = terminal_manager.get(*id)
+                let (content_height, show_title_bar, is_visible) = terminal_manager.get(*id)
                     .map(|t| {
                         let h = if !t.is_visible() {
                             0
@@ -195,15 +222,10 @@ pub fn collect_window_data(
                         } else {
                             t.height as i32
                         };
-                        (h, t.show_title_bar)
+                        (h, t.show_title_bar, t.is_visible())
                     })
-                    .unwrap_or((node.height, false));
-                // Add title bar height if terminal is visible and has title bar
-                let height = if show_title_bar && terminal_manager.is_terminal_visible(*id) {
-                    content_height + TITLE_BAR_HEIGHT as i32
-                } else {
-                    content_height
-                };
+                    .unwrap_or((node.height, false, false));
+                let height = calculate_terminal_render_height(content_height, show_title_bar, is_visible);
                 heights.push(height);
                 external_elements.push(Vec::new());
             }
@@ -413,9 +435,7 @@ pub fn render_terminal(
         return;
     }
 
-    let Some(texture) = terminal.get_texture() else { return };
-
-    // Only render if visible
+    // Only render if visible on screen
     if y + height <= 0 || y >= screen_size.h {
         return;
     }
@@ -424,7 +444,7 @@ pub fn render_terminal(
     let title_bar_height = if title_bar_texture.is_some() { TITLE_BAR_HEIGHT as i32 } else { 0 };
     let content_area_top = y + height - title_bar_height;
 
-    // Render title bar if present
+    // Render title bar if present (even if there's no content texture)
     if let Some(tex) = title_bar_texture {
         frame.render_texture_at(
             tex,
@@ -438,21 +458,25 @@ pub fn render_terminal(
         ).ok();
     }
 
-    // Top-align terminal content within content area
-    // (texture may be smaller than cell during resize)
-    let texture_height = texture.size().h;
-    let content_y = content_area_top - texture_height;
+    // Render content texture if present
+    // (may be None for empty builtins that only show title bar)
+    if let Some(texture) = terminal.get_texture() {
+        // Top-align terminal content within content area
+        // (texture may be smaller than cell during resize)
+        let texture_height = texture.size().h;
+        let content_y = content_area_top - texture_height;
 
-    frame.render_texture_at(
-        texture,
-        Point::from((FOCUS_INDICATOR_WIDTH, content_y)),
-        1,
-        1.0,
-        Transform::Flipped180,
-        &[damage],
-        &[],
-        1.0,
-    ).ok();
+        frame.render_texture_at(
+            texture,
+            Point::from((FOCUS_INDICATOR_WIDTH, content_y)),
+            1,
+            1.0,
+            Transform::Flipped180,
+            &[damage],
+            &[],
+            1.0,
+        ).ok();
+    }
 
     // Draw focus indicator on left side of cell (after content so it's visible)
     // Focus indicator takes precedence over running indicator
@@ -539,5 +563,52 @@ pub fn render_external(
         draw_focus_indicator(frame, y, height);
     } else {
         draw_running_indicator(frame, y, height);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_height_includes_title_bar_when_visible() {
+        // A visible terminal with show_title_bar should include TITLE_BAR_HEIGHT
+        let content_height = 100;
+        let height = calculate_terminal_render_height(content_height, true, true);
+        assert_eq!(height, content_height + TITLE_BAR_HEIGHT as i32);
+    }
+
+    #[test]
+    fn render_height_zero_content_still_shows_title_bar() {
+        // This is the key test: empty builtins (content_height=0) should still show title bar
+        let content_height = 0;
+        let height = calculate_terminal_render_height(content_height, true, true);
+        assert_eq!(
+            height,
+            TITLE_BAR_HEIGHT as i32,
+            "visible terminal with zero content should still render title bar"
+        );
+    }
+
+    #[test]
+    fn render_height_hidden_terminal_is_zero() {
+        // Hidden terminals should have 0 render height regardless of content
+        let height = calculate_terminal_render_height(100, true, false);
+        assert_eq!(height, 0, "hidden terminal should have 0 render height");
+    }
+
+    #[test]
+    fn render_height_no_title_bar_equals_content() {
+        // Terminal without title bar should just use content height
+        let content_height = 150;
+        let height = calculate_terminal_render_height(content_height, false, true);
+        assert_eq!(height, content_height, "no title bar means height equals content");
+    }
+
+    #[test]
+    fn render_height_no_title_bar_zero_content() {
+        // Edge case: no title bar and zero content
+        let height = calculate_terminal_render_height(0, false, true);
+        assert_eq!(height, 0, "no title bar + zero content = zero height");
     }
 }
