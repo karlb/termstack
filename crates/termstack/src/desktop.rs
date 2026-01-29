@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-const ICON_128: &[u8] = include_bytes!("../../../assets/icons/hicolor/128x128/apps/termstack.png");
+const ICON_256: &[u8] = include_bytes!("../../../assets/icons/hicolor/256x256/apps/termstack.png");
 
 fn local_share() -> anyhow::Result<PathBuf> {
     let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
@@ -38,7 +38,7 @@ pub fn install() -> anyhow::Result<()> {
     if let Some(parent) = icon_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&icon_path, ICON_128)?;
+    fs::write(&icon_path, ICON_256)?;
     println!("Installed: {}", icon_path.display());
 
     // Install desktop file with absolute icon path

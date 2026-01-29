@@ -19,6 +19,7 @@ const WM_CLASS: &[u8] = b"termstack\0termstack\0";
 const ICON_48: &[u8] = include_bytes!("../../../assets/termstack-icon-48.raw");
 const ICON_64: &[u8] = include_bytes!("../../../assets/termstack-icon-64.raw");
 const ICON_128: &[u8] = include_bytes!("../../../assets/termstack-icon-128.raw");
+const ICON_256: &[u8] = include_bytes!("../../../assets/termstack-icon-256.raw");
 
 /// Append icon data for one size to the icon buffer.
 fn append_icon(icon_data: &mut Vec<u32>, size: u32, raw_bytes: &[u8]) {
@@ -31,8 +32,8 @@ fn append_icon(icon_data: &mut Vec<u32>, size: u32, raw_bytes: &[u8]) {
 
 /// Set the window icon using the _NET_WM_ICON property.
 ///
-/// Includes multiple sizes (48, 64, 128) so the window manager can choose
-/// the best size for different contexts (taskbar, alt-tab, etc.).
+/// Includes multiple sizes (48, 64, 128, 256) so the window manager can choose
+/// the best size for different contexts (taskbar, alt-tab, HiDPI, etc.).
 pub fn set_window_icon(
     connection: &Arc<RustConnection>,
     window_id: u32,
@@ -41,12 +42,13 @@ pub fn set_window_icon(
     let atom = atom_cookie.reply()?.atom;
 
     // Build icon data with multiple sizes: [w1, h1, pixels1..., w2, h2, pixels2..., ...]
-    let total_pixels = 48 * 48 + 64 * 64 + 128 * 128;
-    let mut icon_data: Vec<u32> = Vec::with_capacity(6 + total_pixels);
+    let total_pixels = 48 * 48 + 64 * 64 + 128 * 128 + 256 * 256;
+    let mut icon_data: Vec<u32> = Vec::with_capacity(8 + total_pixels);
 
     append_icon(&mut icon_data, 48, ICON_48);
     append_icon(&mut icon_data, 64, ICON_64);
     append_icon(&mut icon_data, 128, ICON_128);
+    append_icon(&mut icon_data, 256, ICON_256);
 
     connection.change_property32(
         PropMode::REPLACE,
@@ -58,7 +60,7 @@ pub fn set_window_icon(
 
     connection.flush()?;
 
-    tracing::debug!("window icon set (48, 64, 128)");
+    tracing::debug!("window icon set (48, 64, 128, 256)");
     Ok(())
 }
 
