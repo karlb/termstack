@@ -9,7 +9,13 @@ rust-version.workspace = true
 name = "compositor"
 path = "src/lib.rs"
 
+[features]
+default = ["x11-backend"]
+x11-backend = []
+headless-backend = ["softbuffer"]
+
 [dependencies]
+softbuffer = { version = "0.4", optional = true }
 smithay.workspace = true
 smithay-drm-extras.workspace = true
 calloop.workspace = true

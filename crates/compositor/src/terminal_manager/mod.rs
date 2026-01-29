@@ -1,14 +1,26 @@
 //! Internal terminal management
 //!
 //! Manages spawning and rendering of internal terminals.
+//!
+//! # Backend Support
+//!
+//! This module supports multiple rendering backends:
+//! - **X11 backend** (`x11-backend` feature): Uses `GlesTexture` for GPU rendering
+//! - **Headless backend** (`headless-backend` feature): Stores raw pixel buffers
+//!
+//! When both features are enabled, X11 takes precedence.
 
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::path::Path;
 
+#[cfg(feature = "x11-backend")]
 use smithay::backend::renderer::gles::GlesRenderer;
+#[cfg(feature = "x11-backend")]
 use smithay::backend::renderer::gles::GlesTexture;
+#[cfg(feature = "x11-backend")]
 use smithay::backend::renderer::ImportMem;
+#[cfg(feature = "x11-backend")]
 use smithay::utils::Size;
 
 use terminal::Terminal;
@@ -141,8 +153,13 @@ pub struct ManagedTerminal {
     /// Whether to show the title bar (false for initial shell terminals)
     pub show_title_bar: bool,
 
-    /// Cached texture for rendering
+    /// Cached texture for GPU rendering (X11 backend)
+    #[cfg(feature = "x11-backend")]
     texture: Option<GlesTexture>,
+
+    /// Cached pixel buffer for software rendering (headless backend)
+    #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
+    pixel_buffer: Vec<u8>,
 
     /// Whether the terminal needs re-rendering
     dirty: bool,
@@ -180,8 +197,8 @@ pub struct ManagedTerminal {
 
 impl ManagedTerminal {
     /// Create a new managed terminal
-    pub fn new(id: TerminalId, cols: u16, rows: u16, cell_width: u32, cell_height: u32, theme: Theme) -> Result<Self, terminal::state::TerminalError> {
-        let terminal = Terminal::new_with_theme(cols, rows, theme)?;
+    pub fn new(id: TerminalId, cols: u16, rows: u16, cell_width: u32, cell_height: u32, theme: Theme, font_size: f32) -> Result<Self, terminal::state::TerminalError> {
+        let terminal = Terminal::new_with_options(cols, rows, theme, font_size)?;
 
         // Use shell name as title
         let title = std::env::var("SHELL")
@@ -196,7 +213,10 @@ impl ManagedTerminal {
             height: rows as u32 * cell_height,
             title,
             show_title_bar: false, // Shell terminals don't show title bar
+            #[cfg(feature = "x11-backend")]
             texture: None,
+            #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
+            pixel_buffer: Vec::new(),
             dirty: true,
             last_dirty_time: std::time::Instant::now(),
             selection_dirty: false,
@@ -228,8 +248,9 @@ impl ManagedTerminal {
         env: &HashMap<String, String>,
         parent: Option<TerminalId>,
         theme: Theme,
+        font_size: f32,
     ) -> Result<Self, terminal::state::TerminalError> {
-        let terminal = Terminal::new_with_command_and_theme(cols, pty_rows, visual_rows, command, working_dir, env, theme)?;
+        let terminal = Terminal::new_with_command_options(cols, pty_rows, visual_rows, command, working_dir, env, theme, font_size)?;
 
         Ok(Self {
             terminal,
@@ -238,7 +259,10 @@ impl ManagedTerminal {
             height: visual_rows as u32 * cell_height, // Use visual rows for display
             title: command.to_string(),
             show_title_bar: true, // Command terminals show title bar
+            #[cfg(feature = "x11-backend")]
             texture: None,
+            #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
+            pixel_buffer: Vec::new(),
             dirty: true,
             last_dirty_time: std::time::Instant::now(),
             selection_dirty: false,
@@ -449,7 +473,8 @@ impl ManagedTerminal {
         self.terminal.cell_size()
     }
 
-    /// Render terminal to texture
+    /// Render terminal to GPU texture (X11 backend)
+    #[cfg(feature = "x11-backend")]
     pub fn render(&mut self, renderer: &mut GlesRenderer) -> Option<&GlesTexture> {
         // Re-render if dirty OR if selection coordinates changed
         // This ensures we only regenerate texture when selection actually moves, not every frame
@@ -498,6 +523,38 @@ impl ManagedTerminal {
         }
     }
 
+    /// Render terminal to pixel buffer (headless backend)
+    #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
+    pub fn render_to_buffer(&mut self) -> Option<&[u8]> {
+        // Re-render if dirty OR if selection coordinates changed
+        if !self.dirty && !self.selection_dirty && !self.pixel_buffer.is_empty() {
+            return Some(&self.pixel_buffer);
+        }
+
+        // Render terminal to pixel buffer (hide cursor if process exited)
+        self.terminal.render(self.width, self.height, !self.exited);
+        let buffer = self.terminal.buffer();
+
+        if buffer.is_empty() {
+            return None;
+        }
+
+        // Convert u32 ARGB to BGRA bytes for Argb8888 format
+        self.pixel_buffer = buffer.iter()
+            .flat_map(|pixel| {
+                let a = ((pixel >> 24) & 0xFF) as u8;
+                let r = ((pixel >> 16) & 0xFF) as u8;
+                let g = ((pixel >> 8) & 0xFF) as u8;
+                let b = (pixel & 0xFF) as u8;
+                [b, g, r, a]
+            })
+            .collect();
+
+        self.dirty = false;
+        self.selection_dirty = false;
+        Some(&self.pixel_buffer)
+    }
+
     /// Mark terminal as needing re-render
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
@@ -528,8 +585,19 @@ impl ManagedTerminal {
     }
 
     /// Get cached texture (for rendering after pre-render pass)
+    #[cfg(feature = "x11-backend")]
     pub fn get_texture(&self) -> Option<&GlesTexture> {
         self.texture.as_ref()
+    }
+
+    /// Get cached pixel buffer (for headless rendering)
+    #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
+    pub fn get_pixel_buffer(&self) -> Option<&[u8]> {
+        if self.pixel_buffer.is_empty() {
+            None
+        } else {
+            Some(&self.pixel_buffer)
+        }
     }
 }
 
@@ -556,11 +624,14 @@ pub struct TerminalManager {
 
     /// Color theme for terminals
     theme: Theme,
+
+    /// Font size in pixels
+    font_size: f32,
 }
 
 impl TerminalManager {
-    /// Create a new terminal manager with output size
-    pub fn new_with_size(output_width: u32, output_height: u32, theme: Theme) -> Self {
+    /// Create a new terminal manager with output size and font size
+    pub fn new_with_size(output_width: u32, output_height: u32, theme: Theme, font_size: f32) -> Self {
         // Default cell dimensions (will be updated when font loads)
         let cell_width = 8u32;
         let cell_height = 17u32;  // Match fontdue's line height calculation
@@ -581,12 +652,13 @@ impl TerminalManager {
             initial_rows,
             max_rows,
             theme,
+            font_size,
         }
     }
 
     /// Create a new terminal manager with default size
     pub fn new() -> Self {
-        Self::new_with_size(800, 600, Theme::default())
+        Self::new_with_size(800, 600, Theme::default(), 14.0)
     }
 
     /// Get the focused terminal mutably based on the compositor's focused window
@@ -670,6 +742,7 @@ impl TerminalManager {
             self.cell_width,
             self.cell_height,
             self.theme,
+            self.font_size,
         )?;
 
         // Get actual cell dimensions from the font and update
@@ -724,6 +797,7 @@ impl TerminalManager {
             env,
             parent,
             self.theme,
+            self.font_size,
         )?;
 
         // Get actual cell dimensions from the font and update

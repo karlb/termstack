@@ -3,6 +3,7 @@
 //! This library exposes the compositor modules for testing and the main
 //! compositor entry point for the unified binary.
 
+pub mod backend;
 pub mod config;
 pub mod coords;
 pub mod cursor;

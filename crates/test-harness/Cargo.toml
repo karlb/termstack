@@ -16,6 +16,7 @@ rustix.workspace = true
 
 [features]
 gui-tests = []
+headless-backend = ["compositor/headless-backend"]
 
 [dev-dependencies]
 proptest.workspace = true

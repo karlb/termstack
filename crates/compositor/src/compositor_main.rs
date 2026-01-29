@@ -2,34 +2,38 @@
 //!
 //! This compositor arranges terminal windows in a scrollable vertical column,
 //! with windows dynamically sizing based on their content.
+//!
+//! # Backend Abstraction
+//!
+//! The compositor supports multiple rendering backends:
+//! - **X11** (default): GPU-accelerated rendering using OpenGL/GLES
+//! - **Headless** (feature): CPU-based software rendering for testing
+//!
+//! Backend selection is controlled by the `TERMSTACK_BACKEND` environment variable.
 
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use std::collections::HashSet;
 
-use smithay::backend::allocator::dmabuf::DmabufAllocator;
-use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
-use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::input::InputEvent;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::element::{Element, Kind, RenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::{Color32F, Frame, Renderer, Bind};
-use smithay::backend::x11::{X11Backend, X11Event, X11Input, WindowBuilder};
+use smithay::backend::x11::{X11Event, X11Input};
 use smithay::desktop::PopupKind;
 use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::desktop::PopupManager;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::utils::{DeviceFd, Point};
+use smithay::utils::Point;
 use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
 use smithay::reexports::wayland_server::{Display, Resource};
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
 use smithay::wayland::socket::ListeningSocketSource;
 
+use crate::backend::{BackendType, select_backend};
 use crate::config::Config;
-use crate::cursor::CursorManager;
 use crate::render::{
     CellRenderData, prerender_terminals, prerender_title_bars,
     collect_window_data, build_render_data, log_frame_state, render_terminal, render_external,
@@ -43,10 +47,66 @@ use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
 /// Popup render data: (x, y, geo_offset_x, geo_offset_y, elements)
 type PopupRenderData = Vec<(i32, i32, i32, i32, Vec<WaylandSurfaceRenderElement<GlesRenderer>>)>;
 
+/// Main entry point for the compositor
+///
+/// Selects and runs the appropriate backend based on the `TERMSTACK_BACKEND`
+/// environment variable:
+/// - `x11` (default): GPU-accelerated X11 backend
+/// - `headless`: CPU-based software rendering (requires `headless-backend` feature)
 pub fn run_compositor() -> anyhow::Result<()> {
-    // Initialize logging (setup_logging() should be called by the binary before this)
+    match select_backend() {
+        BackendType::X11 => run_compositor_x11(),
+        BackendType::Headless => {
+            #[cfg(feature = "headless-backend")]
+            {
+                run_compositor_headless()
+            }
+            #[cfg(not(feature = "headless-backend"))]
+            {
+                anyhow::bail!("Headless backend requested but `headless-backend` feature not enabled")
+            }
+        }
+    }
+}
 
-    tracing::info!("starting termstack");
+#[cfg(feature = "headless-backend")]
+fn run_compositor_headless() -> anyhow::Result<()> {
+    use crate::backend::headless::HeadlessBackend;
+
+    tracing::info!("starting termstack with headless backend");
+
+    // Headless mode is primarily for testing
+    // For full operation, use the X11 backend
+    //
+    // This stub allows the binary to start in headless mode for basic testing.
+    // Full headless compositor operation would require:
+    // - A Wayland display that doesn't require a real display server
+    // - Software rendering of external windows
+    // - Event injection for testing
+
+    let _backend = HeadlessBackend::new_with_size(1280, 800);
+
+    tracing::warn!(
+        "Headless backend started but full compositor loop not implemented. \
+         Use the E2E test infrastructure in test-harness for testing."
+    );
+
+    // For now, just exit successfully
+    // Full implementation would run a headless event loop
+    Ok(())
+}
+
+/// Run the compositor with the X11 backend
+fn run_compositor_x11() -> anyhow::Result<()> {
+    use smithay::backend::x11::{X11Backend, WindowBuilder};
+    use smithay::backend::allocator::dmabuf::DmabufAllocator;
+    use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+    use smithay::backend::egl::{EGLContext, EGLDisplay};
+    use smithay::utils::DeviceFd;
+    use std::collections::HashSet;
+    use crate::cursor::CursorManager;
+
+    tracing::info!("starting termstack with X11 backend");
 
     // Load configuration
     let config = Config::load();
@@ -337,12 +397,13 @@ pub fn run_compositor() -> anyhow::Result<()> {
         config.background_color[3],
     );
 
-    // Create terminal manager with output size and theme
+    // Create terminal manager with output size, theme, and font size
     let terminal_theme = config.theme.to_terminal_theme();
     let mut terminal_manager = TerminalManager::new_with_size(
         output_size.w as u32,
         output_size.h as u32,
         terminal_theme,
+        config.font_size,
     );
 
     // Create title bar renderer for external windows

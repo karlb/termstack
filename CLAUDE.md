@@ -38,6 +38,12 @@ Behavioral specs defining what the software should do are in [`specs/`](specs/in
 
 ## Environment Variables
 
+### Backend Selection
+
+- **TERMSTACK_BACKEND**: Select compositor backend (`x11` or `headless`)
+  - Default: `x11` (GPU-accelerated via OpenGL)
+  - `headless`: CPU-based rendering for E2E tests without a display
+
 ### Compositor-Set Variables
 
 The compositor automatically sets these environment variables for all spawned terminals:
@@ -63,6 +69,7 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
   - `layout.rs`: Pure function layout calculation
   - `render.rs`: Rendering logic and damage tracking
   - `terminal_manager/`: Manages multiple terminal instances
+  - `backend/`: Backend abstraction (X11, headless)
   - `cursor.rs`: Cursor rendering and management
   - `title_bar.rs`: Title bar rendering using fontdue
   - `ipc.rs`: IPC protocol for termstack CLI communication
@@ -84,6 +91,7 @@ This is a Wayland compositor built with Smithay that arranges windows in a scrol
 
 - **test-harness**: Testing infrastructure
   - `headless.rs`: `TestCompositor` mock for unit testing
+  - `e2e.rs`: E2E test harness using real `HeadlessBackend` (feature: `headless-backend`)
   - `assertions.rs`: Test assertion helpers
   - `fixtures.rs`: Test fixtures and data
   - `live.rs`: Live testing utilities
@@ -158,6 +166,16 @@ The test harness uses a mock `TestCompositor` that simulates the real compositor
 1. Use `simulate_click(screen_x, screen_y)` with screen coordinates
 2. Use `render_positions()` to get where windows actually render
 3. Verify click detection matches render positions
+
+### E2E Testing (Headless)
+
+For E2E tests that run without a display:
+
+```bash
+cargo test -p test-harness --features headless-backend --test e2e_headless
+```
+
+The `E2ETestHarness` provides event injection (keyboard, mouse, scroll) via the real `HeadlessBackend`.
 
 ## Additional Documentation
 
