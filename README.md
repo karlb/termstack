@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/termstack-logo.svg" alt="TermStack Logo" width="96" height="100">
+</p>
+
 # TermStack
 
 ## Overview
