@@ -201,7 +201,7 @@ pub fn run() -> Result<()> {
     }
 
     // Handle --builtin flag for shell builtin notifications
-    // Usage: termstack --builtin "command" "result" [--error]
+    // Usage: termstack --builtin "prompt" "command" "output" [--error]
     if args.len() >= 2 && args[1] == "--builtin" {
         return send_builtin_notification(&args[2..]);
     }
@@ -239,10 +239,14 @@ pub fn run() -> Result<()> {
     let command = parse_command(&args)?;
     if debug { eprintln!("[termstack] command: {:?}", command); }
 
+    // Get prompt from environment (set by fish integration)
+    let prompt = env::var("TERMSTACK_PROMPT").unwrap_or_default();
+    if debug { eprintln!("[termstack] prompt: {:?}", prompt); }
+
     // Empty command = interactive shell, always use terminal
     if command.is_empty() {
         if debug { eprintln!("[termstack] empty command, spawning shell"); }
-        return spawn_in_terminal(&command);
+        return spawn_in_terminal(&command, &prompt);
     }
 
     // Check if command is a termstack subcommand - execute it directly
@@ -280,7 +284,7 @@ pub fn run() -> Result<()> {
     // Regular command - spawn terminal in termstack, but GUI windows go to host
     // Only commands with 'gui' prefix should have windows inside termstack
     if debug { eprintln!("[termstack] spawning in terminal (GUI windows go to host)"); }
-    spawn_in_terminal(&normalized_command)
+    spawn_in_terminal(&normalized_command, &prompt)
 }
 
 /// Send a resize request to the compositor and wait for acknowledgement
@@ -333,17 +337,20 @@ fn send_resize_request(mode: &str) -> Result<()> {
 /// This creates a persistent entry in the stack showing the builtin command
 /// and its output (if any). Called by the shell integration after executing
 /// a builtin command like cd, export, alias, etc.
+///
+/// Usage: termstack --builtin "prompt" "command" "output" [--error]
 fn send_builtin_notification(args: &[String]) -> Result<()> {
     let debug = debug_enabled();
 
-    // Parse arguments: command result [--error]
-    let command = args.first()
-        .context("missing command argument for --builtin")?;
-    let result = args.get(1).cloned().unwrap_or_default();
+    // Parse arguments: prompt command result [--error]
+    let prompt = args.first()
+        .context("missing prompt argument for --builtin")?;
+    let command = args.get(1).cloned().unwrap_or_default();
+    let result = args.get(2).cloned().unwrap_or_default();
     let success = !args.iter().any(|a| a == "--error");
 
     if debug {
-        eprintln!("[termstack] builtin: command={:?} result={:?} success={}", command, result, success);
+        eprintln!("[termstack] builtin: prompt={:?} command={:?} result={:?} success={}", prompt, command, result, success);
     }
 
     // Get socket path from environment
@@ -353,6 +360,7 @@ fn send_builtin_notification(args: &[String]) -> Result<()> {
     // Build JSON message
     let msg = serde_json::json!({
         "type": "builtin",
+        "prompt": prompt,
         "command": command,
         "result": result,
         "success": success,
@@ -376,7 +384,7 @@ fn send_builtin_notification(args: &[String]) -> Result<()> {
 ///
 /// The terminal starts small and grows with content. TUI apps are
 /// auto-detected via alternate screen mode and resized to full viewport.
-fn spawn_in_terminal(command: &str) -> Result<()> {
+fn spawn_in_terminal(command: &str, prompt: &str) -> Result<()> {
     let debug = debug_enabled();
 
     // Get socket path from environment
@@ -397,6 +405,7 @@ fn spawn_in_terminal(command: &str) -> Result<()> {
     // Build JSON message
     let msg = serde_json::json!({
         "type": "spawn",
+        "prompt": prompt,
         "command": command,
         "cwd": cwd,
         "env": env_vars,

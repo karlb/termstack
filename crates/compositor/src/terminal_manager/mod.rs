@@ -232,6 +232,7 @@ impl ManagedTerminal {
 
     /// Create a new managed terminal running a specific command
     ///
+    /// - `prompt`: Shell prompt at command entry time (for title bar display)
     /// - `pty_rows`: Size reported to the PTY (program sees this many rows)
     /// - `visual_rows`: Initial visual size for display
     /// - `parent`: Parent terminal to unhide when this one exits
@@ -243,6 +244,7 @@ impl ManagedTerminal {
         visual_rows: u16,
         cell_width: u32,
         cell_height: u32,
+        prompt: &str,
         command: &str,
         working_dir: &Path,
         env: &HashMap<String, String>,
@@ -252,12 +254,20 @@ impl ManagedTerminal {
     ) -> Result<Self, terminal::state::TerminalError> {
         let terminal = Terminal::new_with_command_options(cols, pty_rows, visual_rows, command, working_dir, env, theme, font_size)?;
 
+        // Title is clean_prompt + command if prompt provided, else "> " + command
+        let title = if prompt.is_empty() {
+            format!("> {}", command)
+        } else {
+            let clean_prompt = strip_ansi_codes(prompt);
+            format!("{}{}", clean_prompt, command)
+        };
+
         Ok(Self {
             terminal,
             id,
             width: cols as u32 * cell_width,
             height: visual_rows as u32 * cell_height, // Use visual rows for display
-            title: command.to_string(),
+            title,
             show_title_bar: true, // Command terminals show title bar
             #[cfg(feature = "x11-backend")]
             texture: None,
@@ -774,14 +784,22 @@ impl TerminalManager {
     ///
     /// Used for shell builtins like cd, export, alias that run in the shell's
     /// process but should appear as persistent entries in the stack.
+    ///
+    /// The title bar displays the full prompt + command (e.g., "user@host ~/code> cd ..").
+    /// For empty commands (just pressing Enter), only the prompt is shown.
+    /// ANSI escape codes are stripped from the prompt for clean display.
     pub fn create_builtin_terminal(
         &mut self,
+        prompt: &str,
         command: &str,
         result: &str,
         success: bool,
     ) -> Result<TerminalId, terminal::state::TerminalError> {
         let id = TerminalId(self.next_id);
         self.next_id += 1;
+
+        // Strip ANSI escape codes from prompt (fish prompts often have colors)
+        let clean_prompt = strip_ansi_codes(prompt);
 
         // Calculate how many rows we need for the result
         // Empty result = just title bar (0 content rows)
@@ -828,12 +846,19 @@ impl TerminalManager {
         // Get actual cell dimensions
         let (cell_width, cell_height) = terminal.cell_size();
 
+        // Title is prompt + command (or just prompt for empty command)
+        let title = if command.is_empty() {
+            clean_prompt
+        } else {
+            format!("{}{}", clean_prompt, command)
+        };
+
         let mut managed = ManagedTerminal {
             terminal,
             id,
             width: self.default_cols as u32 * cell_width,
             height: visual_rows as u32 * cell_height,
-            title: command.to_string(), // Title bar renderer adds "> " prefix
+            title,
             show_title_bar: true,
             #[cfg(feature = "x11-backend")]
             texture: None,
@@ -876,11 +901,14 @@ impl TerminalManager {
 
     /// Spawn a new terminal running a specific command
     ///
+    /// - `prompt`: Shell prompt at command entry time (for title bar display)
+    ///
     /// If `parent` is provided, that terminal will be unhidden when this one exits.
     /// Terminals start hidden and become visible when they produce output.
     /// TUI apps are detected via alternate screen mode and auto-resized.
     pub fn spawn_command(
         &mut self,
+        prompt: &str,
         command: &str,
         working_dir: &Path,
         env: &HashMap<String, String>,
@@ -900,6 +928,7 @@ impl TerminalManager {
             visual_rows,
             self.cell_width,
             self.cell_height,
+            prompt,
             command,
             working_dir,
             env,
@@ -1150,6 +1179,72 @@ impl TerminalManager {
         None
     }
 
+}
+
+/// Strip ANSI escape codes from a string (for clean title bar display)
+///
+/// Handles common escape sequences:
+/// - CSI sequences: ESC [ ... (letter) - cursor movement, colors, etc.
+/// - OSC sequences: ESC ] ... (BEL or ST) - window title, etc.
+/// - Character set selection: ESC ( X, ESC ) X, ESC * X, ESC + X
+/// - Simple escapes: ESC (letter) - other control sequences
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Start of escape sequence
+            match chars.peek() {
+                Some('[') => {
+                    // CSI sequence: ESC [ ... (letter)
+                    chars.next(); // consume '['
+                    // Skip until we hit a letter (the terminator)
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    // OSC sequence: ESC ] ... (BEL or ESC \)
+                    chars.next(); // consume ']'
+                    while let Some(&next) = chars.peek() {
+                        if next == '\x07' {
+                            chars.next(); // consume BEL
+                            break;
+                        }
+                        if next == '\x1b' {
+                            chars.next(); // consume ESC
+                            if chars.peek() == Some(&'\\') {
+                                chars.next(); // consume '\'
+                            }
+                            break;
+                        }
+                        chars.next();
+                    }
+                }
+                Some('(' | ')' | '*' | '+') => {
+                    // Character set selection: ESC ( X, ESC ) X, etc.
+                    // These are two characters after ESC: selector + designation
+                    chars.next(); // consume '(' or ')' or '*' or '+'
+                    chars.next(); // consume the designation character (e.g., 'B' for ASCII)
+                }
+                Some(c) if c.is_ascii_alphabetic() => {
+                    // Simple escape: ESC (letter)
+                    chars.next();
+                }
+                _ => {
+                    // Unknown escape, skip just the ESC
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 impl Default for TerminalManager {

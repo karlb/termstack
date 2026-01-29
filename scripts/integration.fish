@@ -46,8 +46,17 @@ if set -q TERMSTACK_SOCKET
 
     function termstack_exec
         set -l cmd (commandline)
+
+        # Capture prompt BEFORE any command execution (shows state at command entry time)
+        set -l prompt_str (fish_prompt | string collect)
+
+        # Handle empty command (just pressing Enter)
         if test -z "$cmd"
-            commandline -f execute
+            # Create entry showing just the prompt (like a normal terminal)
+            $TERMSTACK_BIN --builtin "$prompt_str" "" "" &
+            # Don't execute - just clear and repaint (no extra prompt in launcher)
+            commandline ""
+            commandline -f repaint
             return
         end
 
@@ -72,7 +81,8 @@ if set -q TERMSTACK_SOCKET
         #   0 = spawned in new terminal
         #   2 = shell builtin, run in current shell
         #   3 = incomplete/invalid syntax, let shell handle it
-        $TERMSTACK_BIN -c "$cmd"
+        # Pass prompt via environment variable for spawn commands
+        TERMSTACK_PROMPT="$prompt_str" $TERMSTACK_BIN -c "$cmd"
         set -l ret $status
 
         switch $ret
@@ -98,7 +108,7 @@ if set -q TERMSTACK_SOCKET
 
                 # Send to compositor (creates persistent entry in stack)
                 # Run in background to avoid blocking the shell
-                $TERMSTACK_BIN --builtin "$cmd" "$output" $error_flag &
+                $TERMSTACK_BIN --builtin "$prompt_str" "$cmd" "$output" $error_flag &
 
                 # Add to history and clear command line
                 history append -- "$cmd"

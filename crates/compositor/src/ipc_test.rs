@@ -110,7 +110,7 @@ mod tests {
         let mut manager = TerminalManager::new_with_size(output_width, output_height, terminal::Theme::default(), 14.0);
 
         let cwd_path = std::path::Path::new(&cwd);
-        let result = manager.spawn_command(&transformed_command, cwd_path, &spawn_env, None);
+        let result = manager.spawn_command("", &transformed_command, cwd_path, &spawn_env, None);
 
         assert!(result.is_ok(), "spawn_command should succeed: {:?}", result.err());
         let id = result.unwrap();
@@ -227,7 +227,7 @@ mod tests {
         let parsed: IpcMessage = serde_json::from_value(json_msg).unwrap();
 
         match parsed {
-            IpcMessage::Spawn { command, cwd, env, foreground } => {
+            IpcMessage::Spawn { command, cwd, env, foreground, .. } => {
                 assert_eq!(command, "swayimg image.png");
                 assert_eq!(cwd, "/tmp");
                 assert!(env.contains_key("WAYLAND_DISPLAY"));
@@ -265,6 +265,7 @@ mod tests {
     fn builtin_message_parses_correctly() {
         let msg = serde_json::json!({
             "type": "builtin",
+            "prompt": "user@host ~/code> ",
             "command": "cd ..",
             "result": "",
             "success": true,
@@ -273,7 +274,8 @@ mod tests {
         let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
 
         match parsed {
-            IpcMessage::Builtin { command, result, success } => {
+            IpcMessage::Builtin { prompt, command, result, success } => {
+                assert_eq!(prompt, "user@host ~/code> ");
                 assert_eq!(command, "cd ..");
                 assert_eq!(result, "");
                 assert!(success);
@@ -286,6 +288,7 @@ mod tests {
     fn builtin_with_output_parses_correctly() {
         let msg = serde_json::json!({
             "type": "builtin",
+            "prompt": "user@host ~/code> ",
             "command": "alias",
             "result": "ll='ls -la'\nla='ls -A'",
             "success": true,
@@ -294,7 +297,8 @@ mod tests {
         let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
 
         match parsed {
-            IpcMessage::Builtin { command, result, success } => {
+            IpcMessage::Builtin { prompt, command, result, success } => {
+                assert_eq!(prompt, "user@host ~/code> ");
                 assert_eq!(command, "alias");
                 assert!(result.contains("ll='ls -la'"));
                 assert!(success);
@@ -307,6 +311,7 @@ mod tests {
     fn builtin_error_parses_correctly() {
         let msg = serde_json::json!({
             "type": "builtin",
+            "prompt": "user@host ~/code> ",
             "command": "cd /nonexistent",
             "result": "cd: The directory '/nonexistent' does not exist",
             "success": false,
@@ -315,7 +320,8 @@ mod tests {
         let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
 
         match parsed {
-            IpcMessage::Builtin { command, result, success } => {
+            IpcMessage::Builtin { prompt, command, result, success } => {
+                assert_eq!(prompt, "user@host ~/code> ");
                 assert_eq!(command, "cd /nonexistent");
                 assert!(result.contains("does not exist"));
                 assert!(!success);
@@ -326,16 +332,44 @@ mod tests {
 
     #[test]
     fn builtin_terminal_has_correct_title() {
-        // Test that builtin terminals have the command as title (without > prefix)
-        // The title bar renderer adds the > prefix, so we shouldn't add it ourselves
+        // Test that builtin terminals have the full prompt + command as title
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
 
-        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let id = manager.create_builtin_terminal("user@host ~/code> ", "cd ..", "", true).unwrap();
         let terminal = manager.get(id).unwrap();
 
-        // Title should be just the command, not "> cd .."
-        // The title bar renderer will add "> " when rendering
-        assert_eq!(terminal.title, "cd ..", "title should not have > prefix");
+        // Title should be prompt + command
+        assert_eq!(terminal.title, "user@host ~/code> cd ..", "title should be prompt + command");
+    }
+
+    #[test]
+    fn builtin_terminal_strips_ansi_codes_from_prompt() {
+        // Test that ANSI escape codes are stripped from the prompt
+        // Fish prompts often contain color codes like \x1b[32m (green)
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        // Prompt with ANSI color codes: green "user@host" reset, blue "~/code" reset, "> "
+        let colored_prompt = "\x1b[32muser@host\x1b[0m \x1b[34m~/code\x1b[0m> ";
+        let id = manager.create_builtin_terminal(colored_prompt, "cd ..", "", true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        // Title should have ANSI codes stripped
+        assert_eq!(terminal.title, "user@host ~/code> cd ..", "ANSI codes should be stripped from prompt");
+    }
+
+    #[test]
+    fn builtin_terminal_strips_charset_selection_codes() {
+        // Test that character set selection codes (ESC(B, ESC)B) are stripped
+        // These appear as "(B" garbage in fish prompts when not handled
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        // Prompt with charset selection codes: ESC(B between characters
+        let prompt_with_charset = "\x1b(Bkarl\x1b(B@\x1b(Bx13k\x1b(B ~/code> ";
+        let id = manager.create_builtin_terminal(prompt_with_charset, "cd ..", "", true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        // Title should have charset selection codes stripped
+        assert_eq!(terminal.title, "karl@x13k ~/code> cd ..", "charset selection codes should be stripped");
     }
 
     #[test]
@@ -343,7 +377,7 @@ mod tests {
         // Test that builtin with no output has minimal height (just title bar, no content)
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
 
-        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let id = manager.create_builtin_terminal("user@host ~/code> ", "cd ..", "", true).unwrap();
         let terminal = manager.get(id).unwrap();
 
         // Empty result should have zero content height (title bar is rendered separately)
@@ -356,7 +390,7 @@ mod tests {
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
 
         let result = "ll='ls -la'\nla='ls -A'\ngrep='grep --color=auto'";
-        let id = manager.create_builtin_terminal("alias", result, true).unwrap();
+        let id = manager.create_builtin_terminal("user@host ~/code> ", "alias", result, true).unwrap();
         let terminal = manager.get(id).unwrap();
 
         // 3 lines of output = 3 rows
@@ -370,7 +404,7 @@ mod tests {
         // Builtin terminals should be visible immediately (not waiting for output)
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
 
-        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let id = manager.create_builtin_terminal("user@host ~/code> ", "cd ..", "", true).unwrap();
         let terminal = manager.get(id).unwrap();
 
         assert!(terminal.is_visible(), "builtin terminal should be immediately visible");
@@ -381,10 +415,47 @@ mod tests {
         // Builtin terminals should be marked as exited (no cursor)
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
 
-        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let id = manager.create_builtin_terminal("user@host ~/code> ", "cd ..", "", true).unwrap();
         let terminal = manager.get(id).unwrap();
 
         assert!(terminal.has_exited(), "builtin terminal should be marked as exited");
+    }
+
+    #[test]
+    fn builtin_empty_command_shows_just_prompt() {
+        // Test that empty command (just pressing Enter) shows only the prompt
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        let id = manager.create_builtin_terminal("user@host ~/code> ", "", "", true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        // Title should be just the prompt when command is empty
+        assert_eq!(terminal.title, "user@host ~/code> ", "empty command should show just prompt");
+        assert!(terminal.is_visible(), "empty command terminal should be visible");
+    }
+
+    #[test]
+    fn builtin_message_with_empty_command_parses() {
+        // Test that builtin with empty command (Enter key) parses correctly
+        let msg = serde_json::json!({
+            "type": "builtin",
+            "prompt": "user@host ~/code> ",
+            "command": "",
+            "result": "",
+            "success": true,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
+
+        match parsed {
+            IpcMessage::Builtin { prompt, command, result, success } => {
+                assert_eq!(prompt, "user@host ~/code> ");
+                assert_eq!(command, "");
+                assert_eq!(result, "");
+                assert!(success);
+            }
+            _ => panic!("expected Builtin"),
+        }
     }
 
     #[test]
@@ -420,7 +491,7 @@ mod tests {
         );
 
         let cwd_path = std::path::Path::new(&cwd);
-        let result = manager.spawn_command(&command, cwd_path, &env, None);
+        let result = manager.spawn_command("", &command, cwd_path, &env, None);
 
         assert!(result.is_ok(), "gui_spawn should create output terminal: {:?}", result.err());
 

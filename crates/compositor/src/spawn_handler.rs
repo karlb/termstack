@@ -124,7 +124,7 @@ pub fn handle_gui_spawn_requests(
 
         // Create output terminal with WaitingForOutput visibility
         let parent = launching_terminal;
-        match terminal_manager.spawn_command(&request.command, &request.cwd, &env, parent) {
+        match terminal_manager.spawn_command(&request.prompt, &request.command, &request.cwd, &env, parent) {
             Ok(output_terminal_id) => {
                 tracing::info!(
                     output_terminal_id = output_terminal_id.0,
@@ -198,6 +198,7 @@ pub fn handle_builtin_requests(
     while let Some(request) = compositor.pending_builtin_requests.pop() {
         // Create static terminal with the builtin command and result
         match terminal_manager.create_builtin_terminal(
+            &request.prompt,
             &request.command,
             &request.result,
             request.success,
@@ -329,7 +330,7 @@ fn process_spawn_request(
         "spawning command terminal"
     );
 
-    match terminal_manager.spawn_command(&command, &request.cwd, &env, parent) {
+    match terminal_manager.spawn_command(&request.prompt, &command, &request.cwd, &env, parent) {
         Ok(id) => {
             if let Some(term) = terminal_manager.get(id) {
                 let (cols, pty_rows) = term.terminal.dimensions();

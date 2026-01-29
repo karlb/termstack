@@ -151,7 +151,8 @@ impl TitleBarRenderer {
         let fg_g = colors.fg_g;
         let fg_b = colors.fg_b;
 
-        let display_text = format!("> {}", text);
+        // Display text as-is - prompt already includes any prefix
+        let display_text = text;
 
         // Starting position with padding
         let padding = 8u32;

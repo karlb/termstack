@@ -49,6 +49,9 @@ pub enum IpcMessage {
     /// Spawn a new terminal or GUI window
     #[serde(rename = "spawn")]
     Spawn {
+        /// The shell prompt at command entry time (e.g., "karl@host ~/code> ")
+        #[serde(default)]
+        prompt: String,
         /// Command to execute
         command: String,
         /// Working directory for the command
@@ -68,7 +71,9 @@ pub enum IpcMessage {
     /// Shell builtin executed (creates persistent entry in stack)
     #[serde(rename = "builtin")]
     Builtin {
-        /// The builtin command (e.g., "cd ..")
+        /// The shell prompt at command entry time (e.g., "karl@host ~/code> ")
+        prompt: String,
+        /// The builtin command (e.g., "cd ..") - may be empty for Enter-only
         command: String,
         /// The output/result (may be empty for commands like cd)
         result: String,
@@ -91,7 +96,9 @@ pub enum IpcRequest {
 /// Builtin command request ready for processing by the compositor
 #[derive(Debug)]
 pub struct BuiltinRequest {
-    /// The builtin command (e.g., "cd ..")
+    /// The shell prompt at command entry time (e.g., "karl@host ~/code> ")
+    pub prompt: String,
+    /// The builtin command (e.g., "cd ..") - may be empty for Enter-only
     pub command: String,
     /// The output/result (may be empty for commands like cd)
     pub result: String,
@@ -102,6 +109,8 @@ pub struct BuiltinRequest {
 /// Spawn request ready for processing by the compositor
 #[derive(Debug)]
 pub struct SpawnRequest {
+    /// The shell prompt at command entry time (e.g., "karl@host ~/code> ")
+    pub prompt: String,
     /// Command to execute
     pub command: String,
     /// Working directory
@@ -160,7 +169,7 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
     let stream = reader.into_inner();
 
     match message {
-        IpcMessage::Spawn { command, cwd, env, foreground } => {
+        IpcMessage::Spawn { prompt, command, cwd, env, foreground } => {
             let spawn_type = match foreground {
                 None => "terminal",
                 Some(true) => "gui (foreground)",
@@ -168,6 +177,7 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
             };
             tracing::info!(command = %command, cwd = %cwd, spawn_type, "spawn request received");
             Ok((IpcRequest::Spawn(SpawnRequest {
+                prompt,
                 command,
                 cwd: PathBuf::from(cwd),
                 env,
@@ -178,9 +188,10 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
             tracing::info!(?mode, "resize request received");
             Ok((IpcRequest::Resize(mode), stream))
         }
-        IpcMessage::Builtin { command, result, success } => {
+        IpcMessage::Builtin { prompt, command, result, success } => {
             tracing::info!(command = %command, success, has_result = !result.is_empty(), "builtin request received");
             Ok((IpcRequest::Builtin(BuiltinRequest {
+                prompt,
                 command,
                 result,
                 success,

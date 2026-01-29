@@ -11,7 +11,7 @@
         // Spawn a command terminal
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None);
+        let result = manager.spawn_command("", "echo test", cwd, &env, None);
 
         assert!(result.is_ok(), "spawn_command should succeed");
         let id = result.unwrap();
@@ -42,7 +42,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None);
+        let result = manager.spawn_command("", "echo test", cwd, &env, None);
         let id = result.unwrap();
 
         let terminal = manager.get(id).expect("terminal should exist");
@@ -69,7 +69,7 @@
         // Spawn any terminal to trigger font loading
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let _ = manager.spawn_command("echo test", cwd, &env, None);
+        let _ = manager.spawn_command("", "echo test", cwd, &env, None);
 
         let new_cell_height = manager.cell_height;
         let new_max_rows = manager.max_rows;
@@ -97,7 +97,7 @@
         // Spawn a non-TUI command
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None);
+        let result = manager.spawn_command("", "echo test", cwd, &env, None);
 
         assert!(result.is_ok(), "spawn_command should succeed");
         let id = result.unwrap();
@@ -128,7 +128,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None);
+        let result = manager.spawn_command("", "echo test", cwd, &env, None);
         let id = result.unwrap();
 
         let terminal = manager.get(id).expect("terminal should exist");
@@ -153,7 +153,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None);
+        let result = manager.spawn_command("", "echo test", cwd, &env, None);
         let id = result.unwrap();
 
         let terminal = manager.get(id).expect("terminal should exist");
@@ -177,7 +177,7 @@
         // Spawn a command terminal
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let terminal = manager.get(id).unwrap();
 
@@ -223,7 +223,7 @@
         let command = "echo '> mc'; mc";
 
         // Spawn mc
-        let result = manager.spawn_command(command, cwd, &env, None);
+        let result = manager.spawn_command("", command, cwd, &env, None);
         assert!(result.is_ok(), "spawn mc should succeed: {:?}", result.err());
         let id = result.unwrap();
 
@@ -265,7 +265,7 @@
         let cwd = std::path::Path::new("/tmp");
 
         // Spawn stty size which prints "rows cols"
-        let result = manager.spawn_command("stty size", cwd, &env, None);
+        let result = manager.spawn_command("", "stty size", cwd, &env, None);
         assert!(result.is_ok(), "spawn stty should succeed");
         let id = result.unwrap();
 
@@ -301,7 +301,7 @@
         // Spawn a non-TUI terminal (like a shell)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let result = manager.spawn_command("echo test", cwd, &env, None);
+        let result = manager.spawn_command("", "echo test", cwd, &env, None);
         assert!(result.is_ok(), "spawn should succeed");
         let id = result.unwrap();
 
@@ -377,7 +377,7 @@
         // Spawn a non-TUI terminal
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -432,7 +432,7 @@
         // Spawn a non-TUI terminal (like shell)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -488,7 +488,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let terminal = manager.get(id).unwrap();
 
@@ -529,7 +529,7 @@
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         // Use a command that outputs multiple lines
-        let id = manager.spawn_command("seq 1 50", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "seq 1 50", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -580,7 +580,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -633,7 +633,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -678,7 +678,7 @@
         // Spawn a terminal that outputs a lot of content (triggers growth)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("seq 1 100", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "seq 1 100", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -737,7 +737,7 @@
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         // Use cat which will echo back what we write
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -786,7 +786,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo 'test output'", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo 'test output'", cwd, &env, None).unwrap();
 
         // Wait for command to produce output
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -826,7 +826,7 @@
         // Use cat to simulate a terminal we can write to
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -920,7 +920,7 @@
         // Spawn a shell (non-TUI)
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -990,7 +990,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1057,7 +1057,7 @@
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         // Use cat command to simulate a shell waiting for mc to start
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1142,7 +1142,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1191,7 +1191,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1260,7 +1260,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1346,7 +1346,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1399,7 +1399,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("cat", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "cat", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1526,7 +1526,7 @@
         let cwd = std::path::Path::new("/tmp");
 
         // Spawn a TUI terminal with echo - should produce output immediately
-        let result = manager.spawn_command("echo 'TUI OUTPUT TEST'", cwd, &env, None);
+        let result = manager.spawn_command("", "echo 'TUI OUTPUT TEST'", cwd, &env, None);
         assert!(result.is_ok(), "spawn should succeed");
         let id = result.unwrap();
 
@@ -1574,10 +1574,10 @@
         let cwd = std::path::Path::new("/tmp");
 
         // First spawn a "shell" terminal (just sits there)
-        let shell_id = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
+        let shell_id = manager.spawn_command("", "sleep 10", cwd, &env, None).unwrap();
 
         // Then spawn a child terminal with echo
-        let tui_id = manager.spawn_command("echo 'FROM TUI'", cwd, &env, Some(shell_id)).unwrap();
+        let tui_id = manager.spawn_command("", "echo 'FROM TUI'", cwd, &env, Some(shell_id)).unwrap();
 
         // Allow time for output
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1625,7 +1625,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("sleep 60", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "sleep 60", cwd, &env, None).unwrap();
 
         let cell_height = manager.cell_height;
         let max_rows = manager.max_rows;
@@ -1741,7 +1741,7 @@
         // Spawn a terminal - we'll inject bytes directly instead of using PTY
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "sleep 10", cwd, &env, None).unwrap();
 
         // Step 1: Simulate initial shell content (prompt, maybe previous commands)
         // Inject bytes directly to terminal emulator
@@ -1849,7 +1849,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         // Initially not in alternate screen
         {
@@ -1902,7 +1902,7 @@
 
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         // Resize the terminal to max height (simulating content growth)
         {
@@ -1928,7 +1928,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let parent_id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let parent_id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         // Parent is not in alternate screen - spawns should be allowed
         {
@@ -1940,7 +1940,7 @@
         }
 
         // Child spawn should succeed
-        let child_id = manager.spawn_command("echo child", cwd, &env, Some(parent_id)).unwrap();
+        let child_id = manager.spawn_command("", "echo child", cwd, &env, Some(parent_id)).unwrap();
         assert!(manager.get(child_id).is_some(), "Child should be spawned");
     }
 
@@ -1951,7 +1951,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let parent_id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let parent_id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         // Enter alternate screen (simulating TUI app start)
         {
@@ -1979,7 +1979,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let max_height = manager.max_rows as u32 * manager.cell_height;
 
@@ -2025,7 +2025,7 @@
         let cwd = std::path::Path::new("/tmp");
 
         // Spawn a command terminal (starts small)
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let max_height = manager.max_rows as u32 * manager.cell_height;
         let initial_rows = manager.initial_rows;
@@ -2059,7 +2059,7 @@
         let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("echo test", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "echo test", cwd, &env, None).unwrap();
 
         let max_height = manager.max_rows as u32 * manager.cell_height;
 
@@ -2262,6 +2262,7 @@
         let env = HashMap::new();
         let cwd = std::path::Path::new("/tmp");
         let result = manager.spawn_command(
+            "",
             "echo 'Error line 1' >&2; echo 'Error line 2' >&2; echo 'Error line 3' >&2",
             cwd,
             &env,
@@ -2350,6 +2351,7 @@
         // Use a command that will fail and output to stderr
         // cat on a nonexistent file outputs: "cat: /nonexistent: No such file or directory"
         let result = manager.spawn_command(
+            "",
             "echo '> cat /nonexistent'; cat /nonexistent",
             cwd,
             &env,
@@ -2433,7 +2435,7 @@
 
         let env = std::collections::HashMap::new();
         let cwd = std::path::Path::new("/tmp");
-        let id = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
+        let id = manager.spawn_command("", "sleep 10", cwd, &env, None).unwrap();
 
         // Simulate shell output: prompt, command output, new prompt
         {
@@ -2490,7 +2492,7 @@
 
         // Now test WITHOUT the prompt - simulating the moment after command output
         // but before shell prints new prompt
-        let id2 = manager.spawn_command("sleep 10", cwd, &env, None).unwrap();
+        let id2 = manager.spawn_command("", "sleep 10", cwd, &env, None).unwrap();
         {
             let terminal = manager.get_mut(id2).unwrap();
             terminal.inject_bytes(b"$ echo a\n");  // Line 0: command
