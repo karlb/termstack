@@ -200,6 +200,12 @@ pub fn run() -> Result<()> {
         return send_resize_request(mode);
     }
 
+    // Handle --builtin flag for shell builtin notifications
+    // Usage: termstack --builtin "command" "result" [--error]
+    if args.len() >= 2 && args[1] == "--builtin" {
+        return send_builtin_notification(&args[2..]);
+    }
+
     // Handle 'gui' subcommand for launching GUI apps with foreground/background mode
     // Usage: termstack gui <command>
     // Background mode: TERMSTACK_GUI_BACKGROUND=1 termstack gui <command>
@@ -318,6 +324,50 @@ fn send_resize_request(mode: &str) -> Result<()> {
     if ack.trim() != "ok" {
         bail!("unexpected resize ACK: {}", ack.trim());
     }
+
+    Ok(())
+}
+
+/// Send a builtin command notification to the compositor
+///
+/// This creates a persistent entry in the stack showing the builtin command
+/// and its output (if any). Called by the shell integration after executing
+/// a builtin command like cd, export, alias, etc.
+fn send_builtin_notification(args: &[String]) -> Result<()> {
+    let debug = debug_enabled();
+
+    // Parse arguments: command result [--error]
+    let command = args.first()
+        .context("missing command argument for --builtin")?;
+    let result = args.get(1).cloned().unwrap_or_default();
+    let success = !args.iter().any(|a| a == "--error");
+
+    if debug {
+        eprintln!("[termstack] builtin: command={:?} result={:?} success={}", command, result, success);
+    }
+
+    // Get socket path from environment
+    let socket_path = env::var("TERMSTACK_SOCKET")
+        .context("TERMSTACK_SOCKET not set - are you running inside termstack?")?;
+
+    // Build JSON message
+    let msg = serde_json::json!({
+        "type": "builtin",
+        "command": command,
+        "result": result,
+        "success": success,
+    });
+
+    if debug { eprintln!("[termstack] connecting to socket for builtin..."); }
+
+    // Connect to compositor and send message
+    let mut stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("failed to connect to {}", socket_path))?;
+
+    writeln!(stream, "{}", msg).context("failed to send builtin message")?;
+    stream.flush().context("failed to flush builtin message")?;
+
+    if debug { eprintln!("[termstack] builtin message sent successfully"); }
 
     Ok(())
 }
@@ -447,7 +497,7 @@ fn extract_termstack_subcommand(command: &str) -> Option<String> {
         return None;
     }
 
-    let subcommands = ["diagnose", "test-x11", "gui", "--status", "--resize", "--help", "-h"];
+    let subcommands = ["diagnose", "test-x11", "gui", "--status", "--resize", "--builtin", "--help", "-h"];
     if subcommands.contains(&parts[1]) {
         // Return everything after "termstack"
         Some(parts[1..].join(" "))
@@ -489,6 +539,11 @@ fn execute_subcommand(subcommand: &str) -> Result<()> {
         "--resize" => {
             let mode = parts.get(1).copied().unwrap_or("full");
             send_resize_request(mode)
+        }
+        "--builtin" => {
+            // Convert &str parts back to String for send_builtin_notification
+            let builtin_args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+            send_builtin_notification(&builtin_args)
         }
         "gui" => {
             if parts.len() < 2 {

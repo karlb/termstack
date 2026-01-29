@@ -21,6 +21,7 @@ mod tests {
                 assert_eq!(command, "mc");
             }
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
+            IpcMessage::Builtin { .. } => panic!("expected Spawn"),
         }
     }
 
@@ -44,6 +45,7 @@ mod tests {
                 assert_eq!(env.get("HOME"), Some(&"/home/user".to_string()));
             }
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
+            IpcMessage::Builtin { .. } => panic!("expected Spawn"),
         }
     }
 
@@ -86,6 +88,7 @@ mod tests {
         let (command, cwd, env) = match parsed {
             IpcMessage::Spawn { command, cwd, env, .. } => (command, cwd, env),
             IpcMessage::Resize { .. } => panic!("expected Spawn"),
+            IpcMessage::Builtin { .. } => panic!("expected Spawn"),
         };
 
         eprintln!("Parsed from JSON: command={}", command);
@@ -141,6 +144,7 @@ mod tests {
                 assert_eq!(mode, ResizeMode::Full);
             }
             IpcMessage::Spawn { .. } => panic!("expected Resize"),
+            IpcMessage::Builtin { .. } => panic!("expected Resize"),
         }
     }
 
@@ -158,6 +162,7 @@ mod tests {
                 assert_eq!(mode, ResizeMode::Content);
             }
             IpcMessage::Spawn { .. } => panic!("expected Resize"),
+            IpcMessage::Builtin { .. } => panic!("expected Resize"),
         }
     }
 
@@ -254,6 +259,132 @@ mod tests {
             }
             _ => panic!("expected Spawn with foreground"),
         }
+    }
+
+    #[test]
+    fn builtin_message_parses_correctly() {
+        let msg = serde_json::json!({
+            "type": "builtin",
+            "command": "cd ..",
+            "result": "",
+            "success": true,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
+
+        match parsed {
+            IpcMessage::Builtin { command, result, success } => {
+                assert_eq!(command, "cd ..");
+                assert_eq!(result, "");
+                assert!(success);
+            }
+            _ => panic!("expected Builtin"),
+        }
+    }
+
+    #[test]
+    fn builtin_with_output_parses_correctly() {
+        let msg = serde_json::json!({
+            "type": "builtin",
+            "command": "alias",
+            "result": "ll='ls -la'\nla='ls -A'",
+            "success": true,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
+
+        match parsed {
+            IpcMessage::Builtin { command, result, success } => {
+                assert_eq!(command, "alias");
+                assert!(result.contains("ll='ls -la'"));
+                assert!(success);
+            }
+            _ => panic!("expected Builtin"),
+        }
+    }
+
+    #[test]
+    fn builtin_error_parses_correctly() {
+        let msg = serde_json::json!({
+            "type": "builtin",
+            "command": "cd /nonexistent",
+            "result": "cd: The directory '/nonexistent' does not exist",
+            "success": false,
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
+
+        match parsed {
+            IpcMessage::Builtin { command, result, success } => {
+                assert_eq!(command, "cd /nonexistent");
+                assert!(result.contains("does not exist"));
+                assert!(!success);
+            }
+            _ => panic!("expected Builtin"),
+        }
+    }
+
+    #[test]
+    fn builtin_terminal_has_correct_title() {
+        // Test that builtin terminals have the command as title (without > prefix)
+        // The title bar renderer adds the > prefix, so we shouldn't add it ourselves
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        // Title should be just the command, not "> cd .."
+        // The title bar renderer will add "> " when rendering
+        assert_eq!(terminal.title, "cd ..", "title should not have > prefix");
+    }
+
+    #[test]
+    fn builtin_terminal_empty_result_has_minimal_height() {
+        // Test that builtin with no output has minimal height (just title bar, no content)
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        // Empty result should have zero content height (title bar is rendered separately)
+        assert_eq!(terminal.height, 0, "empty builtin should have 0 content height");
+    }
+
+    #[test]
+    fn builtin_terminal_with_output_has_correct_height() {
+        // Test that builtin with output has height for all lines
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        let result = "ll='ls -la'\nla='ls -A'\ngrep='grep --color=auto'";
+        let id = manager.create_builtin_terminal("alias", result, true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        // 3 lines of output = 3 rows
+        let cell_height = terminal.cell_size().1;
+        let expected_height = 3 * cell_height;
+        assert_eq!(terminal.height, expected_height, "builtin with 3 lines should have 3-row height");
+    }
+
+    #[test]
+    fn builtin_terminal_is_immediately_visible() {
+        // Builtin terminals should be visible immediately (not waiting for output)
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        assert!(terminal.is_visible(), "builtin terminal should be immediately visible");
+    }
+
+    #[test]
+    fn builtin_terminal_is_marked_exited() {
+        // Builtin terminals should be marked as exited (no cursor)
+        let mut manager = TerminalManager::new_with_size(800, 600, terminal::Theme::default(), 14.0);
+
+        let id = manager.create_builtin_terminal("cd ..", "", true).unwrap();
+        let terminal = manager.get(id).unwrap();
+
+        assert!(terminal.has_exited(), "builtin terminal should be marked as exited");
     }
 
     #[test]

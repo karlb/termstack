@@ -766,6 +766,114 @@ impl TerminalManager {
         Ok(id)
     }
 
+    /// Create a static content terminal for displaying builtin command results.
+    ///
+    /// Unlike spawn_command which runs a shell command, this creates a terminal
+    /// with pre-filled content that's immediately visible and marked as exited
+    /// (no cursor, no running process).
+    ///
+    /// Used for shell builtins like cd, export, alias that run in the shell's
+    /// process but should appear as persistent entries in the stack.
+    pub fn create_builtin_terminal(
+        &mut self,
+        command: &str,
+        result: &str,
+        success: bool,
+    ) -> Result<TerminalId, terminal::state::TerminalError> {
+        let id = TerminalId(self.next_id);
+        self.next_id += 1;
+
+        // Calculate how many rows we need for the result
+        // Empty result = just title bar (0 content rows)
+        let result_lines = if result.is_empty() {
+            0
+        } else {
+            result.lines().count().max(1)
+        };
+        let visual_rows = result_lines as u16;
+
+        // Use spawn_command with "true" which exits immediately with no output.
+        // This avoids the shell prompt that new_with_options would create.
+        // We use a minimal environment and /tmp as working dir since it doesn't matter.
+        let env = std::collections::HashMap::new();
+        let working_dir = std::path::Path::new("/tmp");
+        let mut terminal = Terminal::new_with_command_options(
+            self.default_cols,
+            1000, // PTY rows (large to prevent scrolling)
+            visual_rows,
+            "true", // Exits immediately with no output
+            working_dir,
+            &env,
+            self.theme,
+            self.font_size,
+        )?;
+
+        // Inject the result content into the terminal
+        if !result.is_empty() {
+            // Add result text with appropriate color
+            if success {
+                terminal.inject_bytes(result.as_bytes());
+            } else {
+                // Red color for errors: ESC[31m ... ESC[0m
+                terminal.inject_bytes(b"\x1b[31m");
+                terminal.inject_bytes(result.as_bytes());
+                terminal.inject_bytes(b"\x1b[0m");
+            }
+            // Ensure proper line ending
+            if !result.ends_with('\n') {
+                terminal.inject_bytes(b"\n");
+            }
+        }
+
+        // Get actual cell dimensions
+        let (cell_width, cell_height) = terminal.cell_size();
+
+        let mut managed = ManagedTerminal {
+            terminal,
+            id,
+            width: self.default_cols as u32 * cell_width,
+            height: visual_rows as u32 * cell_height,
+            title: command.to_string(), // Title bar renderer adds "> " prefix
+            show_title_bar: true,
+            #[cfg(feature = "x11-backend")]
+            texture: None,
+            #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
+            pixel_buffer: Vec::new(),
+            dirty: true,
+            last_dirty_time: std::time::Instant::now(),
+            selection_dirty: false,
+            keep_open: true, // Keep visible like command terminals
+            exited: true,    // Mark as exited (no cursor)
+            visibility: VisibilityState {
+                visible: true, // Immediately visible
+                reason: VisibilityReason::HasOutput, // Treat as having output
+            },
+            parent: None,
+            prev_alt_screen: false,
+            manually_sized: false,
+            pending_write: Vec::new(),
+        };
+
+        // Update cell size if it changed
+        if cell_width != self.cell_width || cell_height != self.cell_height {
+            self.cell_width = cell_width;
+            self.cell_height = cell_height;
+            managed.width = self.default_cols as u32 * cell_width;
+        }
+
+        tracing::info!(
+            id = id.0,
+            command,
+            result_lines,
+            height = managed.height,
+            success,
+            "created builtin terminal"
+        );
+
+        self.terminals.insert(id, managed);
+        Ok(id)
+    }
+
     /// Spawn a new terminal running a specific command
     ///
     /// If `parent` is provided, that terminal will be unhidden when this one exits.

@@ -76,8 +76,36 @@ if set -q TERMSTACK_SOCKET
         set -l ret $status
 
         switch $ret
-            case 2 3
-                # Shell builtin or incomplete syntax - let fish handle it
+            case 2
+                # Shell builtin - execute in current shell AND capture output
+                # Using eval with redirection: state changes persist, output is captured
+                set -l tmpfile (mktemp)
+
+                # eval runs in current shell context, so cd/export/etc affect this shell
+                # Redirect stdout+stderr to temp file to capture output
+                eval $cmd >$tmpfile 2>&1
+                set -l exit_status $status
+
+                # Read captured output (may be empty for cd, export, etc.)
+                set -l output (cat $tmpfile)
+                rm -f $tmpfile
+
+                # Determine success/error flag
+                set -l error_flag
+                if test $exit_status -ne 0
+                    set error_flag "--error"
+                end
+
+                # Send to compositor (creates persistent entry in stack)
+                # Run in background to avoid blocking the shell
+                $TERMSTACK_BIN --builtin "$cmd" "$output" $error_flag &
+
+                # Add to history and clear command line
+                history append -- "$cmd"
+                commandline ""
+                commandline -f repaint
+            case 3
+                # Incomplete syntax - let fish handle it
                 # (fish shows continuation prompt for incomplete, error for invalid)
                 commandline -f execute
             case '*'

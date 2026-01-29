@@ -198,8 +198,8 @@ pub fn collect_window_data(
                         (h, t.show_title_bar)
                     })
                     .unwrap_or((node.height, false));
-                // Add title bar height only if title bar is shown
-                let height = if content_height > 0 && show_title_bar {
+                // Add title bar height if terminal is visible and has title bar
+                let height = if show_title_bar && terminal_manager.is_terminal_visible(*id) {
                     content_height + TITLE_BAR_HEIGHT as i32
                 } else {
                     content_height

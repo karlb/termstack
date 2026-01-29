@@ -68,7 +68,7 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use std::collections::HashMap;
-use crate::ipc::{ResizeMode, SpawnRequest};
+use crate::ipc::{BuiltinRequest, ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
@@ -180,6 +180,9 @@ pub struct TermStack {
 
     /// Pending GUI spawn requests from IPC (termstack commands with foreground=Some(_))
     pub pending_gui_spawn_requests: Vec<SpawnRequest>,
+
+    /// Pending builtin command notifications from IPC (termstack --builtin)
+    pub pending_builtin_requests: Vec<BuiltinRequest>,
 
     /// Pending resize request from IPC (termstack resize)
     /// Includes the stream for sending acknowledgement after resize completes
@@ -512,6 +515,7 @@ impl TermStack {
             pending_window_output_terminal: None,
             pending_window_command: None,
             pending_gui_spawn_requests: Vec::new(),
+            pending_builtin_requests: Vec::new(),
             pending_gui_foreground: false,
             foreground_gui_sessions: HashMap::new(),
             pending_output_terminal_cleanup: Vec::new(),

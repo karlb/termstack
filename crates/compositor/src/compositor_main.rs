@@ -338,6 +338,15 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                                         // Store stream for ACK after resize completes
                                         state.pending_resize_request = Some((mode, stream));
                                     }
+                                    crate::ipc::IpcRequest::Builtin(builtin_req) => {
+                                        tracing::info!(
+                                            command = %builtin_req.command,
+                                            success = builtin_req.success,
+                                            has_result = !builtin_req.result.is_empty(),
+                                            "IPC builtin request queued"
+                                        );
+                                        state.pending_builtin_requests.push(builtin_req);
+                                    }
                                 }
                             }
                             Err(crate::ipc::IpcError::Timeout) => {
@@ -570,6 +579,13 @@ fn run_compositor_x11() -> anyhow::Result<()> {
 
         // Handle GUI spawn requests from IPC (termstack gui)
         crate::spawn_handler::handle_gui_spawn_requests(
+            &mut compositor,
+            &mut terminal_manager,
+            crate::window_height::calculate_window_heights,
+        );
+
+        // Handle builtin command requests from IPC (termstack --builtin)
+        crate::spawn_handler::handle_builtin_requests(
             &mut compositor,
             &mut terminal_manager,
             crate::window_height::calculate_window_heights,

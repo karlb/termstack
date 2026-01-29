@@ -65,6 +65,16 @@ pub enum IpcMessage {
         /// Resize mode
         mode: ResizeMode,
     },
+    /// Shell builtin executed (creates persistent entry in stack)
+    #[serde(rename = "builtin")]
+    Builtin {
+        /// The builtin command (e.g., "cd ..")
+        command: String,
+        /// The output/result (may be empty for commands like cd)
+        result: String,
+        /// Whether the command succeeded
+        success: bool,
+    },
 }
 
 /// Request ready for processing by the compositor
@@ -74,6 +84,19 @@ pub enum IpcRequest {
     Spawn(SpawnRequest),
     /// Resize the focused terminal
     Resize(ResizeMode),
+    /// Shell builtin executed (creates persistent entry in stack)
+    Builtin(BuiltinRequest),
+}
+
+/// Builtin command request ready for processing by the compositor
+#[derive(Debug)]
+pub struct BuiltinRequest {
+    /// The builtin command (e.g., "cd ..")
+    pub command: String,
+    /// The output/result (may be empty for commands like cd)
+    pub result: String,
+    /// Whether the command succeeded
+    pub success: bool,
 }
 
 /// Spawn request ready for processing by the compositor
@@ -154,6 +177,14 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
         IpcMessage::Resize { mode } => {
             tracing::info!(?mode, "resize request received");
             Ok((IpcRequest::Resize(mode), stream))
+        }
+        IpcMessage::Builtin { command, result, success } => {
+            tracing::info!(command = %command, success, has_result = !result.is_empty(), "builtin request received");
+            Ok((IpcRequest::Builtin(BuiltinRequest {
+                command,
+                result,
+                success,
+            }), stream))
         }
     }
 }

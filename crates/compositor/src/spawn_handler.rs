@@ -186,6 +186,67 @@ pub fn handle_gui_spawn_requests(
     }
 }
 
+/// Handle builtin command requests from IPC (termstack --builtin)
+///
+/// Creates persistent stack entries for shell builtins like cd, export, alias, etc.
+/// These show the command and its output (if any) as a static terminal entry.
+pub fn handle_builtin_requests(
+    compositor: &mut TermStack,
+    terminal_manager: &mut TerminalManager,
+    calculate_window_heights: impl Fn(&TermStack, &TerminalManager) -> Vec<i32>,
+) {
+    while let Some(request) = compositor.pending_builtin_requests.pop() {
+        // Create static terminal with the builtin command and result
+        match terminal_manager.create_builtin_terminal(
+            &request.command,
+            &request.result,
+            request.success,
+        ) {
+            Ok(id) => {
+                // Find the launcher terminal (last terminal in layout)
+                // Builtins should appear above the launcher
+                let launcher_idx = compositor.layout_nodes.iter()
+                    .rposition(|node| matches!(node.cell, StackWindow::Terminal(_)))
+                    .unwrap_or(compositor.layout_nodes.len());
+
+                // Insert above launcher (at launcher's position, pushing launcher down)
+                compositor.layout_nodes.insert(launcher_idx, super::state::LayoutNode {
+                    cell: StackWindow::Terminal(id),
+                    height: 0, // Will be updated in calculate_window_heights
+                });
+
+                tracing::info!(
+                    id = id.0,
+                    insert_index = launcher_idx,
+                    command = %request.command,
+                    success = request.success,
+                    "inserted builtin terminal"
+                );
+
+                // Update cell heights
+                let new_heights = calculate_window_heights(compositor, terminal_manager);
+                compositor.update_layout_heights(new_heights);
+
+                // Scroll to show the builtin entry
+                if let Some(new_scroll) = compositor.scroll_to_show_window_bottom(launcher_idx) {
+                    tracing::debug!(
+                        id = id.0,
+                        new_scroll,
+                        "scrolled to show builtin terminal"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    command = %request.command,
+                    error = ?e,
+                    "failed to create builtin terminal"
+                );
+            }
+        }
+    }
+}
+
 /// Process a spawn request for a terminal command
 ///
 /// Sets up environment variables, adds helper scripts to PATH, and spawns
