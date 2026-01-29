@@ -105,6 +105,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     use smithay::utils::DeviceFd;
     use std::collections::HashSet;
     use crate::cursor::CursorManager;
+    use crate::icon::{set_window_class, set_window_icon};
 
     tracing::info!("starting termstack with X11 backend");
 
@@ -165,6 +166,14 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     // Create GLES renderer from EGL context
     let mut renderer = unsafe { GlesRenderer::new(egl_context) }
         .map_err(|e| anyhow::anyhow!("Failed to create GLES renderer: {e:?}"))?;
+
+    // Set window icon and class BEFORE mapping (GNOME queries these on map)
+    if let Err(e) = set_window_icon(&x11_handle.connection(), x11_window.id()) {
+        tracing::warn!(?e, "failed to set window icon");
+    }
+    if let Err(e) = set_window_class(&x11_handle.connection(), x11_window.id()) {
+        tracing::warn!(?e, "failed to set window class");
+    }
 
     // Map the window to make it visible
     x11_window.map();

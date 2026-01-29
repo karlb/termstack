@@ -20,21 +20,38 @@
 //! termstack --resize full    # Resize focused terminal
 //! ```
 //!
+//! ## Desktop Integration
+//! ```bash
+//! termstack install    # Install .desktop file and icons for GNOME
+//! termstack uninstall  # Remove desktop integration files
+//! ```
+//!
 //! The mode is detected automatically based on environment context,
 //! providing a seamless user experience with a single binary.
 
 use std::env;
 
 mod cli;
+mod desktop;
 mod shell;
 
 #[cfg(test)]
 mod config_test;
 
 fn main() -> anyhow::Result<()> {
-    // Check for CLI-specific subcommands first (gui, --resize, etc.)
-    // These require TERMSTACK_SOCKET and should error immediately if missing
     let args: Vec<String> = env::args().collect();
+
+    // Handle install/uninstall commands first (work in any context)
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "install" => return desktop::install(),
+            "uninstall" => return desktop::uninstall(),
+            _ => {}
+        }
+    }
+
+    // Check for CLI-specific subcommands (gui, --resize, etc.)
+    // These require TERMSTACK_SOCKET and should error immediately if missing
     let is_cli_command = args.len() >= 2 && matches!(args[1].as_str(), "gui" | "--resize");
 
     // Smart mode detection based on TERMSTACK_SOCKET environment variable

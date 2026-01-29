@@ -7,6 +7,7 @@ pub mod backend;
 pub mod config;
 pub mod coords;
 pub mod cursor;
+pub mod icon;
 pub mod input;
 pub mod input_handler;
 pub mod ipc;
