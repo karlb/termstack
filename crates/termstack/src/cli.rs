@@ -66,6 +66,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::shell::{detect_shell, Shell};
+use crate::util::debug_enabled;
 
 /// Configuration for termstack
 #[derive(Debug, Deserialize)]
@@ -142,13 +143,6 @@ const EXIT_SHELL_COMMAND: i32 = 2;
 /// Shell integration should let the shell handle it (show continuation or error)
 const EXIT_INCOMPLETE_SYNTAX: i32 = 3;
 
-/// Check if debug mode is enabled via DEBUG_TSTACK environment variable
-fn debug_enabled() -> bool {
-    // Cache result to avoid repeated env lookups (inline const fn not stable yet)
-    use std::sync::OnceLock;
-    static DEBUG: OnceLock<bool> = OnceLock::new();
-    *DEBUG.get_or_init(|| env::var("DEBUG_TSTACK").is_ok())
-}
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = env::args().collect();

@@ -468,7 +468,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         xwayland_lifecycle::monitor_xwayland_satellite_health(&mut compositor);
 
         // Handle external window insert/resize events
-        crate::window_lifecycle::handle_external_window_events(&mut compositor, &mut terminal_manager);
+        crate::window_lifecycle::handle_external_window_events(&mut compositor);
 
         // Update cell heights for input event processing
         let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);

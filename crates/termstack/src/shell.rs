@@ -3,6 +3,8 @@
 use std::env;
 use std::process::Command;
 
+use crate::util::debug_enabled;
+
 /// Shell abstraction for handling shell-specific command processing
 pub trait Shell {
     /// Normalize a command for the shell (e.g., insert semicolons for Fish)
@@ -38,13 +40,6 @@ impl FishShell {
     pub fn new() -> Self {
         let shell_path = env::var("SHELL").unwrap_or_else(|_| "/usr/bin/fish".to_string());
         Self { shell_path }
-    }
-
-    /// Check if debug mode is enabled via DEBUG_TSTACK environment variable
-    fn debug_enabled() -> bool {
-        use std::sync::OnceLock;
-        static DEBUG: OnceLock<bool> = OnceLock::new();
-        *DEBUG.get_or_init(|| env::var("DEBUG_TSTACK").is_ok())
     }
 }
 
@@ -88,7 +83,7 @@ impl Shell for FishShell {
     }
 
     fn is_syntax_complete(&self, command: &str) -> bool {
-        let debug = Self::debug_enabled();
+        let debug = debug_enabled();
 
         if debug {
             eprintln!("[termstack] fish syntax check: shell={}", self.shell_path);

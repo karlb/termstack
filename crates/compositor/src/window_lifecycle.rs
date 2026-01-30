@@ -4,18 +4,52 @@
 //! output terminal management, and focus synchronization.
 
 use crate::state::{StackWindow, TermStack};
-use crate::terminal_manager::TerminalManager;
+use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::terminal_output::{find_terminal_window_index, is_window_bottom_visible};
 use crate::title_bar::TITLE_BAR_HEIGHT;
+
+/// Restore a launcher terminal's visibility after its foreground GUI session ends.
+///
+/// This handles the common pattern of:
+/// 1. Restoring the launcher terminal's visibility
+/// 2. Focusing the restored launcher
+///
+/// Used by both the normal GUI exit path and the fallback path when the output
+/// terminal exits without ever linking to a window.
+fn restore_foreground_gui_launcher(
+    compositor: &mut TermStack,
+    terminal_manager: &mut TerminalManager,
+    launcher_id: TerminalId,
+    output_terminal_id: TerminalId,
+    context: &str,
+) {
+    if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
+        launcher.visibility.on_gui_exit();
+        tracing::info!(
+            launcher_id = launcher_id.0,
+            output_terminal_id = output_terminal_id.0,
+            context,
+            "restored launching terminal visibility"
+        );
+    }
+
+    // Focus the restored launcher
+    if let Some(idx) = find_terminal_window_index(compositor, launcher_id) {
+        compositor.set_focus_by_index(idx);
+        tracing::info!(
+            launcher_id = launcher_id.0,
+            index = idx,
+            context,
+            "focused restored launcher"
+        );
+    }
+}
 
 /// Handle new external windows and window resize events.
 ///
 /// Processes new external window additions (with keyboard focus if needed)
 /// and handles window resize events with autoscroll logic.
-pub fn handle_external_window_events(
-    compositor: &mut TermStack,
-    _terminal_manager: &mut TerminalManager,
-) {
+pub fn handle_external_window_events(compositor: &mut TermStack) {
     // Handle new external window - heights are already managed in add_window,
     // just need to scroll and set keyboard focus if needed
     if let Some(window_idx) = compositor.new_external_window_index.take() {
@@ -140,24 +174,13 @@ pub fn handle_output_terminal_cleanup(
 
         // Check if this was a foreground GUI session and restore the launcher
         if let Some((launcher_id, _window_was_linked)) = compositor.foreground_gui_sessions.remove(&term_id) {
-            if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
-                launcher.visibility.on_gui_exit();
-                tracing::info!(
-                    launcher_id = launcher_id.0,
-                    output_terminal_id = term_id.0,
-                    "restored launching terminal visibility after foreground GUI closed"
-                );
-            }
-
-            // Focus the restored launcher
-            if let Some(idx) = find_terminal_window_index(compositor, launcher_id) {
-                compositor.set_focus_by_index(idx);
-                tracing::info!(
-                    launcher_id = launcher_id.0,
-                    index = idx,
-                    "focused restored launcher after foreground GUI closed"
-                );
-            }
+            restore_foreground_gui_launcher(
+                compositor,
+                terminal_manager,
+                launcher_id,
+                term_id,
+                "after foreground GUI closed",
+            );
         }
 
         if has_had_output {
@@ -197,24 +220,13 @@ pub fn cleanup_and_sync_focus(
             if !window_was_linked {
                 // No window was ever linked - this is the fallback case
                 // (e.g., GUI command failed before opening a window)
-                if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
-                    launcher.visibility.on_gui_exit();
-                    tracing::info!(
-                        launcher_id = launcher_id.0,
-                        output_terminal_id = dead_id.0,
-                        "fallback: restored launcher after output terminal exited without window"
-                    );
-                }
-
-                // Focus the restored launcher
-                if let Some(idx) = find_terminal_window_index(compositor, launcher_id) {
-                    compositor.set_focus_by_index(idx);
-                    tracing::info!(
-                        launcher_id = launcher_id.0,
-                        index = idx,
-                        "focused restored launcher after fallback"
-                    );
-                }
+                restore_foreground_gui_launcher(
+                    compositor,
+                    terminal_manager,
+                    launcher_id,
+                    *dead_id,
+                    "fallback: output terminal exited without window",
+                );
             }
         }
 

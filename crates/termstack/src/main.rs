@@ -34,6 +34,7 @@ use std::env;
 mod cli;
 mod desktop;
 mod shell;
+mod util;
 
 #[cfg(test)]
 mod config_test;
