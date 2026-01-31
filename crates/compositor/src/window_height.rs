@@ -56,8 +56,19 @@ pub fn calculate_window_heights(
                 if node.height > 0 {
                     return node.height;
                 }
-                // Fallback for new cells: window state stores content height
-                let content_height = entry.state.current_height() as i32;
+                // Fallback for new cells: try window state first, then window.geometry()
+                let mut content_height = entry.state.current_height() as i32;
+
+                // If state hasn't been updated yet, try to get size from window geometry
+                // This handles the initial commit case where the client has drawn
+                // but handle_commit hasn't processed the size yet
+                if content_height == 0 {
+                    let geo = entry.window.geometry();
+                    if geo.size.h > 0 {
+                        content_height = geo.size.h;
+                    }
+                }
+
                 if entry.uses_csd {
                     content_height
                 } else {
@@ -104,7 +115,7 @@ pub fn check_and_handle_height_changes(
                     actual_heights.get(i).copied().unwrap_or(node.height)
                 }
             }
-            StackWindow::External(entry) => {
+            StackWindow::External(_) => {
                 // Check if this is the window being resized
                 if let Some(drag) = &compositor.resizing {
                     if i == drag.window_index {
@@ -113,9 +124,10 @@ pub fn check_and_handle_height_changes(
                         return drag.target_height;
                     }
                 }
-                // Non-resizing external windows: use committed height from WindowState
-                // This prevents flickering (no partial buffers) and jumping (no frame delay)
-                entry.state.current_height() as i32
+                // Non-resizing external windows: use actual_heights from element geometry
+                // This handles both new windows (before first commit) and post-commit
+                // windows correctly, ensuring click detection matches rendering.
+                actual_heights.get(i).copied().unwrap_or(node.height)
             }
         }
     }).collect();

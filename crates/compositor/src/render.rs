@@ -319,20 +319,33 @@ pub fn build_render_data<'a>(
                 let title_bar_texture = title_bar_textures.get(window_idx).copied().flatten();
                 let uses_csd = entry.uses_csd;
 
-                // For external windows, check if height differs from committed
-                // (happens during resize drag when using target height for layout)
+                // Calculate render height using the tested helper function.
+                // This handles both new windows (committed=0) and resize scenarios.
                 let committed_height = entry.state.current_height() as i32;
-                let adjusted_render_y = if committed_height != height {
-                    // Top-align content: shift render_y up by the height difference
-                    // (in OpenGL coords, Y=0 at bottom, so adding moves content up on screen)
-                    render_y + (height - committed_height)
+                let render_height = calculate_external_render_height(committed_height, height);
+
+                // INVARIANT: A window with positive layout height must render with positive height.
+                // Violation indicates the render path diverged from layout (the bug this catches:
+                // using committed_height=0 directly instead of falling back to layout height).
+                debug_assert!(
+                    height <= 0 || render_height > 0,
+                    "BUG: external window has layout height {} but render height {} \
+                     (committed_height={}). Window would be invisible!",
+                    height, render_height, committed_height
+                );
+
+                // Top-align content when render height differs from layout height
+                // (happens during resize drag when layout uses target height)
+                let adjusted_render_y = if render_height != height {
+                    // In OpenGL coords, Y=0 at bottom, so adding moves content up on screen
+                    render_y + (height - render_height)
                 } else {
                     render_y
                 };
 
                 render_data.push(CellRenderData::External {
                     y: adjusted_render_y,
-                    height: committed_height,  // Use committed height for rendering
+                    height: render_height,
                     elements,
                     title_bar_texture,
                     uses_csd,
@@ -566,9 +579,82 @@ pub fn render_external(
     }
 }
 
+/// Calculate the render height for an external window.
+///
+/// For windows that have committed a size, use the committed height.
+/// For new windows that haven't committed yet (committed_height=0),
+/// use the layout height computed from element geometry.
+///
+/// This ensures new windows render at their actual size immediately,
+/// rather than waiting for the first commit to update WindowState.
+#[inline]
+pub fn calculate_external_render_height(committed_height: i32, layout_height: i32) -> i32 {
+    if committed_height > 0 {
+        committed_height
+    } else {
+        layout_height
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ==========================================================================
+    // External window render height tests
+    // ==========================================================================
+
+    #[test]
+    fn external_render_height_uses_committed_when_available() {
+        // After commit, use the committed height even if layout differs
+        let committed = 200;
+        let layout = 300; // Different value to prove we use committed, not layout
+        assert_eq!(
+            calculate_external_render_height(committed, layout),
+            200,
+            "should use committed height, not layout height"
+        );
+    }
+
+    #[test]
+    fn external_render_height_uses_layout_when_not_committed() {
+        // Before first commit, committed_height is 0
+        // Should use layout height (from element geometry)
+        let committed = 0;
+        let layout = 224; // e.g., 200px content + 24px title bar
+        assert_eq!(
+            calculate_external_render_height(committed, layout),
+            224,
+            "new window should render at layout height, not 0"
+        );
+    }
+
+    #[test]
+    fn external_render_height_zero_layout_zero_committed() {
+        // Edge case: both are zero (window truly has no content)
+        assert_eq!(
+            calculate_external_render_height(0, 0),
+            0,
+            "zero layout + zero committed = zero render height"
+        );
+    }
+
+    #[test]
+    fn external_render_height_layout_differs_from_committed() {
+        // During resize: layout might be target height, committed is old height
+        // Should use committed (what client has actually drawn)
+        let committed = 150;
+        let layout = 300; // target height during resize
+        assert_eq!(
+            calculate_external_render_height(committed, layout),
+            150,
+            "during resize, should use committed height (actual buffer size)"
+        );
+    }
+
+    // ==========================================================================
+    // Terminal render height tests
+    // ==========================================================================
 
     #[test]
     fn render_height_includes_title_bar_when_visible() {

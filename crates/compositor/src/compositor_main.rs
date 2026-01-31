@@ -71,28 +71,290 @@ pub fn run_compositor() -> anyhow::Result<()> {
 
 #[cfg(feature = "headless-backend")]
 fn run_compositor_headless() -> anyhow::Result<()> {
-    use crate::backend::headless::HeadlessBackend;
+    use std::sync::Arc;
+    use std::os::unix::net::UnixListener;
 
     tracing::info!("starting termstack with headless backend");
 
-    // Headless mode is primarily for testing
-    // For full operation, use the X11 backend
-    //
-    // This stub allows the binary to start in headless mode for basic testing.
-    // Full headless compositor operation would require:
-    // - A Wayland display that doesn't require a real display server
-    // - Software rendering of external windows
-    // - Event injection for testing
+    // Load configuration
+    let config = Config::load();
 
-    let _backend = HeadlessBackend::new_with_size(1280, 800);
+    // Create event loop
+    let mut event_loop: EventLoop<TermStack> = EventLoop::try_new()?;
 
-    tracing::warn!(
-        "Headless backend started but full compositor loop not implemented. \
-         Use the E2E test infrastructure in test-harness for testing."
+    // Create Wayland display
+    let display: Display<TermStack> = Display::new()?;
+
+    // Create a virtual output for layout calculations (no actual rendering)
+    let mode = Mode {
+        size: (1280, 800).into(),
+        refresh: 60_000,
+    };
+
+    let output = Output::new(
+        "headless".to_string(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "TermStack".to_string(),
+            model: "Headless".to_string(),
+        },
+    );
+    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+    output.set_preferred(mode);
+
+    let output_size: Size<i32, Physical> = Size::from((mode.size.w, mode.size.h));
+
+    // Create compositor state (no renderer needed for headless)
+    let (mut compositor, mut display) = TermStack::new(
+        display,
+        event_loop.handle(),
+        output_size,
+        config.csd_apps.clone(),
     );
 
-    // For now, just exit successfully
-    // Full implementation would run a headless event loop
+    // Add output to compositor
+    compositor.space.map_output(&output, (0, 0));
+
+    // Create output global so clients can discover it
+    let _output_global = output.create_global::<TermStack>(&compositor.display_handle);
+
+    // Create listening socket for Wayland clients
+    let listening_socket = ListeningSocketSource::new_auto()
+        .expect("failed to create Wayland socket");
+
+    let socket_name = listening_socket
+        .socket_name()
+        .to_string_lossy()
+        .to_string();
+
+    tracing::info!(?socket_name, "headless compositor listening on Wayland socket");
+
+    // Set WAYLAND_DISPLAY for child processes
+    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+
+    // Force GTK and Qt apps to use Wayland backend
+    std::env::set_var("GDK_BACKEND", "wayland");
+    std::env::set_var("QT_QPA_PLATFORM", "wayland");
+
+    // Insert socket source into event loop for new client connections
+    event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
+        tracing::info!("new Wayland client connected (headless)");
+        state.display_handle.insert_client(client_stream, Arc::new(ClientState {
+            compositor_state: Default::default(),
+        })).expect("failed to insert client");
+    }).expect("failed to insert socket source");
+
+    // Create IPC socket for termstack commands
+    let ipc_socket_path = crate::ipc::socket_path();
+    let _ = std::fs::remove_file(&ipc_socket_path); // Clean up old socket
+    let ipc_listener = UnixListener::bind(&ipc_socket_path)
+        .expect("failed to create IPC socket");
+    ipc_listener.set_nonblocking(true).expect("failed to set nonblocking");
+
+    // Set environment variable for child processes
+    std::env::set_var("TERMSTACK_SOCKET", &ipc_socket_path);
+
+    // Set TERMSTACK_BIN so spawned terminals use matching CLI version
+    let binary_path = std::env::current_exe()
+        .expect("failed to determine binary path");
+    std::env::set_var("TERMSTACK_BIN", &binary_path);
+
+    tracing::info!(
+        path = ?ipc_socket_path,
+        "headless IPC socket created"
+    );
+
+    // Insert IPC socket source into event loop
+    event_loop.handle().insert_source(
+        Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
+        |_, listener, state| {
+            // Accept incoming connections
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        tracing::debug!("IPC connection received (headless)");
+                        match crate::ipc::read_ipc_request(stream) {
+                            Ok((request, stream)) => {
+                                match request {
+                                    crate::ipc::IpcRequest::Spawn(spawn_req) => {
+                                        if spawn_req.foreground.is_some() {
+                                            tracing::info!(
+                                                command = %spawn_req.command,
+                                                foreground = spawn_req.foreground,
+                                                "IPC GUI spawn request queued (headless)"
+                                            );
+                                            state.pending_gui_spawn_requests.push(spawn_req);
+                                        } else {
+                                            tracing::info!(command = %spawn_req.command, "IPC terminal spawn request queued (headless)");
+                                            state.pending_spawn_requests.push(spawn_req);
+                                        }
+                                    }
+                                    crate::ipc::IpcRequest::Resize(mode) => {
+                                        tracing::info!(?mode, "IPC resize request queued (headless)");
+                                        state.pending_resize_request = Some((mode, stream));
+                                    }
+                                    crate::ipc::IpcRequest::Builtin(builtin_req) => {
+                                        tracing::info!(
+                                            command = %builtin_req.command,
+                                            "IPC builtin request queued (headless)"
+                                        );
+                                        state.pending_builtin_requests.push(builtin_req);
+                                    }
+                                    crate::ipc::IpcRequest::QueryWindows => {
+                                        // Build window info from layout_nodes
+                                        let windows: Vec<crate::ipc::WindowInfo> = state.layout_nodes
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, node)| {
+                                                let (is_external, command) = match &node.cell {
+                                                    crate::state::StackWindow::Terminal(_) => (false, String::new()),
+                                                    crate::state::StackWindow::External(entry) => (true, entry.command.clone()),
+                                                };
+                                                crate::ipc::WindowInfo {
+                                                    index: i,
+                                                    width: state.output_size.w,
+                                                    height: node.height,
+                                                    is_external,
+                                                    command,
+                                                }
+                                            })
+                                            .collect();
+                                        tracing::info!(window_count = windows.len(), "IPC query_windows response (headless)");
+                                        crate::ipc::send_json_response(stream, &windows);
+                                    }
+                                }
+                            }
+                            Err(crate::ipc::IpcError::Timeout) => {
+                                tracing::debug!("IPC read timeout (headless)");
+                            }
+                            Err(crate::ipc::IpcError::EmptyMessage) => {
+                                tracing::debug!("IPC received empty message (headless)");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = ?e, "IPC request parsing failed (headless)");
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        tracing::warn!(error = ?e, "IPC accept error (headless)");
+                        break;
+                    }
+                }
+            }
+            Ok(smithay::reexports::calloop::PostAction::Continue)
+        },
+    ).expect("failed to insert IPC socket source");
+
+    // Spawn initial terminal immediately in headless mode
+    // (no XWayland to wait for)
+    compositor.spawn_initial_terminal = true;
+
+    // Create terminal manager for headless mode
+    let terminal_theme = config.theme.to_terminal_theme();
+    let mut terminal_manager = TerminalManager::new_with_size(
+        output_size.w as u32,
+        output_size.h as u32,
+        terminal_theme,
+        config.font_size,
+    );
+
+    tracing::info!("headless compositor entering main loop");
+
+    // Main event loop (no rendering, just protocol dispatch)
+    while compositor.running {
+        // Spawn initial terminal if requested
+        if compositor.spawn_initial_terminal {
+            compositor.spawn_initial_terminal = false;
+            match terminal_manager.spawn() {
+                Ok(id) => {
+                    compositor.add_terminal(id);
+                    tracing::info!(id = id.0, "spawned initial terminal (headless)");
+                }
+                Err(e) => {
+                    tracing::error!(error = ?e, "failed to spawn initial terminal (headless)");
+                }
+            }
+        }
+
+        // Handle external window insert/resize events
+        crate::window_lifecycle::handle_external_window_events(&mut compositor);
+
+        // Update cell heights for proper layout
+        let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
+        compositor.update_layout_heights(window_heights);
+        compositor.recalculate_layout();
+
+        // Dispatch Wayland client requests
+        display.dispatch_clients(&mut compositor)
+            .expect("failed to dispatch clients");
+
+        // Handle terminal spawn requests from IPC
+        crate::spawn_handler::handle_ipc_spawn_requests(
+            &mut compositor,
+            &mut terminal_manager,
+            crate::window_height::calculate_window_heights,
+        );
+
+        // Handle GUI spawn requests from IPC
+        crate::spawn_handler::handle_gui_spawn_requests(
+            &mut compositor,
+            &mut terminal_manager,
+            crate::window_height::calculate_window_heights,
+        );
+
+        // Handle builtin command requests from IPC
+        crate::spawn_handler::handle_builtin_requests(
+            &mut compositor,
+            &mut terminal_manager,
+            crate::window_height::calculate_window_heights,
+        );
+
+        // Handle resize requests from IPC
+        crate::terminal_output::handle_ipc_resize_request(&mut compositor, &mut terminal_manager);
+
+        // Process terminal PTY output
+        crate::terminal_output::process_terminal_output(&mut compositor, &mut terminal_manager);
+
+        // Promote output terminals that have content
+        crate::terminal_output::promote_output_terminals(&mut compositor, &terminal_manager);
+
+        // Handle cleanup of output terminals from closed windows
+        crate::window_lifecycle::handle_output_terminal_cleanup(&mut compositor, &mut terminal_manager);
+
+        // Cleanup dead terminals
+        if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
+            break;
+        }
+
+        if !compositor.running {
+            break;
+        }
+
+        // Send frame callbacks to Wayland clients (required for them to render)
+        // In headless mode, we send these on a timer instead of after actual rendering
+        for surface in compositor.xdg_shell_state.toplevel_surfaces() {
+            send_frames_surface_tree(
+                surface.wl_surface(),
+                &output,
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
+        }
+
+        // Flush clients
+        compositor.display_handle.flush_clients()?;
+
+        // Dispatch calloop events with ~60fps timing
+        event_loop
+            .dispatch(Some(Duration::from_millis(16)), &mut compositor)
+            .map_err(|e| anyhow::anyhow!("event loop error: {e}"))?;
+    }
+
+    tracing::info!("headless compositor shutting down");
+
     Ok(())
 }
 
@@ -346,6 +608,28 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                                             "IPC builtin request queued"
                                         );
                                         state.pending_builtin_requests.push(builtin_req);
+                                    }
+                                    crate::ipc::IpcRequest::QueryWindows => {
+                                        // Build window info from layout_nodes
+                                        let windows: Vec<crate::ipc::WindowInfo> = state.layout_nodes
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, node)| {
+                                                let (is_external, command) = match &node.cell {
+                                                    crate::state::StackWindow::Terminal(_) => (false, String::new()),
+                                                    crate::state::StackWindow::External(entry) => (true, entry.command.clone()),
+                                                };
+                                                crate::ipc::WindowInfo {
+                                                    index: i,
+                                                    width: state.output_size.w,
+                                                    height: node.height,
+                                                    is_external,
+                                                    command,
+                                                }
+                                            })
+                                            .collect();
+                                        tracing::info!(window_count = windows.len(), "IPC query_windows response");
+                                        crate::ipc::send_json_response(stream, &windows);
                                     }
                                 }
                             }
@@ -709,15 +993,17 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                                 actual_heights[i]
                             }
                         }
-                        StackWindow::External(entry) => {
+                        StackWindow::External(_) => {
                             if is_resizing {
                                 if let Some(drag) = &compositor.resizing {
                                     // Being resized: use drag target for visual feedback
                                     return drag.target_height;
                                 }
                             }
-                            // Not being resized: use committed height from WindowState
-                            entry.state.current_height() as i32
+                            // Not being resized: use actual_heights from element geometry
+                            // This handles both new windows (before first commit) and
+                            // post-commit windows correctly.
+                            actual_heights[i]
                         }
                     }
                 })

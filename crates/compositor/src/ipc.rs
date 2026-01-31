@@ -10,6 +10,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use thiserror::Error;
 
 /// IPC errors
@@ -80,6 +81,24 @@ pub enum IpcMessage {
         /// Whether the command succeeded
         success: bool,
     },
+    /// Query current window state (for testing/debugging)
+    #[serde(rename = "query_windows")]
+    QueryWindows,
+}
+
+/// Information about a window in the compositor (for IPC responses)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowInfo {
+    /// Index in layout_nodes
+    pub index: usize,
+    /// Window width (compositor output width)
+    pub width: i32,
+    /// Window height including title bar
+    pub height: i32,
+    /// Whether this is an external (Wayland client) window
+    pub is_external: bool,
+    /// Command that spawned this window (for external windows)
+    pub command: String,
 }
 
 /// Request ready for processing by the compositor
@@ -91,6 +110,8 @@ pub enum IpcRequest {
     Resize(ResizeMode),
     /// Shell builtin executed (creates persistent entry in stack)
     Builtin(BuiltinRequest),
+    /// Query current window state (for testing/debugging)
+    QueryWindows,
 }
 
 /// Builtin command request ready for processing by the compositor
@@ -197,18 +218,35 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
                 success,
             }), stream))
         }
+        IpcMessage::QueryWindows => {
+            tracing::info!("query_windows request received");
+            Ok((IpcRequest::QueryWindows, stream))
+        }
     }
 }
 
 /// Send acknowledgement on a stream (for synchronous operations like resize)
 pub fn send_ack(mut stream: UnixStream) {
-    use std::io::Write;
     let _ = writeln!(stream, "ok");
     let _ = stream.flush();
 }
 
+/// Send a JSON response on a stream (for query operations)
+pub fn send_json_response<T: Serialize>(mut stream: UnixStream, data: &T) {
+    if let Ok(json) = serde_json::to_string(data) {
+        let _ = writeln!(stream, "{}", json);
+        let _ = stream.flush();
+    }
+}
+
 /// Generate the IPC socket path for the current user
+///
+/// Checks TERMSTACK_IPC_SOCKET environment variable first (for testing),
+/// otherwise uses the default path.
 pub fn socket_path() -> PathBuf {
+    if let Ok(path) = std::env::var("TERMSTACK_IPC_SOCKET") {
+        return PathBuf::from(path);
+    }
     let uid = rustix::process::getuid().as_raw();
     PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
 }
