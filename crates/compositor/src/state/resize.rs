@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState;
 use smithay::utils::{Size, SERIAL_COUNTER};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
@@ -106,6 +107,7 @@ impl TermStack {
         let Some(index) = self.layout_nodes.iter().position(|node| {
             matches!(&node.cell, StackWindow::External(entry) if entry.surface.wl_surface() == surface)
         }) else {
+            // This commit is not for an external window we're tracking
             return;
         };
 
@@ -156,7 +158,8 @@ impl TermStack {
             tracing::debug!(command = %entry.command, "marked window as CSD from config");
         }
 
-        // Get the committed size
+        // Get the committed size - try XdgToplevelSurfaceData first (size from configure response),
+        // then fall back to window.geometry() for initial commits where we didn't set a size.
         let committed_size: Option<Size<i32, smithay::utils::Logical>> = with_states(surface, |states| {
             states
                 .data_map
@@ -165,8 +168,46 @@ impl TermStack {
                 .and_then(|data| data.current.size)
         });
 
+        let geo = entry.window.geometry();
+
+        // For initial commits where we didn't configure a size, use window.geometry()
+        // to get the actual size the client chose.
+        let committed_size = committed_size.or_else(|| {
+            if geo.size.w > 0 && geo.size.h > 0 {
+                tracing::info!(
+                    index,
+                    width = geo.size.w,
+                    height = geo.size.h,
+                    "using window.geometry() for initial commit size"
+                );
+                Some(geo.size)
+            } else {
+                None
+            }
+        });
+
+        // Track if we need to enforce width constraint after processing height
+        let mut width_resize_info: Option<(i32, i32)> = None; // (expected_width, surface_height)
+
+        if committed_size.is_none() {
+            tracing::warn!(
+                index,
+                command = %entry.command,
+                "external window commit with NO size data"
+            );
+        }
+
         if let Some(size) = committed_size {
+            let committed_surface_width = size.w;
             let committed_surface_height = size.h as u32;
+
+            tracing::debug!(
+                index,
+                committed_surface_width,
+                committed_surface_height,
+                command = %entry.command,
+                "external window commit received"
+            );
 
             // For SSD windows, the total cell height includes the title bar
             // For CSD windows, surface height = cell height
@@ -175,6 +216,12 @@ impl TermStack {
             } else {
                 committed_surface_height + crate::title_bar::TITLE_BAR_HEIGHT
             };
+
+            // Check if width needs to be enforced (app used wrong width)
+            let expected_width = self.output_size.w;
+            if committed_surface_width != expected_width {
+                width_resize_info = Some((expected_width, committed_surface_height as i32));
+            }
 
             match &entry.state {
                 WindowState::PendingResize { requested_height, .. }
@@ -257,6 +304,32 @@ impl TermStack {
                 }
                 _ => {}
             }
+        }
+
+        // Enforce width constraint: if app committed with wrong width, send configure
+        // to resize to our width while keeping the app's chosen height.
+        // Also set tiled states now that we're enforcing constraints.
+        // (done after match to avoid borrow conflicts)
+        if let Some((expected_width, surface_height)) = width_resize_info {
+            let Some(node) = self.layout_nodes.get_mut(index) else {
+                return;
+            };
+            let StackWindow::External(entry) = &mut node.cell else {
+                return;
+            };
+            tracing::info!(
+                index,
+                expected_width,
+                surface_height,
+                "enforcing width constraint on external window"
+            );
+            entry.surface.with_pending_state(|state| {
+                state.size = Some(Size::from((expected_width, surface_height)));
+                // Now set tiled states so app knows it's width-constrained
+                state.states.set(ToplevelState::TiledLeft);
+                state.states.set(ToplevelState::TiledRight);
+            });
+            entry.surface.send_configure();
         }
     }
 

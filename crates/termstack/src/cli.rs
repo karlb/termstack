@@ -188,6 +188,11 @@ pub fn run() -> Result<()> {
         return test_x11_connectivity();
     }
 
+    // Handle query-windows subcommand for testing/debugging
+    if args.len() >= 2 && args[1] == "query-windows" {
+        return query_windows();
+    }
+
     // Handle --resize flag first (before any command parsing)
     if args.len() >= 2 && args[1] == "--resize" {
         let mode = args.get(2).map(|s| s.as_str()).unwrap_or("full");
@@ -374,6 +379,42 @@ fn send_builtin_notification(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Query current window state from the compositor
+///
+/// Outputs JSON array of window information. Useful for testing and debugging.
+fn query_windows() -> Result<()> {
+    use std::io::{BufRead, BufReader};
+
+    let socket_path = env::var("TERMSTACK_SOCKET")
+        .context("TERMSTACK_SOCKET not set - are you running inside termstack?")?;
+
+    let msg = serde_json::json!({
+        "type": "query_windows",
+    });
+
+    let stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("failed to connect to {}", socket_path))?;
+
+    // Set timeout for reading response
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .context("failed to set read timeout")?;
+
+    let mut stream_write = stream.try_clone().context("failed to clone stream")?;
+
+    writeln!(stream_write, "{}", msg).context("failed to send query_windows message")?;
+    stream_write.flush().context("failed to flush query_windows message")?;
+
+    // Read JSON response
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response).context("failed to read query_windows response")?;
+
+    // Output the JSON response directly
+    print!("{}", response);
+
+    Ok(())
+}
+
 /// Spawn command in a new termstack terminal
 ///
 /// The terminal starts small and grows with content. TUI apps are
@@ -500,7 +541,7 @@ fn extract_termstack_subcommand(command: &str) -> Option<String> {
         return None;
     }
 
-    let subcommands = ["diagnose", "test-x11", "gui", "--status", "--resize", "--builtin", "--help", "-h"];
+    let subcommands = ["diagnose", "test-x11", "query-windows", "gui", "--status", "--resize", "--builtin", "--help", "-h"];
     if subcommands.contains(&parts[1]) {
         // Return everything after "termstack"
         Some(parts[1..].join(" "))
@@ -519,6 +560,7 @@ fn execute_subcommand(subcommand: &str) -> Result<()> {
     match parts[0] {
         "diagnose" => run_diagnostics(),
         "test-x11" => test_x11_connectivity(),
+        "query-windows" => query_windows(),
         "--status" => {
             // Inline the status output
             let socket = env::var("TERMSTACK_SOCKET");
@@ -560,11 +602,12 @@ fn execute_subcommand(subcommand: &str) -> Result<()> {
             println!("termstack - Terminal compositor CLI");
             println!();
             println!("Subcommands:");
-            println!("  diagnose    Run X11/Wayland diagnostics");
-            println!("  test-x11    Test X11 connectivity");
-            println!("  gui <cmd>   Launch GUI app inside termstack");
-            println!("  --status    Show termstack status");
-            println!("  --resize    Resize focused terminal");
+            println!("  diagnose       Run X11/Wayland diagnostics");
+            println!("  test-x11       Test X11 connectivity");
+            println!("  query-windows  Query current window state (JSON output)");
+            println!("  gui <cmd>      Launch GUI app inside termstack");
+            println!("  --status       Show termstack status");
+            println!("  --resize       Resize focused terminal");
             Ok(())
         }
         _ => bail!("unknown subcommand: {}", parts[0]),

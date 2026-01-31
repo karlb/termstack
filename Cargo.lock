@@ -2198,6 +2198,8 @@ dependencies = [
  "compositor",
  "proptest",
  "rustix 0.38.44",
+ "serde",
+ "serde_json",
  "smithay",
  "terminal",
  "thiserror 2.0.17",

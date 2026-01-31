@@ -10,6 +10,10 @@ description = "CLI tool to spawn terminals in TermStack"
 name = "termstack"
 path = "src/main.rs"
 
+[features]
+default = []
+headless-backend = ["compositor/headless-backend"]
+
 [dependencies]
 compositor = { path = "../compositor" }
 anyhow = { workspace = true }

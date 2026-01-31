@@ -24,6 +24,8 @@ mod core;
 mod external;
 mod focus;
 mod resize;
+#[cfg(test)]
+mod initial_size_test;
 
 use smithay::delegate_compositor;
 use smithay::delegate_data_device;
@@ -40,13 +42,12 @@ use smithay::desktop::{PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerG
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
-use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
-use smithay::utils::{Physical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
@@ -838,6 +839,19 @@ impl ShmHandler for TermStack {
     }
 }
 
+/// Compute the initial configure bounds for external windows.
+///
+/// We set bounds (max available space) but NOT size, letting apps
+/// pick their preferred size within the bounds. This matches what
+/// floating compositors like Anvil do.
+///
+/// On first commit, we enforce our width while keeping the app's height.
+#[inline]
+pub fn initial_configure_bounds(output_size: Size<i32, Physical>) -> Size<i32, Logical> {
+    // Bounds = max available space (converted to logical)
+    Size::from((output_size.w, output_size.h))
+}
+
 impl XdgShellHandler for TermStack {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -850,18 +864,15 @@ impl XdgShellHandler for TermStack {
             "XDG toplevel created"
         );
 
-        // Configure the surface with initial size
-        // Width is forced to match compositor width. For height, we send the full
-        // screen height as a suggestion - apps can use less if they want.
-        // (height=0 means "client decides" per xdg-shell spec, but some apps like
-        // swayimg don't handle this correctly and use a minimal height instead)
-        // Set tiled states to tell client it must respect our width constraint
-        let size = Size::from((self.output_size.w, self.output_size.h));
+        // Following Anvil's pattern: set bounds (max available space) but not size.
+        // This lets apps pick their preferred size within the bounds.
+        // On first commit, we enforce our width while keeping the app's height.
+        let bounds = initial_configure_bounds(self.output_size);
         surface.with_pending_state(|state| {
-            state.size = Some(size);
-            // TiledLeft + TiledRight = horizontally constrained (full width)
-            state.states.set(ToplevelState::TiledLeft);
-            state.states.set(ToplevelState::TiledRight);
+            // bounds = max available space (apps should stay within this)
+            // size = None means client decides
+            state.bounds = Some(bounds);
+            // IMPORTANT: we do NOT set state.size - that's what lets apps choose
         });
         surface.send_configure();
 

@@ -20,8 +20,7 @@ mod tests {
             IpcMessage::Spawn { command, .. } => {
                 assert_eq!(command, "mc");
             }
-            IpcMessage::Resize { .. } => panic!("expected Spawn"),
-            IpcMessage::Builtin { .. } => panic!("expected Spawn"),
+            _ => panic!("expected Spawn"),
         }
     }
 
@@ -44,8 +43,7 @@ mod tests {
                 assert_eq!(command, "ls");
                 assert_eq!(env.get("HOME"), Some(&"/home/user".to_string()));
             }
-            IpcMessage::Resize { .. } => panic!("expected Spawn"),
-            IpcMessage::Builtin { .. } => panic!("expected Spawn"),
+            _ => panic!("expected Spawn"),
         }
     }
 
@@ -87,8 +85,7 @@ mod tests {
         let parsed: IpcMessage = serde_json::from_value(json_from_termstack).unwrap();
         let (command, cwd, env) = match parsed {
             IpcMessage::Spawn { command, cwd, env, .. } => (command, cwd, env),
-            IpcMessage::Resize { .. } => panic!("expected Spawn"),
-            IpcMessage::Builtin { .. } => panic!("expected Spawn"),
+            _ => panic!("expected Spawn"),
         };
 
         eprintln!("Parsed from JSON: command={}", command);
@@ -143,8 +140,7 @@ mod tests {
             IpcMessage::Resize { mode } => {
                 assert_eq!(mode, ResizeMode::Full);
             }
-            IpcMessage::Spawn { .. } => panic!("expected Resize"),
-            IpcMessage::Builtin { .. } => panic!("expected Resize"),
+            _ => panic!("expected Resize"),
         }
     }
 
@@ -161,8 +157,7 @@ mod tests {
             IpcMessage::Resize { mode } => {
                 assert_eq!(mode, ResizeMode::Content);
             }
-            IpcMessage::Spawn { .. } => panic!("expected Resize"),
-            IpcMessage::Builtin { .. } => panic!("expected Resize"),
+            _ => panic!("expected Resize"),
         }
     }
 
@@ -455,6 +450,20 @@ mod tests {
                 assert!(success);
             }
             _ => panic!("expected Builtin"),
+        }
+    }
+
+    #[test]
+    fn query_windows_message_parses_correctly() {
+        let msg = serde_json::json!({
+            "type": "query_windows",
+        });
+
+        let parsed: IpcMessage = serde_json::from_value(msg).unwrap();
+
+        match parsed {
+            IpcMessage::QueryWindows => {}
+            _ => panic!("expected QueryWindows"),
         }
     }
 
