@@ -158,9 +158,17 @@ impl TermStack {
             tracing::debug!(command = %entry.command, "marked window as CSD from config");
         }
 
-        // Get the committed size - try XdgToplevelSurfaceData first (size from configure response),
-        // then fall back to window.geometry() for initial commits where we didn't set a size.
-        let committed_size: Option<Size<i32, smithay::utils::Logical>> = with_states(surface, |states| {
+        // Refresh the Window's internal geometry cache from the newly committed surface state.
+        // This must be called before window.geometry() to get accurate values.
+        entry.window.on_commit();
+
+        // Get the committed size. We check two sources:
+        // 1. XdgToplevelSurfaceData.current.size - the size from configure/ack cycle
+        // 2. window.geometry() - the actual rendered geometry from set_window_geometry
+        //
+        // We prefer geometry() when XdgToplevelSurfaceData has height=0, because that means
+        // we sent configure(width, 0) telling the client to choose their own height.
+        let configure_size: Option<Size<i32, smithay::utils::Logical>> = with_states(surface, |states| {
             states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
@@ -170,21 +178,22 @@ impl TermStack {
 
         let geo = entry.window.geometry();
 
-        // For initial commits where we didn't configure a size, use window.geometry()
-        // to get the actual size the client chose.
-        let committed_size = committed_size.or_else(|| {
-            if geo.size.w > 0 && geo.size.h > 0 {
+        // Determine the actual committed size:
+        // - If configure_size has height > 0, use it (compositor requested specific size)
+        // - Otherwise use geometry if available (client chose their own size)
+        let committed_size = match configure_size {
+            Some(size) if size.h > 0 => Some(size),
+            _ if geo.size.w > 0 && geo.size.h > 0 => {
                 tracing::info!(
                     index,
                     width = geo.size.w,
                     height = geo.size.h,
-                    "using window.geometry() for initial commit size"
+                    "using window.geometry() for commit size (client chose height)"
                 );
                 Some(geo.size)
-            } else {
-                None
             }
-        });
+            other => other, // Use configure_size even if 0, or None
+        };
 
         // Track if we need to enforce width constraint after processing height
         let mut width_resize_info: Option<(i32, i32)> = None; // (expected_width, surface_height)
