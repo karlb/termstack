@@ -40,6 +40,7 @@ use smithay::desktop::{PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerG
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -850,9 +851,17 @@ impl XdgShellHandler for TermStack {
         );
 
         // Configure the surface with initial size
-        let size = Size::from((self.output_size.w, 200));
+        // Width is forced to match compositor width. For height, we send the full
+        // screen height as a suggestion - apps can use less if they want.
+        // (height=0 means "client decides" per xdg-shell spec, but some apps like
+        // swayimg don't handle this correctly and use a minimal height instead)
+        // Set tiled states to tell client it must respect our width constraint
+        let size = Size::from((self.output_size.w, self.output_size.h));
         surface.with_pending_state(|state| {
             state.size = Some(size);
+            // TiledLeft + TiledRight = horizontally constrained (full width)
+            state.states.set(ToplevelState::TiledLeft);
+            state.states.set(ToplevelState::TiledRight);
         });
         surface.send_configure();
 

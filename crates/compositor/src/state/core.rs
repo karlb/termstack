@@ -31,8 +31,8 @@ impl TermStack {
             }
         }
 
-        // Default initial height (will be resized based on content)
-        let initial_height = 200u32;
+        // Initial height is 0 - will be updated when client commits its first buffer.
+        let initial_height = 0u32;
 
         let entry = WindowEntry {
             surface: toplevel,
