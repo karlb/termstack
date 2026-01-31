@@ -4,13 +4,12 @@
 //!
 //! CURRENT APPROACH:
 //! In new_toplevel, we:
-//! - Set state.bounds = Some(output_size) <- tells app max space
-//! - Set state.size = Some(output_size)   <- request full size
-//! - Set TiledLeft + TiledRight states    <- indicate width is constrained
+//! - Set state.bounds = Some(output_size)      <- tells app max space
+//! - Set state.size = Some((output_width, 0))  <- width constrained, height is client's choice
+//! - Set TiledLeft + TiledRight states         <- indicate width is constrained
 //!
-//! Apps should render at full width (respecting tiled states) while choosing
-//! their preferred height within bounds. If they commit at wrong width,
-//! handle_commit() will send another configure to enforce it.
+//! Per xdg-shell spec: size=(width, 0) means width is constrained, height is client's choice.
+//! Apps should render at full width while using their preferred height.
 
 #[cfg(test)]
 mod tests {
@@ -100,5 +99,48 @@ mod tests {
             assert_eq!(enforced_height, app_height,
                 "Should preserve app's height {}", app_height);
         }
+    }
+
+    // ==========================================================================
+    // Initial configure size tests
+    // ==========================================================================
+
+    /// Calculate the initial configure size for external windows.
+    ///
+    /// We want:
+    /// - Width: output_width (apps should use full width)
+    /// - Height: 0 (apps choose their preferred height)
+    ///
+    /// Per xdg-shell spec, size=(width, 0) means width is constrained,
+    /// height is client's choice.
+    fn initial_configure_size(output_width: i32, _output_height: i32) -> (i32, i32) {
+        // Width constrained, height is client's choice (0 = no constraint)
+        (output_width, 0)
+    }
+
+    #[test]
+    fn initial_configure_allows_app_to_choose_height() {
+        let output_width = 1280;
+        let output_height = 800;
+
+        let (config_width, config_height) = initial_configure_size(output_width, output_height);
+
+        assert_eq!(config_width, output_width, "Width should be constrained to output width");
+        // Height should be 0 (client chooses), not output_height
+        assert_eq!(
+            config_height, 0,
+            "Height should be 0 (client chooses), not {} (output height)",
+            output_height
+        );
+    }
+
+    #[test]
+    fn initial_configure_width_is_full_width() {
+        let output_width = 1920;
+        let output_height = 1080;
+
+        let (config_width, _) = initial_configure_size(output_width, output_height);
+
+        assert_eq!(config_width, output_width, "Configure width should be full output width");
     }
 }

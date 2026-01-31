@@ -864,16 +864,16 @@ impl XdgShellHandler for TermStack {
             "XDG toplevel created"
         );
 
-        // Configure window with full size and tiled states to indicate width constraint.
-        // Apps should render at full width (tiled left+right) while choosing their height.
+        // Configure window with width constraint but let app choose height.
+        // Per xdg-shell spec: size=(width, 0) means width is constrained, height is client's choice.
+        // Tiled states indicate the app is in a column layout with fixed width.
         let bounds = initial_configure_bounds(self.output_size);
-        let full_width = self.output_size.w;
-        let full_height = self.output_size.h;
+        let constrained_width = self.output_size.w;
         surface.with_pending_state(|state| {
             state.bounds = Some(bounds);
-            // Set full size - apps typically respect this as max, choosing smaller height
-            state.size = Some(Size::from((full_width, full_height)));
-            // Tiled states indicate the app is in a column layout with fixed width
+            // Width constrained, height=0 means client chooses
+            state.size = Some(Size::from((constrained_width, 0)));
+            // Tiled states tell the app it's width-constrained (like a tiled window)
             state.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::TiledLeft);
             state.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::TiledRight);
         });
