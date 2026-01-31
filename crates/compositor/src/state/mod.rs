@@ -864,15 +864,14 @@ impl XdgShellHandler for TermStack {
             "XDG toplevel created"
         );
 
-        // Following Anvil's pattern: set bounds (max available space) but not size.
-        // This lets apps pick their preferred size within the bounds.
-        // On first commit, we enforce our width while keeping the app's height.
+        // Set bounds (max available space) but NOT size - let app choose its preferred size.
+        // This is more compatible than size=(width, 0) which some apps interpret as "use 0 height".
+        // On first commit, handle_commit() will enforce our width while keeping the app's height.
         let bounds = initial_configure_bounds(self.output_size);
         surface.with_pending_state(|state| {
-            // bounds = max available space (apps should stay within this)
-            // size = None means client decides
             state.bounds = Some(bounds);
-            // IMPORTANT: we do NOT set state.size - that's what lets apps choose
+            // Don't set state.size - let the app choose its initial size
+            // Don't set tiled states yet - we'll set them when enforcing width on first commit
         });
         surface.send_configure();
 

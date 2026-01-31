@@ -1,14 +1,15 @@
 //! Tests for initial external window sizing
 //!
 //! These tests verify the initial configure for external windows.
-//! We set bounds (max space) but NOT size, letting apps pick their preferred size.
 //!
-//! CRITICAL INVARIANT (tested by integration tests with real apps):
-//! In new_toplevel, we MUST:
+//! CURRENT APPROACH:
+//! In new_toplevel, we:
 //! - Set state.bounds = Some(output_size) <- tells app max space
-//! - NOT set state.size                   <- lets app pick size
+//! - Do NOT set state.size               <- lets app use its preferred size
 //!
-//! If state.size is set, apps will use that size instead of their preference.
+//! On first commit, we enforce width while keeping the app's height.
+//! This is more compatible than setting size=(width, 0) which some apps
+//! interpret as "use 0 height".
 
 #[cfg(test)]
 mod tests {
@@ -41,5 +42,4 @@ mod tests {
         assert_eq!(bounds.w, 2560);
         assert_eq!(bounds.h, 1440);
     }
-
 }
