@@ -5,11 +5,12 @@
 //! CURRENT APPROACH:
 //! In new_toplevel, we:
 //! - Set state.bounds = Some(output_size) <- tells app max space
-//! - Do NOT set state.size               <- lets app use its preferred size
+//! - Set state.size = Some(output_size)   <- request full size
+//! - Set TiledLeft + TiledRight states    <- indicate width is constrained
 //!
-//! On first commit, we enforce width while keeping the app's height.
-//! This is more compatible than setting size=(width, 0) which some apps
-//! interpret as "use 0 height".
+//! Apps should render at full width (respecting tiled states) while choosing
+//! their preferred height within bounds. If they commit at wrong width,
+//! handle_commit() will send another configure to enforce it.
 
 #[cfg(test)]
 mod tests {

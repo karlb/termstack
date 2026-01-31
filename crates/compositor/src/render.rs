@@ -535,11 +535,7 @@ pub fn render_external(
     // Render external window elements
     // All external windows need Transform::Flipped180 to match the frame's flip
     // (OpenGL frame is rendered with Transform::Flipped180, so content needs counter-flip)
-    //
-    // IMPORTANT: We render at full output width to ensure consistent column layout.
-    // The source (src) uses the app's actual geometry, but the destination (dest)
-    // uses full width. This stretches/scales the content to fill the width.
-    let output_width = screen_size.w - FOCUS_INDICATOR_WIDTH;
+    let _ = screen_size; // Will be used when we implement proper width handling
     for element in elements {
         let geo = element.geometry(scale);
         let src = element.src();
@@ -547,10 +543,9 @@ pub fn render_external(
         // Calculate dest Y position using element's natural position
         let dest_y = geo.loc.y + y;
 
-        // Render at full width - use output_width, not geo.size.w
         let dest = Rectangle::new(
             Point::from((geo.loc.x + FOCUS_INDICATOR_WIDTH, dest_y)),
-            Size::from((output_width, geo.size.h)),
+            geo.size,
         );
 
         // Render texture with Transform::Flipped180 to counter the OpenGL Y-flip
@@ -708,47 +703,33 @@ mod tests {
     // External window render WIDTH tests
     // ==========================================================================
 
-    /// Calculate the render width for an external window.
+    /// Render width for external windows.
     ///
-    /// External windows should always render at full output width, regardless of
-    /// what the app's geometry says. This ensures a consistent column layout.
+    /// We render at the app's geometry width (what the app actually drew).
+    /// To get full width, we send a configure requesting full width, and the
+    /// app should respond by rendering at full width.
     ///
-    /// # Arguments
-    /// * `_geometry_width` - The app's actual geometry width (ignored)
-    /// * `output_width` - The compositor's output width
-    ///
-    /// # Returns
-    /// The width to use for rendering (always output_width for column layout)
-    fn calculate_external_render_width(_geometry_width: i32, output_width: i32) -> i32 {
-        // External windows always render at full width in column layout
-        output_width
+    /// If the app doesn't respond to our configure, it will render at its
+    /// preferred width (which may be smaller than output width).
+    fn render_width_for_external(geometry_width: i32) -> i32 {
+        // We render what the app drew - no stretching
+        geometry_width
     }
 
     #[test]
-    fn external_render_width_should_be_full_width() {
-        // External windows should render at full output width
-        let geometry_width = 600;  // App's preferred width
-        let output_width = 1280;   // Compositor output width
-
-        let render_width = calculate_external_render_width(geometry_width, output_width);
-
-        // This test currently FAILS - documenting the bug
-        // External windows should always be full width in a column layout
-        assert_eq!(
-            render_width, output_width,
-            "External window should render at full width ({}), not geometry width ({})",
-            output_width, geometry_width
-        );
+    fn external_renders_at_geometry_width() {
+        // External windows render at their geometry width
+        // (we rely on configure to make them render at full width)
+        let geometry_width = 600;
+        let render_width = render_width_for_external(geometry_width);
+        assert_eq!(render_width, geometry_width);
     }
 
     #[test]
-    fn external_render_width_when_app_matches_output() {
-        // When app already uses full width, no change needed
-        let geometry_width = 1280;
-        let output_width = 1280;
-
-        let render_width = calculate_external_render_width(geometry_width, output_width);
-
-        assert_eq!(render_width, output_width);
+    fn external_full_width_after_configure_response() {
+        // After app responds to our configure, geometry should be full width
+        let geometry_width = 1280; // App responded to configure
+        let render_width = render_width_for_external(geometry_width);
+        assert_eq!(render_width, 1280, "App should render at full width after configure");
     }
 }

@@ -864,14 +864,18 @@ impl XdgShellHandler for TermStack {
             "XDG toplevel created"
         );
 
-        // Set bounds (max available space) but NOT size - let app choose its preferred size.
-        // This is more compatible than size=(width, 0) which some apps interpret as "use 0 height".
-        // On first commit, handle_commit() will enforce our width while keeping the app's height.
+        // Configure window with full size and tiled states to indicate width constraint.
+        // Apps should render at full width (tiled left+right) while choosing their height.
         let bounds = initial_configure_bounds(self.output_size);
+        let full_width = self.output_size.w;
+        let full_height = self.output_size.h;
         surface.with_pending_state(|state| {
             state.bounds = Some(bounds);
-            // Don't set state.size - let the app choose its initial size
-            // Don't set tiled states yet - we'll set them when enforcing width on first commit
+            // Set full size - apps typically respect this as max, choosing smaller height
+            state.size = Some(Size::from((full_width, full_height)));
+            // Tiled states indicate the app is in a column layout with fixed width
+            state.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::TiledLeft);
+            state.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::TiledRight);
         });
         surface.send_configure();
 
