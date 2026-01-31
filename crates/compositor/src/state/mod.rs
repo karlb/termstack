@@ -237,6 +237,9 @@ pub struct TermStack {
     /// Pending copy request (set by keybinding, handled in input loop)
     pub pending_copy: bool,
 
+    /// Receiver for async PRIMARY selection read results (middle-click paste).
+    pub primary_selection_receiver: Option<mpsc::Receiver<String>>,
+
     /// Active selection state: (terminal_id, window_render_y, window_height, last_col, last_row, last_update_time)
     /// Set when mouse button is pressed on a terminal, cleared on release
     /// Tracks last grid coordinates and update time to throttle motion events
@@ -525,6 +528,7 @@ impl TermStack {
             clipboard_receiver: None,
             pending_paste: false,
             pending_copy: false,
+            primary_selection_receiver: None,
             selecting: None,
             resizing: None,
             key_repeat: None,
@@ -776,6 +780,37 @@ impl TermStack {
             content_y += self.layout_nodes[i].height;
         }
         None
+    }
+
+    /// Process pending PRIMARY selection paste (from middle-click)
+    ///
+    /// This should be called from the main event loop to handle async clipboard reads.
+    /// Middle-click triggers the async read, but the result must be checked here
+    /// since pointer events don't go through keyboard handling where regular paste is processed.
+    pub fn process_primary_selection_paste(&mut self, terminals: &mut crate::terminal_manager::TerminalManager) {
+        if let Some(ref receiver) = self.primary_selection_receiver {
+            match receiver.try_recv() {
+                Ok(text) => {
+                    self.primary_selection_receiver = None;
+                    if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
+                        if terminal.has_exited() {
+                            tracing::debug!("ignoring primary paste to exited terminal");
+                        } else if let Err(e) = terminal.write(text.as_bytes()) {
+                            tracing::error!(?e, "failed to paste from PRIMARY selection");
+                        } else {
+                            tracing::debug!(len = text.len(), "pasted from PRIMARY selection");
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Still waiting
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.primary_selection_receiver = None;
+                    tracing::debug!("PRIMARY selection read thread disconnected");
+                }
+            }
+        }
     }
 }
 

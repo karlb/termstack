@@ -35,6 +35,9 @@ use crate::terminal_manager::TerminalId;
 /// Left mouse button code (BTN_LEFT in evdev)
 const BTN_LEFT: u32 = 0x110;
 
+/// Middle mouse button code (BTN_MIDDLE in evdev)
+const BTN_MIDDLE: u32 = 0x112;
+
 /// Scroll amount per key press (pixels)
 const SCROLL_STEP: f64 = 50.0;
 
@@ -43,6 +46,48 @@ const COMPOSITOR_SCROLL_PIXELS_PER_NOTCH: f64 = 100.0;
 
 /// Terminal scrollback: lines per discrete scroll wheel notch
 const TERMINAL_SCROLL_LINES_PER_NOTCH: f64 = 3.0;
+
+/// Spawn async read from PRIMARY selection for middle-click paste
+fn spawn_primary_selection_read(state: &mut TermStack) {
+    if state.clipboard.is_none() || state.primary_selection_receiver.is_some() {
+        return;
+    }
+
+    let host_display = std::env::var("HOST_DISPLAY").ok();
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.primary_selection_receiver = Some(rx);
+
+    std::thread::spawn(move || {
+        use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind};
+
+        if let Some(display) = host_display {
+            std::env::set_var("DISPLAY", &display);
+        }
+
+        if let Ok(mut clipboard) = Clipboard::new() {
+            if let Ok(text) = clipboard.get().clipboard(LinuxClipboardKind::Primary).text() {
+                let _ = tx.send(text);
+            }
+        }
+    });
+}
+
+/// Copy text to the X11 PRIMARY selection (select-to-copy)
+fn copy_to_primary_selection(text: &str) {
+    use arboard::{Clipboard, SetExtLinux, LinuxClipboardKind};
+
+    let text = text.to_string();
+    let host_display = std::env::var("HOST_DISPLAY").ok();
+
+    std::thread::spawn(move || {
+        if let Some(display) = host_display {
+            std::env::set_var("DISPLAY", &display);
+        }
+        if let Ok(mut clipboard) = Clipboard::new() {
+            let _ = clipboard.set().clipboard(LinuxClipboardKind::Primary).text(&text);
+        }
+    });
+}
 
 /// Check if a click is on the close button in a title bar
 fn is_click_on_close_button(
@@ -808,9 +853,17 @@ impl TermStack {
                 return;
             }
 
-            // End selection drag (selection remains for copying)
-            if self.selecting.is_some() {
-                self.selecting = None;
+            // End selection drag - copy to PRIMARY selection (classic X11 select-to-copy)
+            if let Some((term_id, _, _, _, _, _)) = self.selecting.take() {
+                if let Some(ref mut tm) = terminals {
+                    if let Some(managed) = tm.get_mut(term_id) {
+                        if let Some(selected_text) = managed.terminal.selection_text() {
+                            if !selected_text.is_empty() {
+                                copy_to_primary_selection(&selected_text);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1001,6 +1054,11 @@ impl TermStack {
                                 );
                             }
                         }
+
+                        // Middle-click to paste from PRIMARY selection (classic X11 behavior)
+                        if button == BTN_MIDDLE {
+                            spawn_primary_selection_read(self);
+                        }
                     }
                 }
             } else {
@@ -1022,6 +1080,11 @@ impl TermStack {
                     if render_y < last_window_bottom {
                         let last_index = self.layout_nodes.len() - 1;
                         self.set_focus_by_index(last_index);
+
+                        // Middle-click in empty area pastes to focused terminal
+                        if button == BTN_MIDDLE {
+                            spawn_primary_selection_read(self);
+                        }
 
                         tracing::debug!(
                             render_y,

@@ -831,6 +831,9 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         // Apply accumulated scroll delta (once per frame)
         compositor.apply_pending_scroll();
 
+        // Process pending PRIMARY selection paste (from middle-click)
+        compositor.process_primary_selection_paste(&mut terminal_manager);
+
         // Handle X11 resize events
         if let Some((new_w, new_h)) = compositor.compositor_window_resize_pending.take() {
             let new_size: Size<i32, Physical> = (new_w as i32, new_h as i32).into();
