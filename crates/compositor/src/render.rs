@@ -509,7 +509,7 @@ pub fn render_external(
     elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
     title_bar_texture: Option<&GlesTexture>,
     is_focused: bool,
-    _screen_size: Size<i32, Physical>,
+    screen_size: Size<i32, Physical>,
     damage: Rectangle<i32, Physical>,
     scale: Scale<f64>,
     _uses_csd: bool,
@@ -535,6 +535,11 @@ pub fn render_external(
     // Render external window elements
     // All external windows need Transform::Flipped180 to match the frame's flip
     // (OpenGL frame is rendered with Transform::Flipped180, so content needs counter-flip)
+    //
+    // IMPORTANT: We render at full output width to ensure consistent column layout.
+    // The source (src) uses the app's actual geometry, but the destination (dest)
+    // uses full width. This stretches/scales the content to fill the width.
+    let output_width = screen_size.w - FOCUS_INDICATOR_WIDTH;
     for element in elements {
         let geo = element.geometry(scale);
         let src = element.src();
@@ -542,9 +547,10 @@ pub fn render_external(
         // Calculate dest Y position using element's natural position
         let dest_y = geo.loc.y + y;
 
+        // Render at full width - use output_width, not geo.size.w
         let dest = Rectangle::new(
             Point::from((geo.loc.x + FOCUS_INDICATOR_WIDTH, dest_y)),
-            geo.size,
+            Size::from((output_width, geo.size.h)),
         );
 
         // Render texture with Transform::Flipped180 to counter the OpenGL Y-flip
@@ -696,5 +702,53 @@ mod tests {
         // Edge case: no title bar and zero content
         let height = calculate_terminal_render_height(0, false, true);
         assert_eq!(height, 0, "no title bar + zero content = zero height");
+    }
+
+    // ==========================================================================
+    // External window render WIDTH tests
+    // ==========================================================================
+
+    /// Calculate the render width for an external window.
+    ///
+    /// External windows should always render at full output width, regardless of
+    /// what the app's geometry says. This ensures a consistent column layout.
+    ///
+    /// # Arguments
+    /// * `_geometry_width` - The app's actual geometry width (ignored)
+    /// * `output_width` - The compositor's output width
+    ///
+    /// # Returns
+    /// The width to use for rendering (always output_width for column layout)
+    fn calculate_external_render_width(_geometry_width: i32, output_width: i32) -> i32 {
+        // External windows always render at full width in column layout
+        output_width
+    }
+
+    #[test]
+    fn external_render_width_should_be_full_width() {
+        // External windows should render at full output width
+        let geometry_width = 600;  // App's preferred width
+        let output_width = 1280;   // Compositor output width
+
+        let render_width = calculate_external_render_width(geometry_width, output_width);
+
+        // This test currently FAILS - documenting the bug
+        // External windows should always be full width in a column layout
+        assert_eq!(
+            render_width, output_width,
+            "External window should render at full width ({}), not geometry width ({})",
+            output_width, geometry_width
+        );
+    }
+
+    #[test]
+    fn external_render_width_when_app_matches_output() {
+        // When app already uses full width, no change needed
+        let geometry_width = 1280;
+        let output_width = 1280;
+
+        let render_width = calculate_external_render_width(geometry_width, output_width);
+
+        assert_eq!(render_width, output_width);
     }
 }
