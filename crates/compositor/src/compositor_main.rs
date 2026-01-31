@@ -615,13 +615,24 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                                             .iter()
                                             .enumerate()
                                             .map(|(i, node)| {
-                                                let (is_external, command) = match &node.cell {
-                                                    crate::state::StackWindow::Terminal(_) => (false, String::new()),
-                                                    crate::state::StackWindow::External(entry) => (true, entry.command.clone()),
+                                                let (is_external, command, actual_width) = match &node.cell {
+                                                    crate::state::StackWindow::Terminal(_) => {
+                                                        (false, String::new(), state.output_size.w)
+                                                    }
+                                                    crate::state::StackWindow::External(entry) => {
+                                                        // Get actual window width from geometry
+                                                        let geo = entry.window.geometry();
+                                                        let width = if geo.size.w > 0 {
+                                                            geo.size.w
+                                                        } else {
+                                                            state.output_size.w
+                                                        };
+                                                        (true, entry.command.clone(), width)
+                                                    }
                                                 };
                                                 crate::ipc::WindowInfo {
                                                     index: i,
-                                                    width: state.output_size.w,
+                                                    width: actual_width,
                                                     height: node.height,
                                                     is_external,
                                                     command,

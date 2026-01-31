@@ -91,7 +91,7 @@ pub enum IpcMessage {
 pub struct WindowInfo {
     /// Index in layout_nodes
     pub index: usize,
-    /// Window width (compositor output width)
+    /// Actual window width from geometry (may differ from output width if app didn't resize)
     pub width: i32,
     /// Window height including title bar
     pub height: i32,

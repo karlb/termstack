@@ -1,149 +1,22 @@
 //! Tests for initial external window sizing
 //!
 //! When a GUI app opens, we want:
-//! - Width: forced to compositor width
+//! - Width: forced to compositor width (after first commit)
 //! - Height: app's preferred height (from command line flags, content, etc.)
 //!
-//! The challenge is that xdg-shell's height=0 ("client decides") isn't
-//! universally implemented - some apps interpret it literally as 0.
+//! # Width Enforcement Flow
+//!
+//! 1. new_toplevel: Send configure with bounds only (no size constraint)
+//! 2. App commits with its preferred size (e.g., 800x200)
+//! 3. handle_commit: Detect width mismatch, send configure(output_width, app_height)
+//! 4. App resizes to full width while keeping its preferred height
 //!
 //! # Integration Tests
 //!
 //! Tests that require the `gui-tests` feature run against a real compositor
-//! and verify that external windows preserve their preferred height.
+//! and verify that external windows have correct dimensions.
 //!
 //! To run: `cargo test -p test-harness --features gui-tests --test initial_window_size -- --ignored`
-
-const TITLE_BAR_HEIGHT: u32 = 24;
-
-/// Test: app that properly handles height=0 should use its preferred height
-#[test]
-fn app_respecting_height_zero_uses_preferred_height() {
-    // Compositor sends configure(width=1920, height=0)
-    // Well-behaved app interprets height=0 as "I choose my height"
-    // App commits with (1920, 400) - its preferred size
-
-    let compositor_width = 1920;
-    let _configure_height = 0; // We send this
-
-    // App commits with its preferred dimensions
-    let committed_width = 1920;
-    let committed_height = 400;
-
-    // Width matches, height is app's choice - accept it
-    assert_eq!(committed_width, compositor_width);
-
-    // Final window height includes title bar for SSD
-    let final_height = committed_height + TITLE_BAR_HEIGHT;
-    assert_eq!(final_height, 424);
-}
-
-/// Test: app that ignores width constraint should be resized
-#[test]
-fn app_ignoring_width_constraint_gets_resized() {
-    // Compositor sends configure(width=1920, height=0)
-    // App ignores width and uses its preferred size
-    // App commits with (800, 200) - ignoring our width
-
-    let compositor_width = 1920;
-    let committed_width = 800;
-    let committed_height = 200;
-
-    // Width doesn't match - we should send another configure to fix width
-    // while preserving the app's chosen height
-    assert_ne!(committed_width, compositor_width);
-
-    // We send configure(1920, 200) to enforce width
-    let enforced_width = compositor_width;
-    let enforced_height = committed_height; // Keep app's height
-
-    assert_eq!(enforced_width, 1920);
-    assert_eq!(enforced_height, 200);
-}
-
-/// Test: app that interprets height=0 literally should get reasonable default
-///
-/// Some apps (like swayimg with tiled states) interpret height=0 as
-/// "use 0 height" rather than "choose your own height". We need to
-/// detect this and provide a reasonable fallback.
-#[test]
-fn app_interpreting_height_zero_literally_gets_fallback() {
-    // Compositor sends configure(width=1920, height=0) with tiled states
-    // App interprets this as "height should be 0"
-    // App commits with (1920, 0) or (1920, 1)
-
-    let compositor_width = 1920;
-    let committed_width = 1920;
-    let committed_height = 0; // App used 0 literally!
-
-    // Width is correct, but height is unusably small
-    assert_eq!(committed_width, compositor_width);
-
-    // We should detect this as a broken app and use a fallback
-    // Minimum useful height should be something reasonable
-    const MIN_USEFUL_HEIGHT: u32 = 100;
-
-    let final_height = if committed_height < MIN_USEFUL_HEIGHT {
-        // App didn't understand height=0, use screen height or default
-        600 // Fallback to reasonable default
-    } else {
-        committed_height
-    };
-
-    assert!(final_height >= MIN_USEFUL_HEIGHT,
-        "Window height {} is too small, should have fallback", committed_height);
-}
-
-/// Test: with no size in configure, app should use preferred size
-///
-/// If we don't send a size at all (just tiled states), well-behaved
-/// apps should use their preferred dimensions.
-#[test]
-fn no_size_in_configure_app_uses_preferred() {
-    // Compositor sends configure with NO size, just tiled states
-    // App should use its preferred dimensions
-
-    // App (like swayimg -w 800,200) commits with its preferred size
-    let committed_width = 800;
-    let committed_height = 200;
-
-    // We accept the height, but enforce our width
-    let compositor_width = 1920;
-
-    // If width doesn't match, we send configure to fix it
-    if committed_width != compositor_width {
-        // Send configure(1920, 200) - keep app's height
-        let enforced_height = committed_height;
-        assert_eq!(enforced_height, 200, "Should preserve app's height preference");
-    }
-}
-
-/// Test: without tiled states, floating-style apps work correctly
-///
-/// Some apps behave differently with tiled states vs without.
-/// Without tiled states, they act like floating windows and use
-/// their preferred size, which is what we want for height.
-#[test]
-fn without_tiled_states_app_uses_natural_size() {
-    // Compositor sends configure with NO size and NO tiled states
-    // App thinks it's floating and uses natural size
-
-    // For swayimg -w 800,200:
-    let app_preferred_width = 800;
-    let app_preferred_height = 200;
-
-    // App commits with preferred size
-    let _committed_width = app_preferred_width;
-    let committed_height = app_preferred_height;
-
-    // Then we enforce width while keeping height
-    let compositor_width = 1920;
-    let final_width = compositor_width;
-    let final_height = committed_height; // Preserved!
-
-    assert_eq!(final_width, 1920);
-    assert_eq!(final_height, 200, "App's preferred height should be preserved");
-}
 
 // =============================================================================
 // Integration tests using headless backend (no display required)
@@ -265,21 +138,24 @@ mod headless_integration {
             .spawn()
             .expect("Failed to start foot terminal");
 
-        // Poll for window with expected height
+        // Poll for window with expected dimensions
         let expected_height = pref_h + TITLE_BAR_HEIGHT;
+        let expected_width = 1280; // Headless output width
         let start = Instant::now();
         let timeout = Duration::from_secs(3);
         let mut last_height: Option<i32> = None;
+        let mut last_width: Option<i32> = None;
 
         #[derive(serde::Deserialize)]
-        struct WindowInfo { height: i32, is_external: bool }
+        struct WindowInfo { width: i32, height: i32, is_external: bool }
 
         loop {
             if start.elapsed() >= timeout {
                 foot.kill().ok();
                 panic!(
-                    "Window did not reach expected height {} within {:?}. Last seen: {:?}",
-                    expected_height, timeout, last_height
+                    "Window did not reach expected dimensions within {:?}.\n\
+                     Expected: {}x{}, Last seen: {:?}x{:?}",
+                    timeout, expected_width, expected_height, last_width, last_height
                 );
             }
 
@@ -290,7 +166,7 @@ mod headless_integration {
                 panic!("foot exited unexpectedly: {} {}", status, stderr);
             }
 
-            // Query window heights via IPC
+            // Query window dimensions via IPC
             if let Ok(out) = Command::new(&compositor_bin)
                 .args(["query-windows"])
                 .env("TERMSTACK_SOCKET", &ipc_socket)
@@ -299,7 +175,8 @@ mod headless_integration {
                 if let Ok(windows) = serde_json::from_slice::<Vec<WindowInfo>>(&out.stdout) {
                     if let Some(ext) = windows.iter().find(|w| w.is_external) {
                         last_height = Some(ext.height);
-                        if ext.height == expected_height {
+                        last_width = Some(ext.width);
+                        if ext.width == expected_width && ext.height == expected_height {
                             break; // Success!
                         }
                     }
@@ -309,7 +186,8 @@ mod headless_integration {
         }
 
         foot.kill().ok();
-        eprintln!("SUCCESS: Window height {} ({}px + {}px title bar)", expected_height, pref_h, TITLE_BAR_HEIGHT);
+        eprintln!("SUCCESS: Window dimensions {}x{} (height: {}px + {}px title bar)",
+            expected_width, expected_height, pref_h, TITLE_BAR_HEIGHT);
     }
 }
 
@@ -568,12 +446,14 @@ mod integration {
             .spawn()
             .expect("Failed to start imv-wayland");
 
-        // Poll for external window with correct height (instead of fixed sleep)
+        // Poll for external window with correct dimensions (instead of fixed sleep)
         let socket_path = std::path::PathBuf::from(&test_ipc_socket);
         let poll_start = std::time::Instant::now();
         let poll_timeout = Duration::from_secs(5);
         let expected_height = preferred_height + TITLE_BAR_HEIGHT;
+        let expected_width = 1280; // Xvfb screen width
         let mut last_height = 0i32;
+        let mut last_width = 0i32;
 
         #[derive(Debug, serde::Deserialize)]
         #[allow(dead_code)]
@@ -592,8 +472,9 @@ mod integration {
                 compositor.kill().ok();
                 compositor.wait().ok();
                 panic!(
-                    "Window height did not reach expected {} within {:?}. Last height: {}",
-                    expected_height, poll_timeout, last_height
+                    "Window did not reach expected dimensions within {:?}.\n\
+                     Expected: {}x{}, Last seen: {}x{}",
+                    poll_timeout, expected_width, expected_height, last_width, last_height
                 );
             }
 
@@ -625,7 +506,7 @@ mod integration {
                 }
             }
 
-            // Query for external windows with expected height
+            // Query for external windows with expected dimensions
             let output = Command::new(&compositor_bin)
                 .args(["query-windows"])
                 .env("TERMSTACK_SOCKET", socket_path.to_str().unwrap())
@@ -637,10 +518,12 @@ mod integration {
                     if let Ok(windows) = serde_json::from_str::<Vec<WindowInfo>>(&response) {
                         if let Some(ext) = windows.iter().find(|w| w.is_external) {
                             last_height = ext.height;
-                            if ext.height == expected_height {
+                            last_width = ext.width;
+                            // Check both width and height
+                            if ext.width == expected_width && ext.height == expected_height {
                                 eprintln!(
-                                    "Window reached expected height {} after {:?}",
-                                    expected_height,
+                                    "Window reached expected dimensions {}x{} after {:?}",
+                                    expected_width, expected_height,
                                     poll_start.elapsed()
                                 );
                                 break;
@@ -663,9 +546,10 @@ mod integration {
         let _ = std::fs::remove_file(&test_image);
         let _ = std::fs::remove_dir_all(&test_runtime_dir);
 
-        // If we got here, the polling loop verified the height is correct
+        // If we got here, the polling loop verified dimensions are correct
         eprintln!(
-            "SUCCESS: External window has correct height {} ({}px content + {}px title bar)",
+            "SUCCESS: External window has correct dimensions {}x{} (height: {}px content + {}px title bar)",
+            expected_width,
             expected_height,
             preferred_height,
             TITLE_BAR_HEIGHT
