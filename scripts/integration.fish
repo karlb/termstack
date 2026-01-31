@@ -53,7 +53,8 @@ if set -q TERMSTACK_SOCKET
         # Handle empty command (just pressing Enter)
         if test -z "$cmd"
             # Create entry showing just the prompt (like a normal terminal)
-            $TERMSTACK_BIN --builtin "$prompt_str" "" "" &
+            # Run synchronously - socket write is fast and avoids job notification issues
+            $TERMSTACK_BIN --builtin "$prompt_str" "" ""
             # Don't execute - just clear and repaint (no extra prompt in launcher)
             commandline ""
             commandline -f repaint
@@ -107,8 +108,8 @@ if set -q TERMSTACK_SOCKET
                 end
 
                 # Send to compositor (creates persistent entry in stack)
-                # Run in background to avoid blocking the shell
-                $TERMSTACK_BIN --builtin "$prompt_str" "$cmd" "$output" $error_flag &
+                # Run synchronously - socket write is fast and avoids job notification issues
+                $TERMSTACK_BIN --builtin "$prompt_str" "$cmd" "$output" $error_flag
 
                 # Add to history and clear command line
                 history append -- "$cmd"
