@@ -1,6 +1,7 @@
 //! Title bar rendering for external windows
 //!
 //! Renders a title bar showing the command that spawned a GUI window.
+//! Also tracks character positions for text selection hit-testing.
 
 use std::collections::HashMap;
 use terminal::Theme;
@@ -13,6 +14,64 @@ pub const CLOSE_BUTTON_WIDTH: u32 = 24;
 
 /// Height of gradient transition zone (pixels)
 pub const GRADIENT_HEIGHT: u32 = 24;
+
+/// Left padding for title bar text (pixels)
+pub const TITLE_BAR_PADDING: u32 = 8;
+
+/// Character position information for text selection
+#[derive(Debug, Clone)]
+pub struct TitleBarCharInfo {
+    /// The displayed text (may be truncated)
+    pub text: String,
+    /// X position of each character's left edge (in pixels from left padding)
+    /// char_positions[i] is the start of character i
+    /// char_positions.len() == text.chars().count()
+    pub char_positions: Vec<f32>,
+    /// Width of each character (for selection highlighting)
+    pub char_widths: Vec<f32>,
+}
+
+impl TitleBarCharInfo {
+    /// Find the character index at a given X position (relative to content area start)
+    ///
+    /// Returns None if x is before the text or after the last character.
+    /// For positions between characters, returns the character whose cell contains x.
+    pub fn char_index_at_x(&self, x: f32) -> Option<usize> {
+        if self.char_positions.is_empty() || x < 0.0 {
+            return None;
+        }
+
+        for (i, &start) in self.char_positions.iter().enumerate() {
+            let width = self.char_widths.get(i).copied().unwrap_or(0.0);
+            let end = start + width;
+            if x >= start && x < end {
+                return Some(i);
+            }
+        }
+
+        // Past the last character - return last char index if within text bounds
+        if let (Some(&last_start), Some(&last_width)) = (
+            self.char_positions.last(),
+            self.char_widths.last(),
+        ) {
+            if x < last_start + last_width + 5.0 {
+                // Small tolerance
+                return Some(self.char_positions.len().saturating_sub(1));
+            }
+        }
+
+        None
+    }
+
+    /// Get the text from start_char to end_char (inclusive)
+    pub fn text_range(&self, start_char: usize, end_char: usize) -> String {
+        self.text
+            .chars()
+            .skip(start_char)
+            .take(end_char.saturating_sub(start_char) + 1)
+            .collect()
+    }
+}
 
 /// Theme-specific colors for title bar
 struct TitleBarColors {
@@ -131,6 +190,18 @@ impl TitleBarRenderer {
     ///
     /// Returns (pixels, width, height)
     pub fn render(&mut self, text: &str, width: u32) -> (Vec<u8>, u32, u32) {
+        let (buffer, w, h, _char_info) = self.render_with_char_info(text, width);
+        (buffer, w, h)
+    }
+
+    /// Render a title bar and return character position information for text selection
+    ///
+    /// Returns (pixels, width, height, char_info)
+    pub fn render_with_char_info(
+        &mut self,
+        text: &str,
+        width: u32,
+    ) -> (Vec<u8>, u32, u32, TitleBarCharInfo) {
         let height = TITLE_BAR_HEIGHT;
         let mut buffer = vec![0u8; (width * height * 4) as usize];
         let colors = TitleBarColors::from_theme(self.theme);
@@ -155,9 +226,14 @@ impl TitleBarRenderer {
         let display_text = text;
 
         // Starting position with padding
-        let padding = 8u32;
+        let padding = TITLE_BAR_PADDING;
         let mut x_pos = padding as f32;
         let baseline_y = (height as f32 * 0.75) as i32; // Approximate baseline
+
+        // Track character positions for selection hit-testing
+        let mut char_positions: Vec<f32> = Vec::new();
+        let mut char_widths: Vec<f32> = Vec::new();
+        let mut displayed_text = String::new();
 
         for c in display_text.chars() {
             // Get or rasterize glyph
@@ -172,6 +248,11 @@ impl TitleBarRenderer {
                     advance: metrics.advance_width,
                 }
             });
+
+            // Track character position (relative to padding start)
+            char_positions.push(x_pos - padding as f32);
+            char_widths.push(glyph.advance);
+            displayed_text.push(c);
 
             // Calculate glyph position
             let glyph_x = (x_pos as i32 + glyph.x_offset).max(0) as u32;
@@ -254,7 +335,13 @@ impl TitleBarRenderer {
             }
         }
 
-        (buffer, width, height)
+        let char_info = TitleBarCharInfo {
+            text: displayed_text,
+            char_positions,
+            char_widths,
+        };
+
+        (buffer, width, height, char_info)
     }
 
     /// Render the close button
@@ -339,5 +426,91 @@ impl TitleBarRenderer {
 impl Default for TitleBarRenderer {
     fn default() -> Self {
         Self::new(Theme::default()).expect("Failed to create TitleBarRenderer - no font available")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_info_text_range_basic() {
+        let info = TitleBarCharInfo {
+            text: "Hello World".to_string(),
+            char_positions: vec![0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0, 72.0, 80.0],
+            char_widths: vec![8.0; 11],
+        };
+
+        assert_eq!(info.text_range(0, 4), "Hello");
+        assert_eq!(info.text_range(6, 10), "World");
+        assert_eq!(info.text_range(0, 10), "Hello World");
+    }
+
+    #[test]
+    fn char_info_char_index_at_x() {
+        let info = TitleBarCharInfo {
+            text: "ABC".to_string(),
+            char_positions: vec![0.0, 10.0, 20.0],
+            char_widths: vec![10.0, 10.0, 10.0],
+        };
+
+        // First character (0-10)
+        assert_eq!(info.char_index_at_x(0.0), Some(0));
+        assert_eq!(info.char_index_at_x(5.0), Some(0));
+        assert_eq!(info.char_index_at_x(9.9), Some(0));
+
+        // Second character (10-20)
+        assert_eq!(info.char_index_at_x(10.0), Some(1));
+        assert_eq!(info.char_index_at_x(15.0), Some(1));
+
+        // Third character (20-30)
+        assert_eq!(info.char_index_at_x(20.0), Some(2));
+        assert_eq!(info.char_index_at_x(25.0), Some(2));
+
+        // Just past the last character (with tolerance)
+        assert_eq!(info.char_index_at_x(30.0), Some(2));
+        assert_eq!(info.char_index_at_x(34.0), Some(2));
+
+        // Before text
+        assert_eq!(info.char_index_at_x(-1.0), None);
+
+        // Way past the text
+        assert_eq!(info.char_index_at_x(100.0), None);
+    }
+
+    #[test]
+    fn char_info_empty() {
+        let info = TitleBarCharInfo {
+            text: String::new(),
+            char_positions: vec![],
+            char_widths: vec![],
+        };
+
+        assert_eq!(info.char_index_at_x(0.0), None);
+        assert_eq!(info.char_index_at_x(10.0), None);
+        assert_eq!(info.text_range(0, 5), "");
+    }
+
+    #[test]
+    fn render_with_char_info_produces_positions() {
+        // Skip this test if no font is available
+        let Some(mut renderer) = TitleBarRenderer::new(Theme::Dark) else {
+            return;
+        };
+
+        let text = "test";
+        let (_, _, _, char_info) = renderer.render_with_char_info(text, 200);
+
+        assert_eq!(char_info.text.len(), text.len());
+        assert_eq!(char_info.char_positions.len(), text.len());
+        assert_eq!(char_info.char_widths.len(), text.len());
+
+        // Positions should be increasing
+        for i in 1..char_info.char_positions.len() {
+            assert!(
+                char_info.char_positions[i] > char_info.char_positions[i - 1],
+                "character positions should be increasing"
+            );
+        }
     }
 }

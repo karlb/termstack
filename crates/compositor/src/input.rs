@@ -26,6 +26,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::coords::{RenderY, ScreenY};
 use crate::render::FOCUS_INDICATOR_WIDTH;
+use crate::selection;
 use crate::state::{SelectionState, StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
@@ -155,6 +156,9 @@ fn render_to_grid_coords(
 ///
 /// Returns the selection tracking state which should be stored in `compositor.selecting`
 /// for drag tracking. See [`SelectionState`] for field details.
+///
+/// DEPRECATED: Use `selection::start_cross_selection` instead for cross-window selection.
+#[allow(dead_code)]
 fn start_terminal_selection(
     compositor: &TermStack,
     terminals: &mut TerminalManager,
@@ -738,8 +742,13 @@ impl TermStack {
             return;
         }
 
-        // Update selection if we're in a drag operation
-        if let Some((term_id, window_render_y, window_height, start_col, start_row, last_col, last_row, last_update_time)) = self.selecting {
+        // Update cross-window selection if actively dragging
+        if self.cross_selection.as_ref().is_some_and(|s| s.active) {
+            let render_y_wrapped = RenderY::new(render_y);
+            selection::update_cross_selection(self, terminals, screen_x, render_y_wrapped);
+        }
+        // Legacy: Update single-terminal selection if we're in a drag operation
+        else if let Some((term_id, window_render_y, window_height, start_col, start_row, last_col, last_row, last_update_time)) = self.selecting {
             // Throttle at input level: Only process motion events every 16ms (~60 FPS)
             // This prevents backlog by skipping motion events entirely if we're behind
             let now = std::time::Instant::now();
@@ -870,8 +879,19 @@ impl TermStack {
                 return;
             }
 
-            // End selection drag - copy to PRIMARY selection (classic X11 select-to-copy)
-            if let Some((term_id, _, _, _, _, _, _, _)) = self.selecting.take() {
+            // End cross-window selection - copy to PRIMARY selection
+            if self.cross_selection.is_some() {
+                if let Some(ref mut tm) = terminals {
+                    if let Some(selected_text) = selection::end_cross_selection(self, tm) {
+                        if !selected_text.is_empty() {
+                            copy_to_primary_selection(&selected_text);
+                            tracing::debug!(len = selected_text.len(), "cross-selection copied to PRIMARY");
+                        }
+                    }
+                }
+            }
+            // Legacy: End single-terminal selection drag
+            else if let Some((term_id, _, _, _, _, _, _, _)) = self.selecting.take() {
                 if let Some(ref mut tm) = terminals {
                     if let Some(managed) = tm.get_mut(term_id) {
                         if let Some(selected_text) = managed.terminal.selection_text() {
@@ -1027,6 +1047,22 @@ impl TermStack {
                             return; // Don't process further
                         }
 
+                        // Start cross-window selection on left button press (title bar only for external)
+                        if button == BTN_LEFT && has_ssd {
+                            // Only start selection if clicking on title bar area
+                            let title_bar_bottom = window_render_top - TITLE_BAR_HEIGHT as f64;
+                            if render_y >= title_bar_bottom {
+                                if let Some(terminals) = &mut terminals {
+                                    selection::start_cross_selection(
+                                        self,
+                                        terminals,
+                                        screen_x,
+                                        render_y_wrapped,
+                                    );
+                                }
+                            }
+                        }
+
                         // Update keyboard focus (handles both Wayland and X11)
                         self.update_keyboard_focus_for_focused_window();
                     }
@@ -1058,16 +1094,14 @@ impl TermStack {
                         // Deactivate all external windows when focusing terminal
                         self.deactivate_all_toplevels();
 
-                        // Start selection on left button press
+                        // Start cross-window selection on left button press
                         if button == BTN_LEFT {
                             if let Some(terminals) = &mut terminals {
-                                self.selecting = start_terminal_selection(
+                                selection::start_cross_selection(
                                     self,
                                     terminals,
-                                    id,
-                                    index,
                                     screen_x,
-                                    render_y,
+                                    render_y_wrapped,
                                 );
                             }
                         }

@@ -37,7 +37,7 @@ use crate::config::Config;
 use crate::render::{
     CellRenderData, prerender_terminals, prerender_title_bars,
     collect_window_data, build_render_data, log_frame_state, render_terminal, render_external,
-    TitleBarCache,
+    render_title_bar_selection, TitleBarCache,
 };
 use crate::state::{ClientState, StackWindow, TermStack};
 use crate::xwayland_lifecycle;
@@ -982,6 +982,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                 &mut renderer,
                 physical_size.w,
                 &mut title_bar_cache,
+                &mut compositor.title_bar_char_info,
             );
 
             // Collect actual heights and external window elements
@@ -1170,6 +1171,20 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                             physical_size,
                             damage,
                         );
+
+                        // Render title bar selection overlay if applicable
+                        if title_bar_texture.is_some() {
+                            let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
+                            render_title_bar_selection(
+                                &mut frame,
+                                window_idx,
+                                title_bar_y,
+                                physical_size.w,
+                                compositor.cross_selection.as_ref(),
+                                &compositor.title_bar_char_info,
+                                damage,
+                            );
+                        }
                     }
                     CellRenderData::External { y, height, elements, title_bar_texture, uses_csd } => {
                         render_external(
@@ -1184,6 +1199,20 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                             scale,
                             uses_csd,
                         );
+
+                        // Render title bar selection overlay if applicable (SSD windows only)
+                        if title_bar_texture.is_some() && !uses_csd {
+                            let title_bar_y = y + height - TITLE_BAR_HEIGHT as i32;
+                            render_title_bar_selection(
+                                &mut frame,
+                                window_idx,
+                                title_bar_y,
+                                physical_size.w,
+                                compositor.cross_selection.as_ref(),
+                                &compositor.title_bar_char_info,
+                                damage,
+                            );
+                        }
                     }
                 }
             }

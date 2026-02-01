@@ -26,9 +26,9 @@ use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Color32F, Frame, ImportMem, Texture};
 use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 
-use crate::state::{StackWindow, LayoutNode};
+use crate::state::{CrossSelection, StackWindow, LayoutNode, WindowPosition};
 use crate::terminal_manager::{TerminalId, TerminalManager};
-use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
+use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT, TITLE_BAR_PADDING};
 
 /// Cache for title bar textures, keyed by (title, width)
 pub type TitleBarCache = HashMap<(String, u32), GlesTexture>;
@@ -126,6 +126,8 @@ pub fn prerender_terminals(
 ///
 /// Uses a cache to avoid re-rendering title bars that haven't changed.
 /// Returns references to cached textures.
+/// Also populates the char_info_cache for text selection hit-testing.
+#[allow(clippy::too_many_arguments)]
 pub fn prerender_title_bars<'a>(
     layout_nodes: &[LayoutNode],
     title_bar_renderer: &mut Option<TitleBarRenderer>,
@@ -133,11 +135,12 @@ pub fn prerender_title_bars<'a>(
     renderer: &mut GlesRenderer,
     width: i32,
     cache: &'a mut TitleBarCache,
+    char_info_cache: &mut crate::state::TitleBarCharInfoCache,
 ) -> Vec<Option<&'a GlesTexture>> {
     // First pass: collect keys and render any missing textures
     let mut keys: Vec<Option<(String, u32)>> = Vec::new();
 
-    for node in layout_nodes.iter() {
+    for (window_idx, node) in layout_nodes.iter().enumerate() {
         match &node.cell {
             StackWindow::Terminal(id) => {
                 let show_title_bar = terminal_manager.get(*id)
@@ -149,16 +152,23 @@ pub fn prerender_title_bars<'a>(
                             .map(|t| t.title.as_str())
                             .unwrap_or("Terminal");
                         let key = (title.to_string(), width as u32);
-                        if !cache.contains_key(&key) {
-                            let (pixels, tb_width, tb_height) = tb_renderer.render(title, width as u32);
-                            if let Ok(tex) = renderer.import_memory(
-                                &pixels,
-                                smithay::backend::allocator::Fourcc::Argb8888,
-                                (tb_width as i32, tb_height as i32).into(),
-                                false,
-                            ) {
-                                cache.insert(key.clone(), tex);
+                        // Render if texture not cached, or if char_info is missing
+                        let needs_render = !cache.contains_key(&key)
+                            || !char_info_cache.contains_key(&window_idx);
+                        if needs_render {
+                            let (pixels, tb_width, tb_height, char_info) =
+                                tb_renderer.render_with_char_info(title, width as u32);
+                            if !cache.contains_key(&key) {
+                                if let Ok(tex) = renderer.import_memory(
+                                    &pixels,
+                                    smithay::backend::allocator::Fourcc::Argb8888,
+                                    (tb_width as i32, tb_height as i32).into(),
+                                    false,
+                                ) {
+                                    cache.insert(key.clone(), tex);
+                                }
                             }
+                            char_info_cache.insert(window_idx, char_info);
                         }
                         keys.push(Some(key));
                     } else {
@@ -173,16 +183,23 @@ pub fn prerender_title_bars<'a>(
                     keys.push(None);
                 } else if let Some(ref mut tb_renderer) = title_bar_renderer {
                     let key = (entry.command.clone(), width as u32);
-                    if !cache.contains_key(&key) {
-                        let (pixels, tb_width, tb_height) = tb_renderer.render(&entry.command, width as u32);
-                        if let Ok(tex) = renderer.import_memory(
-                            &pixels,
-                            smithay::backend::allocator::Fourcc::Argb8888,
-                            (tb_width as i32, tb_height as i32).into(),
-                            false,
-                        ) {
-                            cache.insert(key.clone(), tex);
+                    // Render if texture not cached, or if char_info is missing
+                    let needs_render = !cache.contains_key(&key)
+                        || !char_info_cache.contains_key(&window_idx);
+                    if needs_render {
+                        let (pixels, tb_width, tb_height, char_info) =
+                            tb_renderer.render_with_char_info(&entry.command, width as u32);
+                        if !cache.contains_key(&key) {
+                            if let Ok(tex) = renderer.import_memory(
+                                &pixels,
+                                smithay::backend::allocator::Fourcc::Argb8888,
+                                (tb_width as i32, tb_height as i32).into(),
+                                false,
+                            ) {
+                                cache.insert(key.clone(), tex);
+                            }
                         }
+                        char_info_cache.insert(window_idx, char_info);
                     }
                     keys.push(Some(key));
                 } else {
@@ -595,6 +612,124 @@ pub fn calculate_external_render_height(committed_height: i32, layout_height: i3
     } else {
         layout_height
     }
+}
+
+/// Selection highlight color (semi-transparent blue)
+const SELECTION_COLOR: Color32F = Color32F::new(0.2, 0.4, 0.8, 0.5);
+
+/// Render selection overlay for a title bar
+///
+/// Draws a semi-transparent blue overlay on the selected portion of a title bar.
+/// Uses the title bar's character info to determine pixel boundaries.
+#[allow(clippy::too_many_arguments)]
+pub fn render_title_bar_selection(
+    frame: &mut GlesFrame<'_, '_>,
+    window_index: usize,
+    title_bar_y: i32,
+    output_width: i32,
+    cross_selection: Option<&CrossSelection>,
+    title_bar_char_info: &std::collections::HashMap<usize, crate::title_bar::TitleBarCharInfo>,
+    damage: Rectangle<i32, Physical>,
+) {
+    let Some(selection) = cross_selection else {
+        return;
+    };
+
+    // Check if this window is in the selection range
+    let selection_range = match selection.window_selection_range(window_index) {
+        Some(range) => range,
+        None => return,
+    };
+
+    // Get character info for this title bar
+    let char_info = title_bar_char_info.get(&window_index);
+
+    // Calculate selection bounds within the title bar
+    // Title bar is at the TOP of each window. Selection includes title bar when:
+    // - Selection starts in title bar (partial highlight from start char)
+    // - Selection passes through from above (full highlight - middle/last windows)
+    // Title bar is NOT included when selection starts in content (it's above the selection)
+    let (start_x, end_x) = match selection_range {
+        (Some(WindowPosition::TitleBar { char_index: start }), Some(WindowPosition::TitleBar { char_index: end })) => {
+            // Single window: partial selection within title bar only
+            let start_x = char_info
+                .and_then(|info| info.char_positions.get(start).copied())
+                .unwrap_or(0.0) as i32 + TITLE_BAR_PADDING as i32;
+            let end_x = char_info
+                .map(|info| {
+                    let pos = info.char_positions.get(end).copied().unwrap_or(0.0);
+                    let width = info.char_widths.get(end).copied().unwrap_or(8.0);
+                    pos + width
+                })
+                .unwrap_or(output_width as f32) as i32 + TITLE_BAR_PADDING as i32;
+            (start_x, end_x)
+        }
+        (Some(WindowPosition::TitleBar { char_index: start }), Some(WindowPosition::Content { .. })) => {
+            // Single window: selection from title bar to content - highlight from start to end of title bar
+            let start_x = char_info
+                .and_then(|info| info.char_positions.get(start).copied())
+                .unwrap_or(0.0) as i32 + TITLE_BAR_PADDING as i32;
+            (start_x, output_width - FOCUS_INDICATOR_WIDTH)
+        }
+        (Some(WindowPosition::TitleBar { char_index: start }), None) => {
+            // First window in multi-window: selection starts in title bar, goes to end of window
+            let start_x = char_info
+                .and_then(|info| info.char_positions.get(start).copied())
+                .unwrap_or(0.0) as i32 + TITLE_BAR_PADDING as i32;
+            (start_x, output_width - FOCUS_INDICATOR_WIDTH)
+        }
+        (Some(WindowPosition::Content { .. }), Some(WindowPosition::Content { .. })) => {
+            // Single window: selection entirely in content - title bar NOT included
+            return;
+        }
+        (Some(WindowPosition::Content { .. }), Some(WindowPosition::TitleBar { .. })) => {
+            // Single window: selection from content to title bar (dragging up) - impossible in our model
+            // Content is below title bar, so this shouldn't happen. Skip title bar.
+            return;
+        }
+        (Some(WindowPosition::Content { .. }), None) => {
+            // First window in multi-window: selection starts in content - title bar NOT included
+            // (title bar is above the selection start)
+            return;
+        }
+        (None, Some(WindowPosition::TitleBar { char_index: end })) => {
+            // Last window: selection from above, ends in title bar
+            let end_x = char_info
+                .map(|info| {
+                    let pos = info.char_positions.get(end).copied().unwrap_or(0.0);
+                    let width = info.char_widths.get(end).copied().unwrap_or(8.0);
+                    pos + width
+                })
+                .unwrap_or(output_width as f32) as i32 + TITLE_BAR_PADDING as i32;
+            (TITLE_BAR_PADDING as i32, end_x)
+        }
+        (None, Some(WindowPosition::Content { .. })) => {
+            // Last window: selection from above, ends in content - title bar fully included
+            // (selection passes through title bar to reach content)
+            (TITLE_BAR_PADDING as i32, output_width - FOCUS_INDICATOR_WIDTH)
+        }
+        (None, None) => {
+            // Middle window: fully selected including title bar
+            (TITLE_BAR_PADDING as i32, output_width - FOCUS_INDICATOR_WIDTH)
+        }
+    };
+
+    // Clamp to valid range
+    let start_x = start_x.max(FOCUS_INDICATOR_WIDTH);
+    let end_x = end_x.min(output_width).max(start_x);
+    let width = end_x - start_x;
+
+    if width <= 0 {
+        return;
+    }
+
+    // Draw selection rectangle
+    let selection_rect = Rectangle::new(
+        (start_x, title_bar_y).into(),
+        (width, TITLE_BAR_HEIGHT as i32).into(),
+    );
+
+    frame.draw_solid(selection_rect, &[damage], SELECTION_COLOR).ok();
 }
 
 #[cfg(test)]

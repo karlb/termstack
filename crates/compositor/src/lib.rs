@@ -13,6 +13,7 @@ pub mod input_handler;
 pub mod ipc;
 pub mod layout;
 pub mod render;
+pub mod selection;
 pub mod spawn_handler;
 pub mod state;
 pub mod terminal_manager;

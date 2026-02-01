@@ -70,6 +70,8 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use std::collections::HashMap;
+
+use crate::title_bar::TitleBarCharInfo;
 use crate::ipc::{BuiltinRequest, ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
@@ -80,6 +82,144 @@ use crate::terminal_manager::TerminalId;
 /// - `last_col`, `last_row`: The current endpoint position (updated during drag)
 /// - `last_update_time`: For throttling motion events
 pub type SelectionState = (TerminalId, i32, i32, usize, usize, usize, usize, Instant);
+
+// =============================================================================
+// Cross-window selection types
+// =============================================================================
+
+/// Position within a window's selectable content
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowPosition {
+    /// Position in a title bar (character index within the title text)
+    TitleBar { char_index: usize },
+    /// Position in terminal content (grid column and row)
+    Content { col: usize, row: usize },
+}
+
+/// An anchor point for cross-window selection
+#[derive(Debug, Clone)]
+pub struct SelectionAnchor {
+    /// Index of the window in layout_nodes
+    pub window_index: usize,
+    /// Position within the window
+    pub position: WindowPosition,
+}
+
+/// Cross-window selection state for selecting text across multiple terminals
+///
+/// When selection spans multiple windows, the order is determined by window_index:
+/// - Lower index = higher on screen (top)
+/// - Higher index = lower on screen (bottom)
+///
+/// Selection range is from start to end, and includes all content between them:
+/// - In the start window: from start position to end of window
+/// - In middle windows: entire window content (title bar + terminal)
+/// - In the end window: from start of window to end position
+#[derive(Debug, Clone)]
+pub struct CrossSelection {
+    /// Where the selection started (mouse down)
+    pub start: SelectionAnchor,
+    /// Current selection endpoint (follows mouse)
+    pub end: SelectionAnchor,
+    /// Last time the selection was updated (for throttling)
+    pub last_update: Instant,
+    /// Whether the selection is actively being dragged (vs completed and persisting)
+    /// Active selections are cleared by `clear_stale_drag_state` if button is released.
+    /// Completed selections persist until the next selection starts.
+    pub active: bool,
+}
+
+impl CrossSelection {
+    /// Create a new cross-selection with both anchors at the same position
+    pub fn new(window_index: usize, position: WindowPosition) -> Self {
+        Self {
+            start: SelectionAnchor {
+                window_index,
+                position: position.clone(),
+            },
+            end: SelectionAnchor {
+                window_index,
+                position,
+            },
+            last_update: Instant::now(),
+            active: true,
+        }
+    }
+
+    /// Check if selection spans multiple windows
+    pub fn is_multi_window(&self) -> bool {
+        self.start.window_index != self.end.window_index
+    }
+
+    /// Get the range of window indices in the selection (inclusive)
+    /// Returns (first_window, last_window) where first <= last
+    pub fn window_range(&self) -> (usize, usize) {
+        let a = self.start.window_index;
+        let b = self.end.window_index;
+        if a <= b {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    }
+
+    /// Check if a window is fully selected (not start or end, just middle)
+    pub fn is_window_fully_selected(&self, window_index: usize) -> bool {
+        let (first, last) = self.window_range();
+        window_index > first && window_index < last
+    }
+
+    /// Check if a window is in the selection range at all
+    pub fn contains_window(&self, window_index: usize) -> bool {
+        let (first, last) = self.window_range();
+        window_index >= first && window_index <= last
+    }
+
+    /// Get selection info for a specific window
+    ///
+    /// Returns:
+    /// - None if window is not in selection
+    /// - Some((start_pos, end_pos)) for partial selection
+    /// - Some((None, None)) for full selection (middle windows)
+    pub fn window_selection_range(
+        &self,
+        window_index: usize,
+    ) -> Option<(Option<WindowPosition>, Option<WindowPosition>)> {
+        let (first, last) = self.window_range();
+
+        if window_index < first || window_index > last {
+            return None;
+        }
+
+        // Determine which anchor is the "top" (lower index) and "bottom" (higher index)
+        let (top_anchor, bottom_anchor) = if self.start.window_index <= self.end.window_index {
+            (&self.start, &self.end)
+        } else {
+            (&self.end, &self.start)
+        };
+
+        if window_index == first && window_index == last {
+            // Single window selection
+            Some((
+                Some(top_anchor.position.clone()),
+                Some(bottom_anchor.position.clone()),
+            ))
+        } else if window_index == first {
+            // First window in multi-window selection: from anchor to end of window
+            Some((Some(top_anchor.position.clone()), None))
+        } else if window_index == last {
+            // Last window in multi-window selection: from start of window to anchor
+            Some((None, Some(bottom_anchor.position.clone())))
+        } else {
+            // Middle window: fully selected
+            Some((None, None))
+        }
+    }
+}
+
+/// Cached title bar character info for selection hit-testing
+/// Maps window_index to the title bar's character info
+pub type TitleBarCharInfoCache = HashMap<usize, TitleBarCharInfo>;
 
 /// Identifies a focused cell by its content identity, not position.
 ///
@@ -249,7 +389,16 @@ pub struct TermStack {
 
     /// Active selection state, set when mouse button is pressed on a terminal, cleared on release.
     /// See [`SelectionState`] for field details.
+    /// DEPRECATED: Use cross_selection instead for cross-window selection support.
     pub selecting: Option<SelectionState>,
+
+    /// Cross-window selection state for selecting text across multiple terminals/title bars
+    /// Replaces the single-terminal `selecting` field for multi-window selections
+    pub cross_selection: Option<CrossSelection>,
+
+    /// Cached title bar character info for selection hit-testing
+    /// Updated during title bar rendering, used for click-to-character mapping
+    pub title_bar_char_info: TitleBarCharInfoCache,
 
     /// Active resize drag state
     /// Set when mouse button is pressed on a resize handle, cleared on release
@@ -536,6 +685,8 @@ impl TermStack {
             pending_copy: false,
             primary_selection_receiver: None,
             selecting: None,
+            cross_selection: None,
+            title_bar_char_info: HashMap::new(),
             resizing: None,
             key_repeat: None,
             repeat_delay_ms: 400,    // Standard delay before repeat starts
@@ -652,6 +803,11 @@ impl TermStack {
             if self.selecting.is_some() {
                 tracing::debug!("clearing stale selection state");
                 self.selecting = None;
+            }
+            // Only clear active (being dragged) selections, not completed ones
+            if self.cross_selection.as_ref().is_some_and(|s| s.active) {
+                tracing::debug!("clearing stale cross-selection state");
+                self.cross_selection = None;
             }
             if self.resizing.is_some() {
                 tracing::debug!("clearing stale resize state");
