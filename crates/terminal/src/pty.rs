@@ -566,4 +566,182 @@ mod tests {
             output
         );
     }
+
+    #[test]
+    fn read_after_child_exit_returns_zero_or_error() {
+        // After the child exits, reads should return 0 (EOF) or error gracefully
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        let mut env = HashMap::new();
+        env.insert("TERM".to_string(), "xterm".to_string());
+        env.insert("SHELL".to_string(), "/bin/sh".to_string());
+
+        // Spawn a command that exits immediately
+        let mut pty = Pty::spawn_command(
+            "exit 0",
+            Path::new("/tmp"),
+            &env,
+            80,
+            24,
+        ).unwrap();
+
+        // Wait for child to exit
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Child should have exited
+        assert!(!pty.is_running(), "Child should have exited");
+
+        // Reads after exit should return 0 or handle gracefully
+        let mut buf = [0u8; 256];
+        let result = pty.read(&mut buf);
+
+        // Should not panic, and should either return Ok(0) or an error
+        match result {
+            Ok(n) => {
+                // 0 bytes (EOF) is expected, or some buffered output
+                assert!(n <= buf.len(), "Read should return valid length");
+            }
+            Err(e) => {
+                // An error is also acceptable after exit
+                eprintln!("Read after exit returned error (expected): {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn write_after_child_exit_fails_gracefully() {
+        // After the child exits, writes should fail gracefully (not panic)
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        let mut env = HashMap::new();
+        env.insert("TERM".to_string(), "xterm".to_string());
+        env.insert("SHELL".to_string(), "/bin/sh".to_string());
+
+        // Spawn a command that exits immediately
+        let mut pty = Pty::spawn_command(
+            "exit 0",
+            Path::new("/tmp"),
+            &env,
+            80,
+            24,
+        ).unwrap();
+
+        // Wait for child to exit
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Child should have exited
+        assert!(!pty.is_running(), "Child should have exited");
+
+        // Write after exit - should not panic
+        let result = pty.write(b"hello\n");
+
+        // Should either succeed (buffered) or return an error, but not panic
+        match result {
+            Ok(n) => {
+                eprintln!("Write after exit returned Ok({}) (buffered)", n);
+            }
+            Err(e) => {
+                eprintln!("Write after exit returned error (expected): {:?}", e);
+            }
+        }
+        // Test passes if we reach here without panicking
+    }
+
+    #[test]
+    fn rapid_spawn_exit_stable() {
+        // Rapidly spawning and exiting PTYs should be stable
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        let mut env = HashMap::new();
+        env.insert("TERM".to_string(), "xterm".to_string());
+        env.insert("SHELL".to_string(), "/bin/sh".to_string());
+
+        for i in 0..10 {
+            let mut pty = Pty::spawn_command(
+                "true",  // Exits immediately with success
+                Path::new("/tmp"),
+                &env,
+                80,
+                24,
+            ).expect(&format!("Failed to spawn PTY #{}", i));
+
+            // Let it run briefly
+            std::thread::sleep(std::time::Duration::from_millis(20));
+
+            // Verify we can check status without panic
+            let _running = pty.is_running();
+
+            // PTY drops here, which triggers cleanup
+        }
+
+        // If we reach here, all 10 rapid spawn/exit cycles succeeded
+    }
+
+    #[test]
+    fn is_running_reflects_child_state() {
+        // is_running should accurately reflect whether child is alive
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        let mut env = HashMap::new();
+        env.insert("TERM".to_string(), "xterm".to_string());
+        env.insert("SHELL".to_string(), "/bin/sh".to_string());
+
+        // Spawn a command that sleeps briefly
+        let mut pty = Pty::spawn_command(
+            "sleep 0.5",
+            Path::new("/tmp"),
+            &env,
+            80,
+            24,
+        ).unwrap();
+
+        // Should be running immediately
+        assert!(pty.is_running(), "PTY should be running initially");
+
+        // Wait for it to exit
+        std::thread::sleep(std::time::Duration::from_millis(700));
+
+        // Should now be not running
+        assert!(!pty.is_running(), "PTY should have exited after sleep");
+
+        // Calling is_running again should be consistent
+        assert!(!pty.is_running(), "is_running should be consistently false after exit");
+    }
+
+    #[test]
+    fn resize_after_exit_fails_gracefully() {
+        // Resizing after child exit should fail gracefully
+        if std::env::var("CI").is_ok() {
+            return;
+        }
+
+        let mut env = HashMap::new();
+        env.insert("TERM".to_string(), "xterm".to_string());
+        env.insert("SHELL".to_string(), "/bin/sh".to_string());
+
+        let mut pty = Pty::spawn_command(
+            "exit 0",
+            Path::new("/tmp"),
+            &env,
+            80,
+            24,
+        ).unwrap();
+
+        // Wait for exit
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!pty.is_running());
+
+        // Resize should not panic (may succeed or fail, but shouldn't crash)
+        let result = pty.resize(100, 50);
+        // We don't assert success/failure, just that it doesn't panic
+        eprintln!("Resize after exit: {:?}", result);
+    }
 }

@@ -186,3 +186,197 @@ mod dirs {
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== Theme tests ==========
+
+    #[test]
+    fn theme_dark_background_color() {
+        let color = Theme::Dark.background_color();
+        // Dark theme: #1A1A1A = [0.1, 0.1, 0.1, 1.0]
+        assert!((color[0] - 0.1).abs() < 0.01);
+        assert!((color[1] - 0.1).abs() < 0.01);
+        assert!((color[2] - 0.1).abs() < 0.01);
+        assert!((color[3] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn theme_light_background_color() {
+        let color = Theme::Light.background_color();
+        // Light theme: #FFFFFF = [1.0, 1.0, 1.0, 1.0]
+        assert!((color[0] - 1.0).abs() < 0.01);
+        assert!((color[1] - 1.0).abs() < 0.01);
+        assert!((color[2] - 1.0).abs() < 0.01);
+        assert!((color[3] - 1.0).abs() < 0.01);
+    }
+
+    // ========== Config::default tests ==========
+
+    #[test]
+    fn config_default_has_expected_values() {
+        let config = Config::default();
+
+        assert_eq!(config.theme, Theme::Dark);
+        assert!((config.font_size - 14.0).abs() < 0.01);
+        assert_eq!(config.window_gap, 0);
+        assert_eq!(config.min_window_height, 50);
+        assert_eq!(config.max_window_height, 0); // 0 = unlimited
+        assert!((config.scroll_speed - 1.0).abs() < 0.01);
+        assert!(config.auto_scroll);
+        assert!(config.csd_apps.is_empty());
+    }
+
+    #[test]
+    fn config_default_keyboard_values() {
+        let config = Config::default();
+
+        assert!(config.keyboard.layout.is_empty());
+        assert!(config.keyboard.variant.is_empty());
+        assert!(config.keyboard.model.is_empty());
+        assert!(config.keyboard.options.is_empty());
+        assert_eq!(config.keyboard.repeat_delay, 400);
+        assert_eq!(config.keyboard.repeat_rate, 25);
+    }
+
+    // ========== is_csd_app tests ==========
+
+    #[test]
+    fn is_csd_app_exact_match() {
+        let mut config = Config::default();
+        config.csd_apps = vec!["firefox".to_string(), "chromium".to_string()];
+
+        assert!(config.is_csd_app("firefox"));
+        assert!(config.is_csd_app("chromium"));
+        assert!(!config.is_csd_app("firefox-esr")); // Not exact match
+        assert!(!config.is_csd_app("other-app"));
+    }
+
+    #[test]
+    fn is_csd_app_prefix_match() {
+        let mut config = Config::default();
+        config.csd_apps = vec!["org.gnome.*".to_string()];
+
+        assert!(config.is_csd_app("org.gnome.Calculator"));
+        assert!(config.is_csd_app("org.gnome.Nautilus"));
+        assert!(config.is_csd_app("org.gnome.")); // Empty suffix still matches
+        assert!(!config.is_csd_app("org.kde.dolphin"));
+        assert!(!config.is_csd_app("gnome-terminal")); // Doesn't start with "org.gnome."
+    }
+
+    #[test]
+    fn is_csd_app_mixed_patterns() {
+        let mut config = Config::default();
+        config.csd_apps = vec![
+            "firefox".to_string(),
+            "org.gnome.*".to_string(),
+            "com.github.*".to_string(),
+        ];
+
+        assert!(config.is_csd_app("firefox"));
+        assert!(config.is_csd_app("org.gnome.Settings"));
+        assert!(config.is_csd_app("com.github.SomeApp"));
+        assert!(!config.is_csd_app("chromium"));
+    }
+
+    #[test]
+    fn is_csd_app_empty_list() {
+        let config = Config::default();
+        assert!(!config.is_csd_app("anything"));
+    }
+
+    #[test]
+    fn is_csd_app_empty_app_id() {
+        let mut config = Config::default();
+        config.csd_apps = vec!["*".to_string()]; // Matches everything with prefix
+
+        assert!(config.is_csd_app("")); // Empty prefix matches empty string
+        assert!(config.is_csd_app("anything"));
+    }
+
+    // ========== TOML roundtrip tests ==========
+
+    #[test]
+    fn config_toml_roundtrip() {
+        let mut config = Config::default();
+        config.theme = Theme::Light;
+        config.font_size = 16.0;
+        config.window_gap = 4;
+        config.csd_apps = vec!["firefox".to_string(), "org.gnome.*".to_string()];
+        config.keyboard.layout = "us".to_string();
+        config.keyboard.repeat_delay = 300;
+
+        // Serialize
+        let toml_str = toml::to_string(&config).expect("Failed to serialize");
+
+        // Deserialize
+        let parsed: Config = toml::from_str(&toml_str).expect("Failed to deserialize");
+
+        assert_eq!(parsed.theme, config.theme);
+        assert!((parsed.font_size - config.font_size).abs() < 0.01);
+        assert_eq!(parsed.window_gap, config.window_gap);
+        assert_eq!(parsed.csd_apps, config.csd_apps);
+        assert_eq!(parsed.keyboard.layout, config.keyboard.layout);
+        assert_eq!(parsed.keyboard.repeat_delay, config.keyboard.repeat_delay);
+    }
+
+    #[test]
+    fn config_partial_toml_uses_defaults() {
+        // Only specify some fields
+        let partial_toml = r#"
+            theme = "light"
+            font_size = 18.0
+        "#;
+
+        let parsed: Config = toml::from_str(partial_toml).expect("Failed to parse partial TOML");
+
+        // Specified values
+        assert_eq!(parsed.theme, Theme::Light);
+        assert!((parsed.font_size - 18.0).abs() < 0.01);
+
+        // Default values
+        assert_eq!(parsed.window_gap, 0);
+        assert_eq!(parsed.keyboard.repeat_delay, 400);
+        assert!(parsed.csd_apps.is_empty());
+    }
+
+    #[test]
+    fn config_invalid_toml_returns_error() {
+        let invalid_toml = "this is not valid { toml [";
+
+        let result: Result<Config, _> = toml::from_str(invalid_toml);
+        assert!(result.is_err());
+    }
+
+    // ========== apply_theme_defaults tests ==========
+
+    #[test]
+    fn apply_theme_defaults_updates_light_theme_background() {
+        // When theme is light but background_color is still dark default,
+        // apply_theme_defaults should update it
+        let mut config = Config::default();
+        config.theme = Theme::Light;
+        // background_color is still the dark default
+
+        config.apply_theme_defaults();
+
+        // Now background should be light theme color
+        let expected = Theme::Light.background_color();
+        assert_eq!(config.background_color, expected);
+    }
+
+    #[test]
+    fn apply_theme_defaults_preserves_custom_background() {
+        // If user specified a custom background, don't override it
+        let mut config = Config::default();
+        config.theme = Theme::Light;
+        config.background_color = [0.5, 0.5, 0.5, 1.0]; // Custom gray
+
+        config.apply_theme_defaults();
+
+        // Should still be custom
+        assert!((config.background_color[0] - 0.5).abs() < 0.01);
+    }
+}

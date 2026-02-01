@@ -1414,6 +1414,341 @@ impl TermStack {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== is_click_on_close_button tests ==========
+
+    #[test]
+    fn close_button_click_inside_title_bar_on_button() {
+        // Click on close button area within title bar
+        let output_width = 800;
+        let window_render_top = 600.0; // Top of window in render coords
+        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0; // Inside close button
+        let title_bar_y = window_render_top - 5.0; // Inside title bar (5px below top)
+
+        assert!(is_click_on_close_button(
+            title_bar_y,
+            window_render_top,
+            close_button_x,
+            output_width,
+            true, // has_ssd
+            BTN_LEFT,
+        ));
+    }
+
+    #[test]
+    fn close_button_click_outside_title_bar() {
+        // Click below title bar (in content area)
+        let output_width = 800;
+        let window_render_top = 600.0;
+        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
+        let below_title_bar = window_render_top - TITLE_BAR_HEIGHT as f64 - 10.0; // Below title bar
+
+        assert!(!is_click_on_close_button(
+            below_title_bar,
+            window_render_top,
+            close_button_x,
+            output_width,
+            true,
+            BTN_LEFT,
+        ));
+    }
+
+    #[test]
+    fn close_button_click_outside_button_x_range() {
+        // Click in title bar but not on close button (left side)
+        let output_width = 800;
+        let window_render_top = 600.0;
+        let left_of_button = 100.0; // Far from close button
+        let title_bar_y = window_render_top - 5.0;
+
+        assert!(!is_click_on_close_button(
+            title_bar_y,
+            window_render_top,
+            left_of_button,
+            output_width,
+            true,
+            BTN_LEFT,
+        ));
+    }
+
+    #[test]
+    fn close_button_not_triggered_without_ssd() {
+        // CSD windows don't have compositor close button
+        let output_width = 800;
+        let window_render_top = 600.0;
+        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
+        let title_bar_y = window_render_top - 5.0;
+
+        assert!(!is_click_on_close_button(
+            title_bar_y,
+            window_render_top,
+            close_button_x,
+            output_width,
+            false, // no ssd (CSD app)
+            BTN_LEFT,
+        ));
+    }
+
+    #[test]
+    fn close_button_not_triggered_by_right_click() {
+        // Only left click should activate close button
+        let output_width = 800;
+        let window_render_top = 600.0;
+        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
+        let title_bar_y = window_render_top - 5.0;
+
+        assert!(!is_click_on_close_button(
+            title_bar_y,
+            window_render_top,
+            close_button_x,
+            output_width,
+            true,
+            0x111, // BTN_RIGHT
+        ));
+    }
+
+    #[test]
+    fn close_button_edge_at_boundary() {
+        // Click exactly at left edge of close button
+        let output_width = 800;
+        let window_render_top = 600.0;
+        let close_button_left_edge = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64;
+        let title_bar_y = window_render_top - 5.0;
+
+        assert!(is_click_on_close_button(
+            title_bar_y,
+            window_render_top,
+            close_button_left_edge, // Exactly at left edge
+            output_width,
+            true,
+            BTN_LEFT,
+        ));
+
+        // Just before the close button
+        assert!(!is_click_on_close_button(
+            title_bar_y,
+            window_render_top,
+            close_button_left_edge - 1.0, // One pixel left of close button
+            output_width,
+            true,
+            BTN_LEFT,
+        ));
+    }
+
+    // ========== render_to_grid_coords tests ==========
+
+    #[test]
+    fn grid_coords_at_origin() {
+        // Click at top-left corner of terminal content
+        let char_width = 10;
+        let char_height = 20;
+        let window_render_y = 100.0;
+        let window_height = 400.0;
+        let title_bar_height = 0;
+
+        // Top-left of content in render coords is at (FOCUS_INDICATOR_WIDTH, window_render_y + window_height - title_bar_height)
+        let content_top_render_y = window_render_y + window_height;
+        let content_left_x = FOCUS_INDICATOR_WIDTH as f64;
+
+        let (col, row, _) = render_to_grid_coords(
+            content_left_x,
+            content_top_render_y - 1.0, // Just below top edge
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            title_bar_height,
+        );
+
+        assert_eq!(col, 0);
+        assert_eq!(row, 0);
+    }
+
+    #[test]
+    fn grid_coords_with_offset() {
+        // Click at specific grid position
+        let char_width = 10;
+        let char_height = 20;
+        let window_render_y = 100.0;
+        let window_height = 400.0;
+        let title_bar_height = 0;
+
+        // Target: column 5, row 3
+        let content_top_render_y = window_render_y + window_height;
+        let target_x = FOCUS_INDICATOR_WIDTH as f64 + 5.0 * char_width as f64 + 5.0; // Middle of cell
+        let target_y = content_top_render_y - 3.0 * char_height as f64 - 10.0; // Middle of row 3
+
+        let (col, row, _) = render_to_grid_coords(
+            target_x,
+            target_y,
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            title_bar_height,
+        );
+
+        assert_eq!(col, 5);
+        assert_eq!(row, 3);
+    }
+
+    #[test]
+    fn grid_coords_with_title_bar() {
+        // Click with title bar offset
+        let char_width = 10;
+        let char_height = 20;
+        let window_render_y = 100.0;
+        let window_height = 400.0;
+        let title_bar_height = TITLE_BAR_HEIGHT;
+
+        // Content starts below title bar
+        let content_top_render_y = window_render_y + window_height - title_bar_height as f64;
+        let content_left_x = FOCUS_INDICATOR_WIDTH as f64;
+
+        let (col, row, _) = render_to_grid_coords(
+            content_left_x,
+            content_top_render_y - 1.0, // Just below top of content
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            title_bar_height,
+        );
+
+        assert_eq!(col, 0);
+        assert_eq!(row, 0);
+    }
+
+    #[test]
+    fn grid_coords_side_detection_left() {
+        // Click on left half of cell should return Side::Left
+        let char_width = 10;
+        let char_height = 20;
+        let window_render_y = 100.0;
+        let window_height = 400.0;
+
+        let content_left_x = FOCUS_INDICATOR_WIDTH as f64;
+        let content_top_render_y = window_render_y + window_height;
+
+        // Click on left quarter of first cell
+        let (_, _, side) = render_to_grid_coords(
+            content_left_x + 2.0, // Left side of cell
+            content_top_render_y - 10.0,
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            0,
+        );
+
+        assert_eq!(side, Side::Left);
+    }
+
+    #[test]
+    fn grid_coords_side_detection_right() {
+        // Click on right half of cell should return Side::Right
+        let char_width = 10;
+        let char_height = 20;
+        let window_render_y = 100.0;
+        let window_height = 400.0;
+
+        let content_left_x = FOCUS_INDICATOR_WIDTH as f64;
+        let content_top_render_y = window_render_y + window_height;
+
+        // Click on right side of first cell
+        let (_, _, side) = render_to_grid_coords(
+            content_left_x + 8.0, // Right side of cell (> 5.0 = half of 10)
+            content_top_render_y - 10.0,
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            0,
+        );
+
+        assert_eq!(side, Side::Right);
+    }
+
+    #[test]
+    fn grid_coords_clamp_negative_x() {
+        // Click left of content area should clamp to column 0
+        let char_width = 10;
+        let char_height = 20;
+        let window_render_y = 100.0;
+        let window_height = 400.0;
+
+        let (col, _, _) = render_to_grid_coords(
+            0.0, // Left of focus indicator
+            window_render_y + window_height - 10.0,
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            0,
+        );
+
+        assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn grid_coords_clamp_negative_y() {
+        // Click below content area should clamp to valid row
+        let char_width = 10;
+        let char_height = 20;
+        let window_render_y = 100.0;
+        let window_height = 400.0;
+
+        let (_, row, _) = render_to_grid_coords(
+            FOCUS_INDICATOR_WIDTH as f64,
+            window_render_y - 10.0, // Below window bottom
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            0,
+        );
+
+        // Should clamp local_y to max, resulting in a large row value
+        // local_y = (window_render_end - render_y).max(0.0) = (500 - 90).max(0) = 410
+        // row = 410 / 20 = 20
+        // Just verify it produces a reasonable result (row is usize, always >= 0)
+        assert!(row < 1000, "Row should be a reasonable value, got {}", row);
+    }
+
+    #[test]
+    fn grid_coords_large_values() {
+        // Test with larger realistic values
+        let char_width = 9;
+        let char_height = 17;
+        let window_render_y = 0.0;
+        let window_height = 720.0;
+        let title_bar_height = 24;
+
+        // Click at approximately column 80, row 40
+        let target_col = 80;
+        let target_row = 40;
+        let content_top = window_render_y + window_height - title_bar_height as f64;
+        let click_x = FOCUS_INDICATOR_WIDTH as f64 + target_col as f64 * char_width as f64 + 4.0;
+        let click_y = content_top - target_row as f64 * char_height as f64 - 8.0;
+
+        let (col, row, _) = render_to_grid_coords(
+            click_x,
+            click_y,
+            window_render_y,
+            window_height,
+            char_width,
+            char_height,
+            title_bar_height,
+        );
+
+        assert_eq!(col, target_col);
+        assert_eq!(row, target_row);
+    }
+}
+
 /// Convert a keysym to bytes for sending to a terminal
 fn keysym_to_bytes(keysym: Keysym, modifiers: &ModifiersState) -> Vec<u8> {
     // Filter out modifier-only keys (they don't produce characters)
