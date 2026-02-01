@@ -5,7 +5,7 @@
 
 use smithay::utils::{Physical, Size};
 
-use crate::render::heights_changed_significantly;
+use crate::render::{calculate_terminal_render_height, heights_changed_significantly};
 use crate::state::{StackWindow, TermStack};
 use crate::terminal_manager::TerminalManager;
 use crate::terminal_output::is_window_bottom_visible;
@@ -39,16 +39,9 @@ pub fn calculate_window_heights(
                 if node.height > 0 {
                     return node.height;
                 }
-                // Fallback for new cells: terminal.height is content height, add title bar if needed
+                // Fallback for new cells: use centralized height calculation
                 terminal_manager.get(*tid)
-                    .map(|t| {
-                        let content = t.height as i32;
-                        if t.show_title_bar {
-                            content + TITLE_BAR_HEIGHT as i32
-                        } else {
-                            content
-                        }
-                    })
+                    .map(|t| calculate_terminal_render_height(t.height as i32, t.show_title_bar, true))
                     .unwrap_or(DEFAULT_TERMINAL_HEIGHT)
             }
             StackWindow::External(entry) => {

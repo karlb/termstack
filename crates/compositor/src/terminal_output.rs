@@ -3,9 +3,9 @@
 //! Handles PTY output processing, automatic terminal growth, alternate screen
 //! detection, manual resize requests, and output terminal promotion.
 
+use crate::render::calculate_terminal_render_height;
 use crate::state::{FocusedWindow, StackWindow, TermStack};
 use crate::terminal_manager::{TerminalId, TerminalManager};
-use crate::title_bar::TITLE_BAR_HEIGHT;
 
 /// Minimum number of rows for a terminal
 const MIN_TERMINAL_ROWS: u16 = 1;
@@ -46,12 +46,11 @@ pub fn process_terminal_output(
 
                     if let Some(term) = terminal_manager.get(id) {
                         if let Some(node) = compositor.layout_nodes.get_mut(idx) {
-                            let content = term.height as i32;
-                            node.height = if term.show_title_bar {
-                                content + TITLE_BAR_HEIGHT as i32
-                            } else {
-                                content
-                            };
+                            node.height = calculate_terminal_render_height(
+                                term.height as i32,
+                                term.show_title_bar,
+                                true, // visible since we're handling growth
+                            );
                         }
                     }
 
@@ -115,10 +114,14 @@ fn auto_resize_alt_screen_terminals(
                 "auto-resized terminal for alternate screen"
             );
 
-            // Update cached height
+            // Update cached height (note: new_height is content-only, need to add title bar)
             if let Some(idx) = find_terminal_window_index(compositor, id) {
                 if let Some(node) = compositor.layout_nodes.get_mut(idx) {
-                    node.height = new_height as i32;
+                    node.height = calculate_terminal_render_height(
+                        new_height as i32,
+                        term.show_title_bar,
+                        true,
+                    );
                 }
             }
         }
@@ -211,13 +214,12 @@ pub fn handle_ipc_resize_request(
         tracing::info!(id = focused_id.0, ?resize_mode, new_rows, "resizing terminal via IPC");
         term.resize(new_rows, char_height);
 
-        // Update cached height
-        let content = term.height as i32;
-        let total_height = if term.show_title_bar {
-            content + TITLE_BAR_HEIGHT as i32
-        } else {
-            content
-        };
+        // Update cached height using centralized calculation
+        let total_height = calculate_terminal_render_height(
+            term.height as i32,
+            term.show_title_bar,
+            true,
+        );
         for node in compositor.layout_nodes.iter_mut() {
             if let StackWindow::Terminal(tid) = node.cell {
                 if tid == focused_id {
@@ -275,20 +277,15 @@ pub fn promote_output_terminals(
         let insert_idx = window_idx + 1;
 
         let height = terminal_manager.get(term_id)
-            .map(|t| {
-                let content = t.height as i32;
-                if t.show_title_bar {
-                    content + TITLE_BAR_HEIGHT as i32
-                } else {
-                    content
-                }
-            })
+            .map(|t| calculate_terminal_render_height(t.height as i32, t.show_title_bar, true))
             .unwrap_or(0);
 
         compositor.layout_nodes.insert(insert_idx, crate::state::LayoutNode {
             cell: StackWindow::Terminal(term_id),
             height,
         });
+        // Invalidate cache since layout_nodes changed
+        compositor.invalidate_focused_index_cache();
 
         tracing::info!(
             terminal_id = term_id.0,

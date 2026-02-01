@@ -173,6 +173,7 @@ pub fn handle_gui_spawn_requests(
                 // For foreground mode, add_window will focus the GUI window when it's created.
                 if let Some(launcher_id) = launching_terminal {
                     compositor.focused_window = Some(FocusedWindow::Terminal(launcher_id));
+                    compositor.invalidate_focused_index_cache();
                     tracing::debug!(
                         launcher_id = launcher_id.0,
                         "restored terminal focus to launcher after gui_spawn"
@@ -215,6 +216,8 @@ pub fn handle_builtin_requests(
                     cell: StackWindow::Terminal(id),
                     height: 0, // Will be updated in calculate_window_heights
                 });
+                // Invalidate cache since layout_nodes changed
+                compositor.invalidate_focused_index_cache();
 
                 tracing::info!(
                     id = id.0,

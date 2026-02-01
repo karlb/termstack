@@ -30,9 +30,13 @@ impl ScreenY {
         Self(y)
     }
 
-    /// Convert screen coordinates to render coordinates
+    /// Convert screen coordinates to render coordinates (pure point flip)
     ///
-    /// The Y-flip: screen Y=0 at top becomes render Y=height at bottom
+    /// The Y-flip: screen Y=0 at top becomes render Y=height at bottom.
+    ///
+    /// Use this for converting **point locations** between coordinate systems.
+    /// For positioning **objects with height** (windows, rectangles), use
+    /// [`content_to_render_y`] instead, which also accounts for the object's height.
     pub fn to_render(self, output_height: i32) -> RenderY {
         RenderY(output_height as f64 - self.0)
     }
@@ -111,13 +115,25 @@ impl RenderPoint {
     }
 }
 
-/// Convert content position to render position accounting for Y-flip and cell height
+/// Convert content position to render position accounting for Y-flip and object height
 ///
 /// Formula: render_y = screen_height - content_y - height
 ///
 /// This is the core Y-flip formula used throughout the compositor to convert
 /// from content coordinates (where Y=0 is at the top of the scrollable content)
 /// to render coordinates (where Y=0 is at the bottom of the screen).
+///
+/// # Difference from `ScreenY::to_render`
+///
+/// - `ScreenY::to_render`: Pure point flip. Given a Y coordinate, returns the
+///   flipped Y coordinate. Use for cursor positions, click locations, etc.
+///
+/// - `content_to_render_y`: Object positioning flip. Given an object's top-left Y
+///   in content space and its height, returns where to render the object's
+///   bottom-left corner in render space. Use for windows, textures, rectangles.
+///
+/// The difference is the `height` term: when placing an object, its render Y
+/// must account for the object extending upward from that position.
 pub fn content_to_render_y(content_y: f64, height: f64, screen_height: f64) -> f64 {
     screen_height - content_y - height
 }

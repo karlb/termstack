@@ -129,7 +129,21 @@ impl TermStack {
     /// Get the index of the focused cell by finding it in layout_nodes.
     ///
     /// Returns None if no cell is focused or if the focused cell no longer exists.
+    /// Uses caching to avoid O(n) lookup on repeated calls within the same frame.
     pub fn focused_index(&self) -> Option<usize> {
+        // Check cache first
+        if let Some(cached) = self.cached_focused_index.get() {
+            return cached;
+        }
+
+        // Compute and cache the result
+        let result = self.compute_focused_index();
+        self.cached_focused_index.set(Some(result));
+        result
+    }
+
+    /// Compute focused index without caching (internal helper)
+    fn compute_focused_index(&self) -> Option<usize> {
         let focused = self.focused_window.as_ref()?;
         self.layout_nodes.iter().position(|node| match (&node.cell, focused) {
             (StackWindow::Terminal(tid), FocusedWindow::Terminal(focused_tid)) => tid == focused_tid,
@@ -138,6 +152,13 @@ impl TermStack {
             }
             _ => false,
         })
+    }
+
+    /// Invalidate the cached focused index.
+    ///
+    /// Call this after any mutation to `layout_nodes` (insert/remove) or `focused_window`.
+    pub fn invalidate_focused_index_cache(&self) {
+        self.cached_focused_index.set(None);
     }
 
     /// Get the focused index or fallback to the end of the list.
@@ -161,12 +182,17 @@ impl TermStack {
                     FocusedWindow::External(surface.id())
                 }
             });
+            // The cache now needs to resolve to `index`, but it's correct by construction
+            // since we just set focused_window to point to layout_nodes[index].
+            // We could set the cache directly here, but invalidating is safer.
+            self.invalidate_focused_index_cache();
         }
     }
 
     /// Clear focus (no cell focused).
     pub fn clear_focus(&mut self) {
         self.focused_window = None;
+        self.invalidate_focused_index_cache();
     }
 
     /// Check if the focused cell is a terminal

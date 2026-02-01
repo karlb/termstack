@@ -3,10 +3,10 @@
 //! Handles window creation, cleanup of dead terminals and windows,
 //! output terminal management, and focus synchronization.
 
+use crate::render::calculate_terminal_render_height;
 use crate::state::{StackWindow, TermStack};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::terminal_output::{find_terminal_window_index, is_window_bottom_visible};
-use crate::title_bar::TITLE_BAR_HEIGHT;
 
 /// Restore a launcher terminal's visibility after its foreground GUI session ends.
 ///
@@ -243,12 +243,11 @@ pub fn cleanup_and_sync_focus(
             // Update cached height for unhidden terminal (was 0 when hidden)
             if let Some(term) = terminal_manager.get(new_focus_id) {
                 if let Some(node) = compositor.layout_nodes.get_mut(idx) {
-                    let content = term.height as i32;
-                    node.height = if term.show_title_bar {
-                        content + TITLE_BAR_HEIGHT as i32
-                    } else {
-                        content
-                    };
+                    node.height = calculate_terminal_render_height(
+                        term.height as i32,
+                        term.show_title_bar,
+                        true, // now visible
+                    );
                 }
             }
 

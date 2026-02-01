@@ -303,6 +303,10 @@ pub struct TermStack {
     /// Identity of focused cell (stable across cell additions/removals)
     pub focused_window: Option<FocusedWindow>,
 
+    /// Cached focused index (lazily computed from focused_window)
+    /// Use `focused_index()` to access; use `invalidate_focused_index_cache()` after mutations
+    cached_focused_index: std::cell::Cell<Option<Option<usize>>>,
+
     /// Cached layout calculation
     pub layout: ColumnLayout,
 
@@ -660,6 +664,7 @@ impl TermStack {
             layout_nodes: Vec::new(),
             scroll_offset: 0.0,
             focused_window: None,
+            cached_focused_index: std::cell::Cell::new(None),
             layout: ColumnLayout::empty(),
             output_size,
             seat,
@@ -706,6 +711,9 @@ impl TermStack {
 
     /// Recalculate layout after any change
     pub fn recalculate_layout(&mut self) {
+        // Invalidate focused index cache since layout_nodes may have changed
+        self.invalidate_focused_index_cache();
+
         // Use cached heights for layout calculation
         let heights = self.layout_nodes.iter().map(|node| node.height as u32);
         self.layout = ColumnLayout::calculate_from_heights(
@@ -847,6 +855,12 @@ impl TermStack {
     /// Scroll to ensure a cell's bottom edge is visible on screen.
     /// Returns the new scroll offset if it changed, None otherwise.
     pub fn scroll_to_show_window_bottom(&mut self, window_index: usize) -> Option<f64> {
+        debug_assert!(
+            window_index <= self.layout_nodes.len(),
+            "BUG: scroll_to_show_window_bottom called with index {} but only {} nodes exist",
+            window_index,
+            self.layout_nodes.len()
+        );
         let y: i32 = self.layout_nodes[..window_index].iter().map(|node| node.height).sum();
         let height = self.layout_nodes.get(window_index).map(|n| n.height).unwrap_or(0);
         let bottom_y = y + height;
@@ -910,6 +924,12 @@ impl TermStack {
     /// Get the render position (render_y, height) for a cell at the given index
     /// Returns (render_y, height) where render_y is in render coordinates (Y=0 at bottom)
     pub fn get_window_render_position(&self, index: usize) -> (crate::coords::RenderY, i32) {
+        debug_assert!(
+            index < self.layout_nodes.len(),
+            "BUG: get_window_render_position called with index {} but only {} nodes exist",
+            index,
+            self.layout_nodes.len()
+        );
         let screen_height = self.output_size.h as f64;
         let mut content_y = -self.scroll_offset;
 
@@ -929,6 +949,12 @@ impl TermStack {
     /// Get the screen bounds (top_y, bottom_y) for a cell at the given index
     /// Returns (top_y, bottom_y) in screen coordinates (Y=0 at top)
     pub fn get_window_screen_bounds(&self, index: usize) -> Option<(i32, i32)> {
+        debug_assert!(
+            index < self.layout_nodes.len(),
+            "BUG: get_window_screen_bounds called with index {} but only {} nodes exist",
+            index,
+            self.layout_nodes.len()
+        );
         let mut content_y = -(self.scroll_offset as i32);
 
         for i in 0..self.layout_nodes.len() {

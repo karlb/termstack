@@ -101,6 +101,7 @@ pub struct Terminal {
     /// Grid rows (internal alacritty grid size, stays large)
     /// Note: This field is stored for documentation/debugging but not read;
     /// actual grid size is queried via grid_rows() which calls term.screen_lines()
+    #[allow(dead_code)]
     _grid_rows: u16,
 
     /// PTY rows (what programs see via tcgetwinsize)

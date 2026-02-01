@@ -995,6 +995,12 @@ impl TermStack {
 
                 // Extract cell info before doing mutable operations
                 // For terminals, check if they have a title bar
+                debug_assert!(
+                    index < self.layout_nodes.len(),
+                    "BUG: window_at returned invalid index {} for {} layout_nodes",
+                    index,
+                    self.layout_nodes.len()
+                );
                 let terminal_has_title_bar = if let StackWindow::Terminal(id) = &self.layout_nodes[index].cell {
                     terminals.as_ref()
                         .and_then(|tm| tm.get(*id))
@@ -1079,6 +1085,8 @@ impl TermStack {
                             tracing::debug!(index, terminal_id = ?id, "close button clicked on terminal, removing");
                             // Remove the terminal from the layout
                             self.layout_nodes.remove(index);
+                            // Invalidate cache since layout_nodes changed
+                            self.invalidate_focused_index_cache();
                             // Remove from terminal manager
                             if let Some(terminals) = terminals {
                                 terminals.remove(id);
@@ -1374,6 +1382,12 @@ impl TermStack {
 
         // No popup hit, check main window
         let index = self.window_at(RenderY::new(point.y))?;
+        debug_assert!(
+            index < self.layout_nodes.len(),
+            "BUG: window_at returned invalid index {} for {} layout_nodes",
+            index,
+            self.layout_nodes.len()
+        );
 
         let crate::state::StackWindow::External(entry) = &self.layout_nodes[index].cell else {
             return None;
