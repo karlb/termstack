@@ -122,9 +122,15 @@ pub fn handle_gui_spawn_requests(
             "GUI spawn environment"
         );
 
+        // Wrap GUI command to survive terminal closure
+        // Use nohup to make the process ignore SIGHUP, allowing output to be captured
+        // while ensuring the process survives when the terminal is closed
+        // Redirect stderr to stdout to capture all output
+        let wrapped_command = format!("nohup {} 2>&1", request.command);
+
         // Create output terminal with WaitingForOutput visibility
         let parent = launching_terminal;
-        match terminal_manager.spawn_command(&request.prompt, &request.command, &request.cwd, &env, parent) {
+        match terminal_manager.spawn_command(&request.prompt, &wrapped_command, &request.cwd, &env, parent) {
             Ok(output_terminal_id) => {
                 tracing::info!(
                     output_terminal_id = output_terminal_id.0,

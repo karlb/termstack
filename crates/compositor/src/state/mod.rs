@@ -371,6 +371,9 @@ pub struct TermStack {
     /// Processed in main loop - if terminal has no content, remove it; otherwise keep visible
     pub pending_output_terminal_cleanup: Vec<TerminalId>,
 
+    /// Launcher terminals that need to be restored (when GUI window closes but output terminal already died)
+    pub pending_launcher_restoration: Vec<TerminalId>,
+
     /// Host clipboard access (None if unavailable)
     /// Note: Clipboard operations can block for several seconds waiting for the
     /// clipboard owner to respond, so paste operations are done asynchronously
@@ -505,6 +508,10 @@ pub struct WindowEntry {
     /// Whether this window was launched in foreground mode
     /// (launching terminal is hidden and should be restored when this window closes)
     pub is_foreground_gui: bool,
+
+    /// The terminal that launched this GUI app (only set for foreground GUI)
+    /// This terminal is hidden while the GUI runs and restored when the window closes
+    pub launcher_terminal: Option<TerminalId>,
 }
 
 /// Timeout for pending resize operations (milliseconds)
@@ -684,6 +691,7 @@ impl TermStack {
             pending_gui_foreground: false,
             foreground_gui_sessions: HashMap::new(),
             pending_output_terminal_cleanup: Vec::new(),
+            pending_launcher_restoration: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
             clipboard_receiver: None,
             pending_paste: false,

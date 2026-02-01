@@ -334,6 +334,9 @@ fn run_compositor_headless() -> anyhow::Result<()> {
         // Handle cleanup of output terminals from closed windows
         crate::window_lifecycle::handle_output_terminal_cleanup(&mut compositor, &mut terminal_manager);
 
+        // Handle restoration of launchers when output terminals are already gone
+        crate::window_lifecycle::handle_launcher_restoration(&mut compositor, &mut terminal_manager);
+
         // Cleanup dead terminals
         if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
             break;
@@ -917,6 +920,9 @@ fn run_compositor_x11() -> anyhow::Result<()> {
 
         // Handle cleanup of output terminals from closed windows
         crate::window_lifecycle::handle_output_terminal_cleanup(&mut compositor, &mut terminal_manager);
+
+        // Handle restoration of launchers when output terminals are already gone
+        crate::window_lifecycle::handle_launcher_restoration(&mut compositor, &mut terminal_manager);
 
         // Cleanup dead terminals and handle focus changes
         if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {

@@ -1082,6 +1082,33 @@ impl TermStack {
                             has_ssd,
                             button,
                         ) {
+                            // Check if this terminal is an output terminal for any active GUI window
+                            // If so, detach it from the window so the GUI continues running without output visible
+                            let mut detached_gui_window = false;
+                            for node in &mut self.layout_nodes {
+                                if let StackWindow::External(window_entry) = &mut node.cell {
+                                    if window_entry.output_terminal == Some(id) {
+                                        tracing::info!(
+                                            terminal_id = id.0,
+                                            command = %window_entry.command,
+                                            "output terminal closed - detaching from GUI window (GUI continues running)"
+                                        );
+                                        window_entry.output_terminal = None;
+                                        detached_gui_window = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Don't restore the launcher yet - GUI window is still open
+                            // Launcher will be restored when the GUI window closes
+                            if detached_gui_window {
+                                tracing::debug!(
+                                    terminal_id = id.0,
+                                    "GUI window still active, keeping launcher hidden"
+                                );
+                            }
+
                             tracing::debug!(index, terminal_id = ?id, "close button clicked on terminal, removing");
                             // Remove the terminal from the layout
                             self.layout_nodes.remove(index);

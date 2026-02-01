@@ -45,6 +45,33 @@ fn restore_foreground_gui_launcher(
     }
 }
 
+/// Restore a launcher terminal when the output terminal is already gone.
+///
+/// Used when a GUI window closes but its output terminal has already died.
+fn restore_launcher_only(
+    compositor: &mut TermStack,
+    terminal_manager: &mut TerminalManager,
+    launcher_id: TerminalId,
+) {
+    if let Some(launcher) = terminal_manager.get_mut(launcher_id) {
+        launcher.visibility.on_gui_exit();
+        tracing::info!(
+            launcher_id = launcher_id.0,
+            "restored launching terminal visibility (output terminal already gone)"
+        );
+    }
+
+    // Focus the restored launcher
+    if let Some(idx) = find_terminal_window_index(compositor, launcher_id) {
+        compositor.set_focus_by_index(idx);
+        tracing::info!(
+            launcher_id = launcher_id.0,
+            index = idx,
+            "focused restored launcher (output terminal already gone)"
+        );
+    }
+}
+
 /// Handle new external windows and window resize events.
 ///
 /// Processes new external window additions (with keyboard focus if needed)
@@ -203,6 +230,21 @@ pub fn handle_output_terminal_cleanup(
     }
 }
 
+/// Handle restoration of launcher terminals when output terminals are already gone.
+///
+/// This is called when a GUI window closes but its output terminal had already died
+/// and been detached. The launcher still needs to be restored.
+pub fn handle_launcher_restoration(
+    compositor: &mut TermStack,
+    terminal_manager: &mut TerminalManager,
+) {
+    let launcher_ids = std::mem::take(&mut compositor.pending_launcher_restoration);
+
+    for launcher_id in launcher_ids {
+        restore_launcher_only(compositor, terminal_manager, launcher_id);
+    }
+}
+
 /// Cleanup dead terminals, sync focus, and handle shutdown.
 ///
 /// Returns `true` if the compositor should shut down (all cells removed).
@@ -214,19 +256,61 @@ pub fn cleanup_and_sync_focus(
 
     // Remove dead terminals from compositor
     for dead_id in &dead {
+        // Check if this terminal is an output terminal for any active GUI window
+        let mut has_active_window = false;
+        for node in &mut compositor.layout_nodes {
+            if let StackWindow::External(window_entry) = &mut node.cell {
+                if window_entry.output_terminal == Some(*dead_id) {
+                    // Detach the output terminal from the window - the GUI app keeps running
+                    window_entry.output_terminal = None;
+                    has_active_window = true;
+                    tracing::info!(
+                        terminal_id = dead_id.0,
+                        command = %window_entry.command,
+                        "output terminal died but GUI window still active - detaching terminal"
+                    );
+                    break;
+                }
+            }
+        }
+
         // Fallback trigger: If this was an output terminal for a foreground GUI
         // that never opened a window, restore the launcher
-        if let Some((launcher_id, window_was_linked)) = compositor.foreground_gui_sessions.remove(dead_id) {
+        if let Some((launcher_id, window_was_linked)) = compositor.foreground_gui_sessions.get(dead_id) {
             if !window_was_linked {
                 // No window was ever linked - this is the fallback case
                 // (e.g., GUI command failed before opening a window)
-                restore_foreground_gui_launcher(
-                    compositor,
-                    terminal_manager,
-                    launcher_id,
-                    *dead_id,
-                    "fallback: output terminal exited without window",
+                // Remove the session and restore the launcher
+                if let Some((launcher_id, _)) = compositor.foreground_gui_sessions.remove(dead_id) {
+                    restore_foreground_gui_launcher(
+                        compositor,
+                        terminal_manager,
+                        launcher_id,
+                        *dead_id,
+                        "fallback: output terminal exited without window",
+                    );
+                }
+            } else if has_active_window {
+                // Window is still active, but output terminal died
+                // Keep the session in the map (will be cleaned up when window closes)
+                // Keep the launcher hidden since the GUI is still running
+                tracing::info!(
+                    terminal_id = dead_id.0,
+                    launcher_id = launcher_id.0,
+                    "output terminal died but GUI window still active - keeping launcher hidden and session tracked"
                 );
+            } else {
+                // Window was linked but is now closed - this shouldn't normally happen
+                // (window close should have triggered cleanup already), but clean up anyway
+                if let Some((launcher_id, _)) = compositor.foreground_gui_sessions.remove(dead_id) {
+                    restore_foreground_gui_launcher(
+                        compositor,
+                        terminal_manager,
+                        launcher_id,
+                        *dead_id,
+                        "output terminal exited after window closed",
+                    );
+                }
             }
         }
 

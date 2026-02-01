@@ -25,11 +25,17 @@ impl TermStack {
         // Mark that this output terminal is now linked to a window
         // (for foreground GUI fallback trigger - we only restore launcher on process exit
         // if no window was ever linked)
-        if let Some(term_id) = output_terminal {
-            if let Some((_, window_linked)) = self.foreground_gui_sessions.get_mut(&term_id) {
+        // Also retrieve the launcher terminal ID for this foreground GUI session
+        let launcher_terminal = if let Some(term_id) = output_terminal {
+            if let Some((launcher_id, window_linked)) = self.foreground_gui_sessions.get_mut(&term_id) {
                 *window_linked = true;
+                Some(*launcher_id)
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         // Initial height is 0 - will be updated when client commits its first buffer.
         let initial_height = 0u32;
@@ -44,6 +50,7 @@ impl TermStack {
             command: command.clone(),
             uses_csd: false, // Will be set by XdgDecorationHandler if client requests CSD
             is_foreground_gui,
+            launcher_terminal,
         };
 
         // Keep the output terminal in the layout - its title bar shows the command
@@ -144,14 +151,14 @@ impl TermStack {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
             matches!(&node.cell, StackWindow::External(entry) if entry.surface.wl_surface() == surface)
         }) {
-            let (output_terminal, is_foreground_gui) = if let StackWindow::External(entry) = &self.layout_nodes.remove(index).cell {
+            let (output_terminal, is_foreground_gui, launcher_terminal) = if let StackWindow::External(entry) = &self.layout_nodes.remove(index).cell {
                 self.space.unmap_elem(&entry.window);
-                (entry.output_terminal, entry.is_foreground_gui)
+                (entry.output_terminal, entry.is_foreground_gui, entry.launcher_terminal)
             } else {
-                (None, false)
+                (None, false, None)
             };
 
-            // Queue output terminal for cleanup in main loop
+            // Queue output terminal for cleanup in main loop (if it still exists)
             if let Some(term_id) = output_terminal {
                 tracing::info!(
                     terminal_id = term_id.0,
@@ -159,6 +166,26 @@ impl TermStack {
                     "window closed, queuing output terminal for cleanup"
                 );
                 self.pending_output_terminal_cleanup.push(term_id);
+            } else if is_foreground_gui {
+                // Output terminal already died and was detached, but we still need to
+                // restore the launcher. Queue the launcher directly for restoration.
+                if let Some(launcher_id) = launcher_terminal {
+                    tracing::info!(
+                        launcher_id = launcher_id.0,
+                        "window closed and output terminal already gone, queuing launcher restoration"
+                    );
+                    self.pending_launcher_restoration.push(launcher_id);
+
+                    // Clean up the foreground GUI session tracking (output terminal is already dead)
+                    // We need to find and remove the session entry by launcher_id
+                    let output_term_id = self.foreground_gui_sessions
+                        .iter()
+                        .find(|(_, (lid, _))| *lid == launcher_id)
+                        .map(|(tid, _)| *tid);
+                    if let Some(tid) = output_term_id {
+                        self.foreground_gui_sessions.remove(&tid);
+                    }
+                }
             }
 
             self.update_focus_after_removal(index);
@@ -183,6 +210,9 @@ impl TermStack {
     }
 
     /// Remove a terminal by its ID
+    ///
+    /// Note: This should only be called for terminals that are safe to remove.
+    /// Output terminals for active GUI windows are NOT removed (the window keeps them alive).
     pub fn remove_terminal(&mut self, id: TerminalId) {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
             matches!(node.cell, StackWindow::Terminal(tid) if tid == id)
