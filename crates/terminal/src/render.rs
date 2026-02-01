@@ -571,9 +571,9 @@ mod tests {
         terminal.render(width, height, true);
         let unselected_bg = get_bg_color_at(&terminal, 0, 0);
 
-        // Make a selection on first character
+        // Make a selection on first characters (left-to-right)
         terminal.start_selection(0, 0);
-        terminal.update_selection(4, 0);
+        terminal.update_selection(0, 0, 4, 0);
 
         // Render with selection
         terminal.render(width, height, true);
@@ -595,9 +595,9 @@ mod tests {
         let mut terminal = Terminal::new(80, 24).expect("terminal creation");
         terminal.inject_bytes(b"ABCDEFGHIJ\r\n");
 
-        // Select first 3 characters (cols 0-2)
+        // Select first 3 characters (cols 0-2), left-to-right
         terminal.start_selection(0, 0);
-        terminal.update_selection(2, 0);
+        terminal.update_selection(0, 0, 2, 0);
 
         let (cell_width, cell_height) = terminal.cell_size();
         let width = 80 * cell_width;
@@ -638,9 +638,9 @@ mod tests {
         terminal.render(width, height, true);
         let normal_bg = get_bg_color_at(&terminal, 0, 0);
 
-        // Add selection
+        // Add selection (left-to-right)
         terminal.start_selection(0, 0);
-        terminal.update_selection(4, 0);
+        terminal.update_selection(0, 0, 4, 0);
         terminal.render(width, height, true);
         let selected_bg = get_bg_color_at(&terminal, 0, 0);
         assert_eq!(selected_bg, TEST_SELECTION_BG);

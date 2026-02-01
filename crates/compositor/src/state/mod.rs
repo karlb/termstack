@@ -74,6 +74,13 @@ use crate::ipc::{BuiltinRequest, ResizeMode, SpawnRequest};
 use crate::layout::ColumnLayout;
 use crate::terminal_manager::TerminalId;
 
+/// Selection drag state: (terminal_id, window_render_y, window_height, start_col, start_row, last_col, last_row, last_update_time)
+///
+/// - `start_col`, `start_row`: The grid position where selection started (constant during drag)
+/// - `last_col`, `last_row`: The current endpoint position (updated during drag)
+/// - `last_update_time`: For throttling motion events
+pub type SelectionState = (TerminalId, i32, i32, usize, usize, usize, usize, Instant);
+
 /// Identifies a focused cell by its content identity, not position.
 ///
 /// Unlike indices, cell identity remains stable when cells are added/removed,
@@ -240,10 +247,9 @@ pub struct TermStack {
     /// Receiver for async PRIMARY selection read results (middle-click paste).
     pub primary_selection_receiver: Option<mpsc::Receiver<String>>,
 
-    /// Active selection state: (terminal_id, window_render_y, window_height, last_col, last_row, last_update_time)
-    /// Set when mouse button is pressed on a terminal, cleared on release
-    /// Tracks last grid coordinates and update time to throttle motion events
-    pub selecting: Option<(TerminalId, i32, i32, usize, usize, std::time::Instant)>,
+    /// Active selection state, set when mouse button is pressed on a terminal, cleared on release.
+    /// See [`SelectionState`] for field details.
+    pub selecting: Option<SelectionState>,
 
     /// Active resize drag state
     /// Set when mouse button is pressed on a resize handle, cleared on release

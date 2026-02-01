@@ -26,11 +26,11 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::coords::{RenderY, ScreenY};
 use crate::render::FOCUS_INDICATOR_WIDTH;
-use crate::state::{StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
-use crate::terminal_manager::TerminalManager;
+use crate::state::{SelectionState, StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
+use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
-use crate::terminal_manager::TerminalId;
+use terminal::Side;
 
 /// Left mouse button code (BTN_LEFT in evdev)
 const BTN_LEFT: u32 = 0x110;
@@ -127,7 +127,7 @@ fn render_to_grid_coords(
     char_width: u32,
     char_height: u32,
     title_bar_height: u32,
-) -> (usize, usize) {
+) -> (usize, usize, Side) {
     // Convert render coords to terminal-local coords
     // Terminal has Y=0 at top, render has Y=0 at bottom
     // Content is offset by FOCUS_INDICATOR_WIDTH from left edge
@@ -139,13 +139,22 @@ fn render_to_grid_coords(
     let col = (local_x / char_width as f64) as usize;
     let row = (local_y / char_height as f64) as usize;
 
-    (col, row)
+    // Determine which half of the cell the cursor is in
+    // This is crucial for correct selection behavior when selecting right-to-left
+    let x_within_cell = local_x % char_width as f64;
+    let side = if x_within_cell < char_width as f64 / 2.0 {
+        Side::Left
+    } else {
+        Side::Right
+    };
+
+    (col, row, side)
 }
 
 /// Start a text selection on a terminal at the given render coordinates
 ///
-/// Returns the selection tracking state (terminal id, cell render y, cell height, col, row, timestamp)
-/// which should be stored in `compositor.selecting` for drag tracking.
+/// Returns the selection tracking state which should be stored in `compositor.selecting`
+/// for drag tracking. See [`SelectionState`] for field details.
 fn start_terminal_selection(
     compositor: &TermStack,
     terminals: &mut TerminalManager,
@@ -153,7 +162,7 @@ fn start_terminal_selection(
     window_index: usize,
     render_x: f64,
     render_y: f64,
-) -> Option<(TerminalId, i32, i32, usize, usize, std::time::Instant)> {
+) -> Option<SelectionState> {
     let managed = terminals.get_mut(terminal_id)?;
     let (window_render_y, window_height) = compositor.get_window_render_position(window_index);
 
@@ -164,7 +173,7 @@ fn start_terminal_selection(
         0
     };
 
-    let (col, row) = render_to_grid_coords(
+    let (col, row, _side) = render_to_grid_coords(
         render_x,
         render_y,
         window_render_y.value(),
@@ -179,12 +188,14 @@ fn start_terminal_selection(
     managed.terminal.start_selection(col, row);
     managed.mark_dirty(); // Re-render to show selection highlight
 
-    Some((terminal_id, window_render_y.value() as i32, window_height, col, row, std::time::Instant::now()))
+    // Return: start position (col, row) and last position (same at start)
+    Some((terminal_id, window_render_y.value() as i32, window_height, col, row, col, row, std::time::Instant::now()))
 }
 
 /// Update an ongoing selection during pointer drag
 ///
 /// Returns Some((col, row)) if the selection coordinates changed, None otherwise
+#[allow(clippy::too_many_arguments)]
 fn update_terminal_selection(
     terminals: &mut TerminalManager,
     terminal_id: TerminalId,
@@ -193,13 +204,15 @@ fn update_terminal_selection(
     render_x: f64,
     render_y: f64,
     title_bar_height: u32,
+    start_col: usize,
+    start_row: usize,
     last_col: usize,
     last_row: usize,
 ) -> Option<(usize, usize)> {
     let managed = terminals.get_mut(terminal_id)?;
 
     let (char_width, char_height) = managed.terminal.cell_size();
-    let (col, row) = render_to_grid_coords(
+    let (col, row, _side) = render_to_grid_coords(
         render_x,
         render_y,
         window_render_y as f64,
@@ -211,7 +224,8 @@ fn update_terminal_selection(
 
     // Only update if coordinates actually changed
     if col != last_col || row != last_row {
-        managed.terminal.update_selection(col, row);
+        // update_selection sets correct Side values based on selection direction
+        managed.terminal.update_selection(start_col, start_row, col, row);
         // Mark selection dirty - this queues exactly ONE render, avoiding backlog
         // If another coordinate change happens before rendering, it just sets the flag again (no extra render)
         managed.mark_selection_dirty();
@@ -725,7 +739,7 @@ impl TermStack {
         }
 
         // Update selection if we're in a drag operation
-        if let Some((term_id, window_render_y, window_height, last_col, last_row, last_update_time)) = self.selecting {
+        if let Some((term_id, window_render_y, window_height, start_col, start_row, last_col, last_row, last_update_time)) = self.selecting {
             // Throttle at input level: Only process motion events every 16ms (~60 FPS)
             // This prevents backlog by skipping motion events entirely if we're behind
             let now = std::time::Instant::now();
@@ -744,20 +758,23 @@ impl TermStack {
                     screen_x,
                     render_y,
                     title_bar_height,
+                    start_col,
+                    start_row,
                     last_col,
                     last_row,
                 ) {
-                    // Update the stored coordinates and timestamp for next motion event
+                    // Update the stored last coordinates and timestamp for next motion event
+                    // Keep start position unchanged
                     tracing::debug!(
                         elapsed_ms = elapsed.as_millis(),
                         new_col,
                         new_row,
                         "selection updated (throttled)"
                     );
-                    self.selecting = Some((term_id, window_render_y, window_height, new_col, new_row, now));
+                    self.selecting = Some((term_id, window_render_y, window_height, start_col, start_row, new_col, new_row, now));
                 } else {
                     // Coordinates didn't change, but update timestamp to keep throttle working
-                    self.selecting = Some((term_id, window_render_y, window_height, last_col, last_row, now));
+                    self.selecting = Some((term_id, window_render_y, window_height, start_col, start_row, last_col, last_row, now));
                 }
             } else {
                 tracing::trace!(
@@ -854,7 +871,7 @@ impl TermStack {
             }
 
             // End selection drag - copy to PRIMARY selection (classic X11 select-to-copy)
-            if let Some((term_id, _, _, _, _, _)) = self.selecting.take() {
+            if let Some((term_id, _, _, _, _, _, _, _)) = self.selecting.take() {
                 if let Some(ref mut tm) = terminals {
                     if let Some(managed) = tm.get_mut(term_id) {
                         if let Some(selected_text) = managed.terminal.selection_text() {

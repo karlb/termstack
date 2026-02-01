@@ -11,3 +11,6 @@ pub mod state;
 pub use render::Theme;
 pub use sizing::TerminalSizingState;
 pub use state::Terminal;
+
+// Re-export Side for selection handling
+pub use alacritty_terminal::index::Side;

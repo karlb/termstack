@@ -661,18 +661,45 @@ impl Terminal {
     }
 
     /// Start a text selection at the given grid coordinates
+    ///
+    /// This creates a zero-width selection at the starting point. Call `update_selection`
+    /// with the same start coordinates and end coordinates to define the selection range.
     pub fn start_selection(&self, col: usize, row: usize) {
         let mut term = self.term.lock();
         let point = Point::new(Line(row as i32), Column(col));
+        // Initial side doesn't matter - it will be set correctly in update_selection
         term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
     }
 
-    /// Update the selection end point
-    pub fn update_selection(&self, col: usize, row: usize) {
+    /// Update the selection from start point to end point
+    ///
+    /// This method sets the correct `Side` values based on selection direction:
+    /// - Left-to-right (end >= start): start.side = Left, end.side = Right (both cells included)
+    /// - Right-to-left (end < start): start.side = Right, end.side = Left (both cells included after swap)
+    ///
+    /// This ensures both endpoint cells are always included regardless of selection direction.
+    pub fn update_selection(&self, start_col: usize, start_row: usize, end_col: usize, end_row: usize) {
         let mut term = self.term.lock();
+
+        let start_point = Point::new(Line(start_row as i32), Column(start_col));
+        let end_point = Point::new(Line(end_row as i32), Column(end_col));
+
+        // Determine sides based on selection direction
+        // This mirrors alacritty's include_all() logic to ensure both endpoints are included
+        let (start_side, end_side) = if start_point > end_point {
+            // Right-to-left: after swap in to_range, start becomes end and vice versa
+            // We want post-swap: start.side = Left, end.side = Right
+            // So pre-swap: start.side = Right (becomes end.side), end.side = Left (becomes start.side)
+            (Side::Right, Side::Left)
+        } else {
+            // Left-to-right: no swap needed
+            (Side::Left, Side::Right)
+        };
+
+        // Recreate selection with correct sides
+        term.selection = Some(Selection::new(SelectionType::Simple, start_point, start_side));
         if let Some(ref mut selection) = term.selection {
-            let point = Point::new(Line(row as i32), Column(col));
-            selection.update(point, Side::Right);
+            selection.update(end_point, end_side);
         }
     }
 
@@ -771,9 +798,9 @@ mod tests {
         // Inject some content
         terminal.inject_bytes(b"Hello World\r\n");
 
-        // Start and update selection
+        // Start and update selection (left-to-right)
         terminal.start_selection(0, 0);
-        terminal.update_selection(4, 0); // Select "Hello"
+        terminal.update_selection(0, 0, 4, 0); // Select "Hello"
 
         assert!(terminal.has_selection());
 
@@ -789,9 +816,9 @@ mod tests {
         // Inject content - note: need to wait for VTE to process
         terminal.inject_bytes(b"ABCDEFGHIJ\r\n");
 
-        // Select first 5 chars (A-E)
+        // Select first 5 chars (A-E), left-to-right
         terminal.start_selection(0, 0);
-        terminal.update_selection(4, 0);
+        terminal.update_selection(0, 0, 4, 0);
 
         let text = terminal.selection_text();
         assert!(text.is_some(), "should have selection text");
@@ -802,15 +829,40 @@ mod tests {
     }
 
     #[test]
+    fn selection_right_to_left_includes_leftmost_char() {
+        let mut terminal = Terminal::new(80, 24).expect("terminal creation");
+
+        // Inject content
+        terminal.inject_bytes(b"ABCDEFGHIJ\r\n");
+
+        // Select right-to-left: start at column 5, end at column 0
+        // This should select "ABCDEF" (columns 0-5 inclusive)
+        terminal.start_selection(5, 0);
+        terminal.update_selection(5, 0, 0, 0);
+
+        let text = terminal.selection_text();
+        assert!(text.is_some(), "should have selection text");
+
+        let text = text.unwrap();
+        // Should include 'A' at column 0
+        assert!(
+            text.starts_with('A'),
+            "right-to-left selection should include leftmost character, got: {:?}",
+            text
+        );
+        assert_eq!(text, "ABCDEF", "should select columns 0-5");
+    }
+
+    #[test]
     fn selection_survives_new_output() {
         let mut terminal = Terminal::new(80, 24).expect("terminal creation");
 
         // Inject initial content
         terminal.inject_bytes(b"Line 1\r\n");
 
-        // Make a selection
+        // Make a selection (left-to-right)
         terminal.start_selection(0, 0);
-        terminal.update_selection(3, 0);
+        terminal.update_selection(0, 0, 3, 0);
         assert!(terminal.has_selection());
 
         // Inject more content (shouldn't clear selection)
