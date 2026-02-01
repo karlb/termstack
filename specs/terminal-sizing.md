@@ -33,16 +33,12 @@ TUI applications (vim, mc, htop, etc.) are detected via alternate screen mode.
 
 ## Resize Modes
 
-### Full Mode (`termstack --resize full`)
+The `termstack` CLI provides manual resize control:
 
-- Expands terminal to full viewport height
-- Used for TUI apps that don't trigger alternate screen
-- Manual override for content-aware sizing
+- `termstack --resize full` - Expand terminal to full viewport height
+- `termstack --resize content` - Return to content-aware sizing
 
-### Content Mode (`termstack --resize content`)
-
-- Returns to content-aware sizing
-- Shrinks to match actual content rows
+Use full mode for interactive apps that don't activate alternate screen (e.g., REPL sessions where you want full height).
 
 ## PTY vs Grid Size
 

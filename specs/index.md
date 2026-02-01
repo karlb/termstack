@@ -1,8 +1,6 @@
 # Termstack Specifications
 
-Termstack enables traditional terminal workflows while integrating GUI applications seamlessly—as if they were terminal apps. Each command runs in its own cell with content-aware sizing: short output stays compact, long output can be scrolled, and uninteresting output can be dismissed. GUI windows launched with the `gui` command appear inline in the column layout alongside terminal output.
-
-Behavioral specs that define what the software should do. Reference these when implementing, testing, or debugging features.
+Behavioral specs that define what the software should do. Reference these when implementing or debugging features. See [Glossary](glossary.md) for terminology.
 
 ## Specs
 
@@ -15,6 +13,7 @@ Behavioral specs that define what the software should do. Reference these when i
 | [Column Layout](column-layout.md) | Scrolling, focus order, window positioning |
 | [Keyboard Shortcuts](keyboard-shortcuts.md) | Key bindings and their actions |
 | [Selection & Clipboard](selection-clipboard.md) | Text selection, copy/paste behavior |
+| [Window Resize](window-resize.md) | Manual GUI window height adjustment |
 | [Output Terminals](output-terminals.md) | GUI app stderr/stdout capture and promotion |
 
 ## Writing Specs

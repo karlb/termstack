@@ -15,6 +15,7 @@
 | **Launcher terminal** | The initially present terminal window where commands are typed to launch new windows. Unlike other windows, it has no title bar. It starts with focus, contains the only shell prompt, and is the primary input point. Also called "launcher" for short. |
 | **Terminal window** | A window displaying terminal/shell output from a command. |
 | **GUI window** | A window containing a graphical application (Wayland or X11 via XWayland). |
+| **Title bar** | Visual header at the top of most windows showing the window title and close button. The launcher terminal has no title bar. GUI windows using client-side decoration (CSD) render their own title bar and don't get a compositor-drawn one. |
 
 ## Commands
 

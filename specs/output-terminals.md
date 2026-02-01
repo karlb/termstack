@@ -8,32 +8,15 @@ When a GUI app produces terminal output (errors, warnings, logs), that output ap
 
 ## Lifecycle
 
-### Creation
+1. User runs `gui <command>` - output terminal created (hidden)
+2. Output produced - terminal becomes visible below GUI window
+3. GUI closes:
+   - If output exists → terminal promoted to standalone
+   - If empty → terminal removed
 
-1. User runs `gui <command>`
-2. Compositor creates hidden output terminal
-3. Output terminal runs the command
-4. GUI window appears (linked to output terminal)
+**Visibility:** Terminal appears when first content (stdout/stderr) is written.
 
-### Visibility States
-
-- **Hidden**: No output yet, terminal not visible
-- **Visible**: Output produced, terminal shown below GUI window
-- **Promoted**: GUI closed, terminal becomes standalone cell
-
-### Promotion
-
-When GUI window closes:
-- If output terminal has content → promote to standalone
-- If output terminal is empty → remove it
-- Promoted terminal appears where GUI window was
-
-## Output Detection
-
-Output terminal becomes visible when:
-- Any content written to stdout
-- Any content written to stderr
-- Terminal gets at least one row of content
+**Promotion:** On GUI close, the output terminal takes the GUI's position in the stack.
 
 ## Layout
 

@@ -10,18 +10,19 @@ Text selection and clipboard operations in terminals.
 - Selection highlights with distinct background color
 - Selection spans visible terminal content
 
-### Selection Boundaries
+### Selection Scope
 
-- Selection is constrained to single terminal
-- Cannot select across multiple windows
-- Selection coordinates are in terminal grid (col, row)
+- Selection works across multiple windows in the stack
+- Can select text spanning terminals, GUI window titles, and title bars
+- Selection appears as a continuous range from start to end position
+- Enables copying commands and outputs as if the stack were one terminal
 
 ### Selection Persistence
 
-- Selection persists while terminal is focused
+- Selection persists while active
 - Selection clears when:
-  - Clicking elsewhere in terminal
-  - Clicking on different window
+  - Clicking elsewhere
+  - Starting a new selection
   - New output pushes selected content off screen (TBD)
 
 ## Clipboard
@@ -30,7 +31,7 @@ Text selection and clipboard operations in terminals.
 
 - Copies selected text to system clipboard
 - If no selection, does nothing
-- Uses primary clipboard (Wayland) or X11 clipboard
+- Uses standard clipboard (Wayland data-device or X11 CLIPBOARD)
 
 ### Paste (`Ctrl+Shift+V`)
 
@@ -44,16 +45,19 @@ Text selection and clipboard operations in terminals.
 - X11 apps use X11 clipboard via xwayland-satellite
 - Wayland apps use Wayland clipboard
 
-## Coordinate Conversion
+## Primary Selection (X11-style)
 
-Selection uses terminal grid coordinates:
-- `col`: Character column (0-indexed from left)
-- `row`: Line row (0-indexed from top of visible area)
+### Auto-Copy on Selection
 
-Mouse position must be converted:
-1. Screen coords → Render coords (Y-flip)
-2. Render coords → Terminal-relative position
-3. Pixel position → Grid cell (col, row)
+- Text is automatically copied to primary selection when selected
+- Works alongside the standard clipboard (independent buffers)
+- Enables traditional Unix select-to-copy workflow
+
+### Middle-Click Paste
+
+- Middle-click pastes from primary selection, not clipboard
+- Works in any terminal window
+- Content sent as keyboard input to PTY
 
 ## Test Cases
 
@@ -61,5 +65,7 @@ Mouse position must be converted:
 2. `Ctrl+Shift+C` - text copied to clipboard
 3. `Ctrl+Shift+V` - clipboard content appears at cursor
 4. Select text, click elsewhere - selection clears
-5. Select text, focus other window - selection clears
-6. Paste from external app - works in terminal
+5. Paste from external app - works in terminal
+6. Select text - auto-copied to primary selection
+7. Middle-click in terminal - pastes from primary selection
+8. Select across two terminals - both terminals highlight, copy includes both

@@ -109,13 +109,6 @@ DISPLAY = compositor's XWayland
 TERMSTACK_SOCKET = (preserved)
 ```
 
-## Implementation Files
-
-- `crates/compositor/src/spawn_handler.rs`: Environment setup for spawns
-- `crates/termstack/src/cli.rs`: CLI parsing and IPC message sending
-- `scripts/bin/gui`: Shell wrapper for `termstack gui`
-- `crates/compositor/src/xwayland_lifecycle.rs`: XWayland/xwayland-satellite setup
-
 ## Test Cases
 
 1. `mupdf file.pdf` - window on host, terminal cell in termstack
