@@ -368,6 +368,11 @@ fn run_compositor_headless() -> anyhow::Result<()> {
             break;
         }
 
+        // Recalculate heights for any windows added during this frame
+        let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
+        compositor.update_layout_heights(window_heights);
+        compositor.recalculate_layout();
+
         if !compositor.running {
             break;
         }
@@ -1007,6 +1012,13 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
             break;
         }
+
+        // Recalculate heights for any windows added during this frame (e.g., external
+        // Wayland windows from dispatch_clients start with height 0). Without this,
+        // layout calculations and validate_state() would see stale zero heights.
+        let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
+        compositor.update_layout_heights(window_heights);
+        compositor.recalculate_layout();
 
         // Validate state invariants in debug builds
         #[cfg(debug_assertions)]
