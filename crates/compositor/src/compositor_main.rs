@@ -111,6 +111,7 @@ fn run_compositor_headless() -> anyhow::Result<()> {
         event_loop.handle(),
         output_size,
         config.csd_apps.clone(),
+        config.max_gui_windows,
     );
 
     // Add output to compositor
@@ -140,29 +141,48 @@ fn run_compositor_headless() -> anyhow::Result<()> {
     // Insert socket source into event loop for new client connections
     event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
         tracing::info!("new Wayland client connected (headless)");
-        state.display_handle.insert_client(client_stream, Arc::new(ClientState {
+        if let Err(e) = state.display_handle.insert_client(client_stream, Arc::new(ClientState {
             compositor_state: Default::default(),
-        })).expect("failed to insert client");
-    }).expect("failed to insert socket source");
+        })) {
+            tracing::error!(error = ?e, "Failed to insert Wayland client");
+        }
+    }).map_err(|e| anyhow::anyhow!("Failed to insert Wayland socket source: {e:?}"))?;
 
     // Create IPC socket for termstack commands
     let ipc_socket_path = crate::ipc::socket_path();
     let _ = std::fs::remove_file(&ipc_socket_path); // Clean up old socket
     let ipc_listener = UnixListener::bind(&ipc_socket_path)
-        .expect("failed to create IPC socket");
-    ipc_listener.set_nonblocking(true).expect("failed to set nonblocking");
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                anyhow::anyhow!(
+                    "IPC socket already in use: {:?}\n\
+                     Another termstack compositor may be running, or a stale socket exists.\n\
+                     Try: rm {:?}",
+                    ipc_socket_path, ipc_socket_path
+                )
+            } else {
+                anyhow::anyhow!("Failed to create IPC socket at {:?}: {}", ipc_socket_path, e)
+            }
+        })?;
+    ipc_listener.set_nonblocking(true)
+        .map_err(|e| anyhow::anyhow!("Failed to set IPC socket nonblocking: {}", e))?;
 
     // Set environment variable for child processes
     std::env::set_var("TERMSTACK_SOCKET", &ipc_socket_path);
 
     // Set TERMSTACK_BIN so spawned terminals use matching CLI version
+    // Fall back to "termstack" in PATH if binary path cannot be determined
     let binary_path = std::env::current_exe()
-        .expect("failed to determine binary path");
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = ?e, "Failed to determine binary path, using 'termstack' from PATH");
+            std::path::PathBuf::from("termstack")
+        });
     std::env::set_var("TERMSTACK_BIN", &binary_path);
 
     tracing::info!(
         path = ?ipc_socket_path,
-        "headless IPC socket created"
+        binary = ?binary_path,
+        "headless IPC socket created, TERMSTACK_SOCKET and TERMSTACK_BIN env vars set"
     );
 
     // Insert IPC socket source into event loop
@@ -232,7 +252,9 @@ fn run_compositor_headless() -> anyhow::Result<()> {
                                             })
                                             .collect();
                                         tracing::info!(window_count = windows.len(), "IPC query_windows response (headless)");
-                                        crate::ipc::send_json_response(stream, &windows);
+                                        if let Err(e) = crate::ipc::send_json_response(stream, &windows) {
+                                            tracing::warn!(error = ?e, "Failed to send query_windows response");
+                                        }
                                     }
                                 }
                             }
@@ -270,6 +292,7 @@ fn run_compositor_headless() -> anyhow::Result<()> {
         terminal_theme,
         config.font_size,
     );
+    terminal_manager.set_max_terminals(config.max_terminals);
 
     tracing::info!("headless compositor entering main loop");
 
@@ -281,6 +304,7 @@ fn run_compositor_headless() -> anyhow::Result<()> {
             match terminal_manager.spawn() {
                 Ok(id) => {
                     compositor.add_terminal(id);
+                    compositor.enforce_terminal_limit(&mut terminal_manager);
                     tracing::info!(id = id.0, "spawned initial terminal (headless)");
                 }
                 Err(e) => {
@@ -497,6 +521,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         event_loop.handle(),
         output_size,
         config.csd_apps.clone(),
+        config.max_gui_windows,
     );
 
     // Add output to compositor
@@ -507,7 +532,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
 
     // Create listening socket
     let listening_socket = ListeningSocketSource::new_auto()
-        .expect("failed to create Wayland socket");
+        .map_err(|e| anyhow::anyhow!("Failed to create Wayland socket: {e:?}"))?;
 
     let socket_name = listening_socket
         .socket_name()
@@ -547,24 +572,42 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     // Insert socket source into event loop for new client connections
     event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
         tracing::info!("new Wayland client connected");
-        state.display_handle.insert_client(client_stream, std::sync::Arc::new(ClientState {
+        if let Err(e) = state.display_handle.insert_client(client_stream, std::sync::Arc::new(ClientState {
             compositor_state: Default::default(),
-        })).expect("failed to insert client");
-    }).expect("failed to insert socket source");
+        })) {
+            tracing::error!(error = ?e, "Failed to insert Wayland client");
+        }
+    }).map_err(|e| anyhow::anyhow!("Failed to insert Wayland socket source: {e:?}"))?;
 
     // Create IPC socket for termstack commands
     let ipc_socket_path = crate::ipc::socket_path();
     let _ = std::fs::remove_file(&ipc_socket_path); // Clean up old socket
     let ipc_listener = UnixListener::bind(&ipc_socket_path)
-        .expect("failed to create IPC socket");
-    ipc_listener.set_nonblocking(true).expect("failed to set nonblocking");
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                anyhow::anyhow!(
+                    "IPC socket already in use: {:?}\n\
+                     Another termstack compositor may be running, or a stale socket exists.\n\
+                     Try: rm {:?}",
+                    ipc_socket_path, ipc_socket_path
+                )
+            } else {
+                anyhow::anyhow!("Failed to create IPC socket at {:?}: {}", ipc_socket_path, e)
+            }
+        })?;
+    ipc_listener.set_nonblocking(true)
+        .map_err(|e| anyhow::anyhow!("Failed to set IPC socket nonblocking: {}", e))?;
 
     // Set environment variable for child processes
     std::env::set_var("TERMSTACK_SOCKET", &ipc_socket_path);
 
     // Set TERMSTACK_BIN so spawned terminals use matching CLI version
+    // Fall back to "termstack" in PATH if binary path cannot be determined
     let binary_path = std::env::current_exe()
-        .expect("failed to determine binary path");
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = ?e, "Failed to determine binary path, using 'termstack' from PATH");
+            std::path::PathBuf::from("termstack")
+        });
     std::env::set_var("TERMSTACK_BIN", &binary_path);
 
     tracing::info!(
@@ -654,7 +697,9 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                                             })
                                             .collect();
                                         tracing::info!(window_count = windows.len(), "IPC query_windows response");
-                                        crate::ipc::send_json_response(stream, &windows);
+                                        if let Err(e) = crate::ipc::send_json_response(stream, &windows) {
+                                            tracing::warn!(error = ?e, "Failed to send query_windows response");
+                                        }
                                     }
                                 }
                             }
@@ -678,7 +723,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
             }
             Ok(smithay::reexports::calloop::PostAction::Continue)
         },
-    ).expect("failed to insert IPC socket source");
+    ).map_err(|e| anyhow::anyhow!("Failed to insert IPC socket source: {e:?}"))?;
 
     // Create channel for X11 input events
     // The X11 backend callback will send events, main loop will receive them
@@ -710,7 +755,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
                 // Buffer presentation complete - ready for next frame
             }
         }
-    }).expect("failed to insert X11 backend source");
+    }).map_err(|e| anyhow::anyhow!("Failed to insert X11 backend source: {e:?}"))?;
 
     // Initialize XWayland support for X11 apps
     xwayland_lifecycle::initialize_xwayland(&mut compositor, &mut display, event_loop.handle());
@@ -732,6 +777,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         terminal_theme,
         config.font_size,
     );
+    terminal_manager.set_max_terminals(config.max_terminals);
 
     // Create title bar renderer for external windows
     let mut title_bar_renderer = TitleBarRenderer::new(terminal_theme);
@@ -765,6 +811,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
             match terminal_manager.spawn() {
                 Ok(id) => {
                     compositor.add_terminal(id);
+                    compositor.enforce_terminal_limit(&mut terminal_manager);
                     tracing::info!(id = id.0, "spawned initial terminal (XWayland ready)");
                 }
                 Err(e) => {

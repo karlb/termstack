@@ -180,7 +180,9 @@ pub fn handle_ipc_resize_request(
         Some(FocusedWindow::Terminal(id)) => *id,
         _ => {
             tracing::warn!("resize request but no focused terminal");
-            crate::ipc::send_ack(ack_stream);
+            if let Err(e) = crate::ipc::send_ack(ack_stream) {
+                tracing::warn!(error = ?e, "Failed to send ACK for failed resize request");
+            }
             return;
         }
     };
@@ -235,7 +237,9 @@ pub fn handle_ipc_resize_request(
         }
     }
 
-    crate::ipc::send_ack(ack_stream);
+    if let Err(e) = crate::ipc::send_ack(ack_stream) {
+        tracing::warn!(error = ?e, "Failed to send ACK for resize completion");
+    }
 }
 
 /// Promote output terminals that have content to standalone cells.

@@ -142,6 +142,7 @@ pub fn handle_gui_spawn_requests(
 
                 // Add output terminal to layout
                 compositor.add_terminal(output_terminal_id);
+                compositor.enforce_terminal_limit(terminal_manager);
 
                 // Set up for window linking
                 compositor.pending_window_output_terminal = Some(output_terminal_id);
@@ -346,6 +347,7 @@ fn process_spawn_request(
                 tracing::info!(id = id.0, cols, pty_rows, height = term.height, "terminal created");
             }
             compositor.add_terminal(id);
+            compositor.enforce_terminal_limit(terminal_manager);
 
             // Set this terminal as the pending output terminal for GUI windows,
             // but ONLY if no pending value is already set. This protects against

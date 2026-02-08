@@ -226,17 +226,60 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
 }
 
 /// Send acknowledgement on a stream (for synchronous operations like resize)
-pub fn send_ack(mut stream: UnixStream) {
-    let _ = writeln!(stream, "ok");
-    let _ = stream.flush();
+///
+/// Returns an error if the ACK cannot be sent within the timeout period.
+/// This prevents hanging when the client has disconnected.
+pub fn send_ack(mut stream: UnixStream) -> Result<(), IpcError> {
+    // Set a timeout for writing the ACK
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to set write timeout for ACK");
+            IpcError::Io(e)
+        })?;
+
+    writeln!(stream, "ok")
+        .map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to write ACK to IPC stream");
+            IpcError::Io(e)
+        })?;
+
+    stream.flush()
+        .map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to flush ACK to IPC stream");
+            IpcError::Io(e)
+        })?;
+
+    tracing::debug!("ACK sent successfully");
+    Ok(())
 }
 
 /// Send a JSON response on a stream (for query operations)
-pub fn send_json_response<T: Serialize>(mut stream: UnixStream, data: &T) {
-    if let Ok(json) = serde_json::to_string(data) {
-        let _ = writeln!(stream, "{}", json);
-        let _ = stream.flush();
-    }
+///
+/// Returns an error if the response cannot be sent within the timeout period.
+pub fn send_json_response<T: Serialize>(mut stream: UnixStream, data: &T) -> Result<(), IpcError> {
+    // Set a timeout for writing the response
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to set write timeout for JSON response");
+            IpcError::Io(e)
+        })?;
+
+    let json = serde_json::to_string(data)?;
+
+    writeln!(stream, "{}", json)
+        .map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to write JSON response to IPC stream");
+            IpcError::Io(e)
+        })?;
+
+    stream.flush()
+        .map_err(|e| {
+            tracing::warn!(error = ?e, "Failed to flush JSON response to IPC stream");
+            IpcError::Io(e)
+        })?;
+
+    tracing::debug!("JSON response sent successfully");
+    Ok(())
 }
 
 /// Generate the IPC socket path for the current user

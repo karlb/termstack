@@ -3,6 +3,7 @@
 //! Handles adding and removing windows (both terminals and external windows) to/from the layout.
 
 use smithay::desktop::Window;
+use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use crate::terminal_manager::TerminalId;
 use super::{FocusedWindow, LayoutNode, StackWindow, TermStack, WindowEntry, WindowState};
@@ -143,6 +144,104 @@ impl TermStack {
             window_count = self.layout_nodes.len(),
             "terminal added"
         );
+    }
+
+    /// Get terminal IDs in visual order (oldest/topmost first)
+    pub fn terminal_ids_in_order(&self) -> Vec<TerminalId> {
+        self.layout_nodes
+            .iter()
+            .filter_map(|node| match node.cell {
+                StackWindow::Terminal(id) => Some(id),
+                StackWindow::External(_) => None,
+            })
+            .collect()
+    }
+
+    /// Remove terminals from layout_nodes by ID
+    pub fn remove_terminals(&mut self, ids: &[TerminalId]) {
+        for id in ids {
+            if let Some(index) = self.layout_nodes.iter().position(|node| {
+                matches!(node.cell, StackWindow::Terminal(tid) if tid == *id)
+            }) {
+                self.layout_nodes.remove(index);
+                tracing::debug!(terminal_id = id.0, index, "terminal removed from layout");
+
+                // Clear focus if we're removing the focused terminal
+                if let Some(FocusedWindow::Terminal(focused_id)) = self.focused_window {
+                    if focused_id == *id {
+                        self.focused_window = None;
+                        self.invalidate_focused_index_cache();
+                    }
+                }
+            }
+        }
+
+        if !ids.is_empty() {
+            self.recalculate_layout();
+        }
+    }
+
+    /// Enforce terminal limit by removing oldest terminals
+    ///
+    /// Call this after adding a terminal to ensure we stay within max_terminals.
+    /// Removes oldest (topmost) terminals and returns their IDs.
+    pub fn enforce_terminal_limit(&mut self, terminal_manager: &mut crate::terminal_manager::TerminalManager) -> Vec<TerminalId> {
+        let ordered_ids = self.terminal_ids_in_order();
+        let removed_ids = terminal_manager.enforce_terminal_limit(&ordered_ids);
+
+        if !removed_ids.is_empty() {
+            self.remove_terminals(&removed_ids);
+        }
+
+        removed_ids
+    }
+
+    /// Count GUI windows spawned via `gui ...` (have an output_terminal)
+    pub fn count_gui_spawned_windows(&self) -> usize {
+        self.layout_nodes
+            .iter()
+            .filter(|node| matches!(&node.cell, StackWindow::External(entry) if entry.output_terminal.is_some()))
+            .count()
+    }
+
+    /// Enforce GUI window limit by closing oldest `gui`-spawned windows
+    ///
+    /// Only applies to windows spawned via `gui ...` (those with an output_terminal).
+    /// Other Wayland clients (e.g. xwayland-satellite popups) are unaffected.
+    pub fn enforce_gui_window_limit(&mut self, max_gui_windows: usize) {
+        let current_count = self.count_gui_spawned_windows();
+        if current_count <= max_gui_windows {
+            return;
+        }
+
+        let to_remove = current_count - max_gui_windows;
+
+        tracing::info!(
+            current = current_count,
+            max = max_gui_windows,
+            to_remove,
+            "GUI window limit exceeded, closing oldest gui-spawned windows"
+        );
+
+        // Collect toplevel surfaces of oldest gui-spawned windows (topmost first)
+        let toplevels_to_close: Vec<_> = self.layout_nodes
+            .iter()
+            .filter_map(|node| match &node.cell {
+                StackWindow::External(entry) if entry.output_terminal.is_some() => {
+                    Some(entry.surface.clone())
+                }
+                _ => None,
+            })
+            .take(to_remove)
+            .collect();
+
+        for toplevel in &toplevels_to_close {
+            toplevel.send_close();
+            tracing::info!(
+                surface_id = ?toplevel.wl_surface().id(),
+                "Sent close request to gui-spawned window to enforce limit"
+            );
+        }
     }
 
     /// Remove an external window by its surface

@@ -33,6 +33,18 @@ use crate::coords::RenderY;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TerminalId(pub u32);
 
+/// Error spawning a new terminal
+#[derive(Debug, thiserror::Error)]
+pub enum SpawnError {
+    /// Terminal creation failed
+    #[error("Terminal creation failed: {0}")]
+    CreationFailed(#[from] terminal::state::TerminalError),
+
+    /// Too many terminals (hit resource limit)
+    #[error("Cannot spawn terminal: maximum of {max} terminals reached")]
+    TooManyTerminals { max: usize },
+}
+
 /// Reason for terminal visibility state.
 ///
 /// Documents the lifecycle and purpose of a terminal without controlling visibility.
@@ -637,6 +649,9 @@ pub struct TerminalManager {
 
     /// Font size in pixels
     font_size: f32,
+
+    /// Maximum number of terminals allowed (prevents FD exhaustion)
+    max_terminals: usize,
 }
 
 impl TerminalManager {
@@ -663,12 +678,59 @@ impl TerminalManager {
             max_rows,
             theme,
             font_size,
+            max_terminals: 100, // Default limit
         }
     }
 
     /// Create a new terminal manager with default size
     pub fn new() -> Self {
         Self::new_with_size(800, 600, Theme::default(), 14.0)
+    }
+
+    /// Set the maximum number of terminals allowed
+    pub fn set_max_terminals(&mut self, max: usize) {
+        self.max_terminals = max;
+    }
+
+    /// Count active (non-exited) terminals
+    pub fn count_active(&self) -> usize {
+        self.terminals.values().filter(|t| !t.has_exited()).count()
+    }
+
+    /// Count dead (exited) terminals
+    pub fn count_dead(&self) -> usize {
+        self.terminals.values().filter(|t| t.has_exited()).count()
+    }
+
+    /// Remove terminals to stay within max_terminals limit
+    ///
+    /// Pass terminal IDs in visual order (oldest/topmost first).
+    /// Returns the IDs of terminals that were removed.
+    pub fn enforce_terminal_limit(&mut self, ordered_terminal_ids: &[TerminalId]) -> Vec<TerminalId> {
+        let current_count = self.terminals.len();
+        if current_count <= self.max_terminals {
+            return Vec::new();
+        }
+
+        let to_remove = current_count - self.max_terminals;
+        let mut removed = Vec::new();
+
+        tracing::info!(
+            current = current_count,
+            max = self.max_terminals,
+            to_remove,
+            "Terminal limit exceeded, removing oldest terminals"
+        );
+
+        // Remove oldest terminals (from beginning of visual order)
+        for id in ordered_terminal_ids.iter().take(to_remove) {
+            if self.terminals.remove(id).is_some() {
+                tracing::info!(id = id.0, "Removed terminal to enforce limit");
+                removed.push(*id);
+            }
+        }
+
+        removed
     }
 
     /// Get the focused terminal mutably based on the compositor's focused window
@@ -741,7 +803,9 @@ impl TerminalManager {
     }
 
     /// Spawn a new terminal
-    pub fn spawn(&mut self) -> Result<TerminalId, terminal::state::TerminalError> {
+    pub fn spawn(&mut self) -> Result<TerminalId, SpawnError> {
+        // Check terminal count limit - if at max, we'll remove oldest later
+        // (done after ID allocation to avoid removing the terminal we're spawning)
         let id = TerminalId(self.next_id);
         self.next_id += 1;
 
@@ -913,7 +977,9 @@ impl TerminalManager {
         working_dir: &Path,
         env: &HashMap<String, String>,
         parent: Option<TerminalId>,
-    ) -> Result<TerminalId, terminal::state::TerminalError> {
+    ) -> Result<TerminalId, SpawnError> {
+        // Check terminal count limit - if at max, we'll remove oldest later
+        // (done after ID allocation to avoid removing the terminal we're spawning)
         let id = TerminalId(self.next_id);
         self.next_id += 1;
 

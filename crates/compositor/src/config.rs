@@ -63,6 +63,22 @@ pub struct Config {
     /// App IDs that use client-side decorations (skip compositor title bar)
     /// Supports prefix matching with "*" (e.g., "org.gnome.*")
     pub csd_apps: Vec<String>,
+
+    /// Maximum number of terminals allowed (default: 100)
+    /// Prevents file descriptor exhaustion
+    pub max_terminals: usize,
+
+    /// Maximum number of GUI windows allowed (default: 50)
+    /// Oldest windows are automatically closed when limit is reached
+    pub max_gui_windows: usize,
+
+    /// Maximum number of dead terminals to keep (default: 20)
+    /// Older dead terminals are removed when limit is reached
+    pub max_dead_terminals: usize,
+
+    /// Time to live for dead terminals in minutes (default: 60)
+    /// Dead terminals older than this are automatically cleaned up
+    pub dead_terminal_ttl_minutes: u64,
 }
 
 impl Default for Config {
@@ -79,6 +95,10 @@ impl Default for Config {
             auto_scroll: true,
             keyboard: KeyboardConfig::default(),
             csd_apps: Vec::new(),
+            max_terminals: 100,
+            max_gui_windows: 50,
+            max_dead_terminals: 20,
+            dead_terminal_ttl_minutes: 60,
         }
     }
 }

@@ -440,6 +440,9 @@ pub struct TermStack {
     /// App IDs that use client-side decorations (from config)
     pub csd_apps: Vec<String>,
 
+    /// Maximum number of GUI windows allowed (from config)
+    pub max_gui_windows: usize,
+
     // XWayland support (via xwayland-satellite)
     /// xwayland-satellite process monitor (acts as X11 WM, presents X11 windows as Wayland)
     /// Includes crash tracking for auto-restart with backoff
@@ -637,6 +640,7 @@ impl TermStack {
         loop_handle: LoopHandle<'static, Self>,
         output_size: Size<i32, Physical>,
         csd_apps: Vec<String>,
+        max_gui_windows: usize,
     ) -> (Self, Display<Self>) {
         let display_handle = display.handle();
 
@@ -709,6 +713,7 @@ impl TermStack {
             pointer_buttons_pressed: 0,
             compositor_window_resize_pending: None,
             csd_apps,
+            max_gui_windows,
             xwayland_satellite: None,
             x11_display_number: None,
             spawn_initial_terminal: false,
@@ -1111,6 +1116,9 @@ impl XdgShellHandler for TermStack {
         surface.send_configure();
 
         self.add_window(surface);
+
+        // Enforce GUI window limit
+        self.enforce_gui_window_limit(self.max_gui_windows);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {

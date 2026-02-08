@@ -158,8 +158,11 @@ impl Terminal {
         let parser = ansi::Processor::new();
 
         // Create renderer with font and theme
-        let font_config = crate::render::FontConfig::default_font_with_size(font_size);
-        let renderer = TerminalRenderer::with_font_and_theme(font_config, theme);
+        let renderer = if let Some(font_config) = crate::render::FontConfig::default_font_with_size(font_size) {
+            TerminalRenderer::with_font_and_theme(font_config, theme)
+        } else {
+            TerminalRenderer::with_theme(theme)
+        };
 
         // Create sizing state with visual row count (will grow as content arrives)
         let sizing = TerminalSizingState::new(rows);
@@ -246,8 +249,11 @@ impl Terminal {
         let parser = ansi::Processor::new();
 
         // Create renderer with font and theme
-        let font_config = crate::render::FontConfig::default_font_with_size(font_size);
-        let renderer = TerminalRenderer::with_font_and_theme(font_config, theme);
+        let renderer = if let Some(font_config) = crate::render::FontConfig::default_font_with_size(font_size) {
+            TerminalRenderer::with_font_and_theme(font_config, theme)
+        } else {
+            TerminalRenderer::with_theme(theme)
+        };
 
         // Create sizing state with VISUAL rows (triggers growth based on visual size)
         let sizing = TerminalSizingState::new(visual_rows);

@@ -160,6 +160,7 @@ pub fn handle_terminal_spawn(
     match terminal_manager.spawn() {
         Ok(id) => {
             compositor.add_terminal(id);
+            compositor.enforce_terminal_limit(terminal_manager);
 
             // Update cell heights
             let new_heights = calculate_window_heights(compositor, terminal_manager);

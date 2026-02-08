@@ -86,8 +86,8 @@ impl FontConfig {
     }
 
     /// Create default font config with the given size
-    /// Uses a system font or falls back to basic dimensions
-    pub fn default_font_with_size(size: f32) -> Self {
+    /// Returns None if no font is available (graceful degradation)
+    pub fn try_default_font_with_size(size: f32) -> Option<Self> {
         // Try to load a monospace font from common locations
         let font_paths = [
             // DejaVu Sans Mono
@@ -113,26 +113,33 @@ impl FontConfig {
             if let Ok(data) = std::fs::read(path) {
                 if let Some(config) = Self::from_bytes(&data, size) {
                     tracing::info!("Loaded font from: {} (size {})", path, size);
-                    return config;
+                    return Some(config);
                 }
             }
         }
-        tracing::warn!("No font found in standard paths, trying fallback");
 
-        // Fallback to minimal config without font
-        Self::minimal()
+        tracing::error!(
+            "No monospace font found in standard paths. \
+             Terminal text will not render. \
+             Install a monospace font:\n\
+             - Debian/Ubuntu: sudo apt install fonts-dejavu\n\
+             - Fedora/RHEL: sudo dnf install dejavu-sans-mono-fonts\n\
+             - Arch: sudo pacman -S ttf-dejavu"
+        );
+
+        None
+    }
+
+    /// Create default font config with the given size
+    /// Returns None if no system font is available (renderer will skip text)
+    pub fn default_font_with_size(size: f32) -> Option<Self> {
+        Self::try_default_font_with_size(size)
     }
 
     /// Create default font config with default size (14.0)
-    /// Uses a system font or falls back to basic dimensions
-    pub fn default_font() -> Self {
+    /// Returns None if no system font is available
+    pub fn default_font() -> Option<Self> {
         Self::default_font_with_size(14.0)
-    }
-
-    fn minimal() -> Self {
-        // Create minimal font config for when no font is available
-        // We won't be able to render text, but dimensions will work
-        panic!("No font available - please install a monospace font like DejaVu Sans Mono")
     }
 }
 
