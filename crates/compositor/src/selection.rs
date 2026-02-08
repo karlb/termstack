@@ -12,6 +12,9 @@ use crate::state::{CrossSelection, StackWindow, TermStack, WindowPosition};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{TITLE_BAR_HEIGHT, TITLE_BAR_PADDING};
 
+/// Maximum number of windows a selection can span
+const MAX_SELECTION_WINDOWS: usize = 50;
+
 /// Determine which window and what position within it a click landed on
 ///
 /// Returns (window_index, position) where position indicates whether the click
@@ -176,12 +179,16 @@ pub fn update_cross_selection(
     // Get start anchor info (clone to avoid borrow issues)
     let start = compositor.cross_selection.as_ref().unwrap().start.clone();
 
+    // Clamp selection span to MAX_SELECTION_WINDOWS
+    let clamped_end_window = clamp_selection_window(start.window_index, end_window);
+
     // Update end position
     if let Some(sel) = &mut compositor.cross_selection {
-        sel.end.window_index = end_window;
+        sel.end.window_index = clamped_end_window;
         sel.end.position = end_position.clone();
         sel.last_update = now;
     }
+    let end_window = clamped_end_window;
 
     // Update terminal internal selections based on new range
     update_terminal_selections_for_range(compositor, terminals, &start, end_window, &end_position);
@@ -449,6 +456,34 @@ fn extract_cross_selection_text(
     }
 }
 
+/// Clamp the end window index so the selection spans at most MAX_SELECTION_WINDOWS
+fn clamp_selection_window(start_window: usize, end_window: usize) -> usize {
+    let span = if end_window >= start_window {
+        end_window - start_window + 1
+    } else {
+        start_window - end_window + 1
+    };
+
+    if span <= MAX_SELECTION_WINDOWS {
+        return end_window;
+    }
+
+    let clamped = if end_window >= start_window {
+        start_window + MAX_SELECTION_WINDOWS - 1
+    } else {
+        start_window.saturating_sub(MAX_SELECTION_WINDOWS - 1)
+    };
+
+    tracing::warn!(
+        start_window,
+        end_window,
+        clamped,
+        max = MAX_SELECTION_WINDOWS,
+        "selection span exceeds limit, clamping"
+    );
+    clamped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +521,22 @@ mod tests {
         let sel = CrossSelection::new(2, WindowPosition::Content { col: 5, row: 10 });
         assert!(!sel.is_multi_window());
         assert_eq!(sel.window_range(), (2, 2));
+    }
+
+    #[test]
+    fn selection_window_clamping() {
+        // Within limit - no clamping
+        assert_eq!(clamp_selection_window(0, 10), 10);
+        assert_eq!(clamp_selection_window(10, 0), 0);
+
+        // At limit - no clamping
+        assert_eq!(clamp_selection_window(0, MAX_SELECTION_WINDOWS - 1), MAX_SELECTION_WINDOWS - 1);
+
+        // Exceeds limit - clamped (dragging down)
+        assert_eq!(clamp_selection_window(0, 100), MAX_SELECTION_WINDOWS - 1);
+
+        // Exceeds limit - clamped (dragging up)
+        assert_eq!(clamp_selection_window(100, 0), 100 - MAX_SELECTION_WINDOWS + 1);
     }
 
     #[test]

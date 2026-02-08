@@ -195,6 +195,9 @@ pub struct ManagedTerminal {
     /// When this terminal exits, the parent is unhidden
     pub parent: Option<TerminalId>,
 
+    /// When the terminal process exited (for TTL-based cleanup)
+    death_time: Option<std::time::Instant>,
+
     /// Previous alternate screen state (for detecting transitions)
     prev_alt_screen: bool,
 
@@ -236,6 +239,7 @@ impl ManagedTerminal {
             exited: false,
             visibility: VisibilityState::new_shell(),
             parent: None,
+            death_time: None,
             prev_alt_screen: false,
             manually_sized: false,
             pending_write: Vec::new(),
@@ -292,6 +296,7 @@ impl ManagedTerminal {
             exited: false,
             visibility: VisibilityState::new_command(),
             parent,
+            death_time: None,
             prev_alt_screen: false,
             manually_sized: false,
             pending_write: Vec::new(),
@@ -478,6 +483,7 @@ impl ManagedTerminal {
     /// Mark terminal as exited (hides cursor on next render)
     pub fn mark_exited(&mut self) {
         self.exited = true;
+        self.death_time = Some(std::time::Instant::now());
     }
 
     /// Check if terminal process has exited
@@ -652,6 +658,12 @@ pub struct TerminalManager {
 
     /// Maximum number of terminals allowed (prevents FD exhaustion)
     max_terminals: usize,
+
+    /// Maximum number of dead terminals to keep
+    max_dead_terminals: usize,
+
+    /// Time to live for dead terminals
+    dead_terminal_ttl: std::time::Duration,
 }
 
 impl TerminalManager {
@@ -678,7 +690,9 @@ impl TerminalManager {
             max_rows,
             theme,
             font_size,
-            max_terminals: 100, // Default limit
+            max_terminals: 100,
+            max_dead_terminals: 20,
+            dead_terminal_ttl: std::time::Duration::from_secs(60 * 60),
         }
     }
 
@@ -700,6 +714,65 @@ impl TerminalManager {
     /// Count dead (exited) terminals
     pub fn count_dead(&self) -> usize {
         self.terminals.values().filter(|t| t.has_exited()).count()
+    }
+
+    /// Set maximum dead terminals to keep
+    pub fn set_max_dead_terminals(&mut self, max: usize) {
+        self.max_dead_terminals = max;
+    }
+
+    /// Set TTL for dead terminals
+    pub fn set_dead_terminal_ttl(&mut self, ttl: std::time::Duration) {
+        self.dead_terminal_ttl = ttl;
+    }
+
+    /// Clean up dead terminals that exceed TTL or max count.
+    ///
+    /// Returns IDs of terminals that were removed (caller must remove from layout_nodes).
+    pub fn cleanup_dead_terminals(&mut self) -> Vec<TerminalId> {
+        let now = std::time::Instant::now();
+        let mut removed = Vec::new();
+
+        // Remove terminals older than TTL
+        let expired: Vec<TerminalId> = self.terminals
+            .iter()
+            .filter_map(|(id, term)| {
+                if let Some(death_time) = term.death_time {
+                    if now.duration_since(death_time) > self.dead_terminal_ttl {
+                        return Some(*id);
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for id in expired {
+            self.terminals.remove(&id);
+            removed.push(id);
+            tracing::info!(id = id.0, "removed dead terminal (TTL expired)");
+        }
+
+        // Enforce max dead terminals (remove oldest first)
+        let mut dead: Vec<_> = self.terminals
+            .iter()
+            .filter_map(|(id, term)| {
+                term.death_time.map(|dt| (*id, dt))
+            })
+            .collect();
+
+        if dead.len() > self.max_dead_terminals {
+            // Sort by death time (oldest first)
+            dead.sort_by_key(|(_, dt)| *dt);
+            let to_remove = dead.len() - self.max_dead_terminals;
+            for (id, _) in dead.iter().take(to_remove) {
+                if self.terminals.remove(id).is_some() {
+                    removed.push(*id);
+                    tracing::info!(id = id.0, "removed dead terminal (max_dead_terminals exceeded)");
+                }
+            }
+        }
+
+        removed
     }
 
     /// Remove terminals to stay within max_terminals limit
@@ -938,6 +1011,7 @@ impl TerminalManager {
                 reason: VisibilityReason::HasOutput, // Treat as having output
             },
             parent: None,
+            death_time: None,
             prev_alt_screen: false,
             manually_sized: false,
             pending_write: Vec::new(),

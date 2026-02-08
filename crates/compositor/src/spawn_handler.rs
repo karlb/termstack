@@ -148,6 +148,7 @@ pub fn handle_gui_spawn_requests(
                 compositor.pending_window_output_terminal = Some(output_terminal_id);
                 compositor.pending_window_command = Some(request.command.clone());
                 compositor.pending_gui_foreground = foreground;
+                compositor.pending_window_set_at = Some(std::time::Instant::now());
 
                 // If foreground mode, hide launching terminal and track the session
                 if foreground {
@@ -357,6 +358,7 @@ fn process_spawn_request(
             if compositor.pending_window_output_terminal.is_none() {
                 compositor.pending_window_output_terminal = Some(id);
                 compositor.pending_window_command = Some(request.command.clone());
+                compositor.pending_window_set_at = Some(std::time::Instant::now());
                 tracing::info!(id = id.0, command = %request.command, "set as pending output terminal for GUI windows");
             } else {
                 tracing::debug!(

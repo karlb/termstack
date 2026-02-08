@@ -133,6 +133,16 @@ impl TermStack {
     pub fn focused_index(&self) -> Option<usize> {
         // Check cache first
         if let Some(cached) = self.cached_focused_index.get() {
+            // Debug assertion: verify cache consistency
+            #[cfg(debug_assertions)]
+            {
+                let computed = self.compute_focused_index();
+                debug_assert_eq!(
+                    cached, computed,
+                    "focused_index cache is stale: cached={:?}, computed={:?}, focused_window={:?}",
+                    cached, computed, self.focused_window
+                );
+            }
             return cached;
         }
 

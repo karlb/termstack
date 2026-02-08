@@ -160,6 +160,9 @@ impl TermStack {
     /// Remove terminals from layout_nodes by ID
     pub fn remove_terminals(&mut self, ids: &[TerminalId]) {
         for id in ids {
+            // Clear resize drag if it targets this terminal
+            self.clear_resize_drag_for_terminal(*id);
+
             if let Some(index) = self.layout_nodes.iter().position(|node| {
                 matches!(node.cell, StackWindow::Terminal(tid) if tid == *id)
             }) {
@@ -250,6 +253,14 @@ impl TermStack {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
             matches!(&node.cell, StackWindow::External(entry) if entry.surface.wl_surface() == surface)
         }) {
+            // Clear resize drag if it targets this window
+            if let Some(drag) = &self.resizing {
+                if drag.window_index == index {
+                    tracing::info!(index, "clearing resize drag for removed external window");
+                    self.resizing = None;
+                }
+            }
+
             let (output_terminal, is_foreground_gui, launcher_terminal) = if let StackWindow::External(entry) = &self.layout_nodes.remove(index).cell {
                 self.space.unmap_elem(&entry.window);
                 (entry.output_terminal, entry.is_foreground_gui, entry.launcher_terminal)
@@ -316,6 +327,7 @@ impl TermStack {
         if let Some(index) = self.layout_nodes.iter().position(|node| {
             matches!(node.cell, StackWindow::Terminal(tid) if tid == id)
         }) {
+            self.clear_resize_drag_for_terminal(id);
             self.layout_nodes.remove(index);
             self.update_focus_after_removal(index);
             self.recalculate_layout();

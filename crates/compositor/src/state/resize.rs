@@ -8,8 +8,10 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::Sta
 use smithay::utils::{Size, SERIAL_COUNTER};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
-use super::{StackWindow, TermStack, WindowState};
+use smithay::reexports::wayland_server::Resource;
+use super::{FocusedWindow, StackWindow, TermStack, WindowState};
 use crate::coords::ScreenY;
+use crate::terminal_manager::TerminalId;
 
 // Constants
 const RESIZE_TIMEOUT_MS: u128 = 5000;
@@ -425,5 +427,47 @@ impl TermStack {
 
         tracing::debug!(screen_y = screen_y_value, "find_resize_handle_at: no handle found");
         None
+    }
+
+    /// Clear resize drag if the dragged window no longer exists or has moved.
+    ///
+    /// Call this after removing windows from layout_nodes. The identity check
+    /// ensures we don't accidentally resize the wrong window if indices shifted.
+    pub fn clear_stale_resize_drag(&mut self) {
+        let Some(drag) = &self.resizing else { return };
+
+        let is_valid = if let Some(node) = self.layout_nodes.get(drag.window_index) {
+            // Verify the identity at the stored index still matches
+            match (&node.cell, &drag.window_identity) {
+                (StackWindow::Terminal(id), FocusedWindow::Terminal(drag_id)) => id == drag_id,
+                (StackWindow::External(entry), FocusedWindow::External(drag_id)) => {
+                    entry.surface.wl_surface().id() == *drag_id
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+
+        if !is_valid {
+            tracing::info!(
+                window_index = drag.window_index,
+                "clearing stale resize drag (window removed or shifted)"
+            );
+            self.resizing = None;
+        }
+    }
+
+    /// Clear resize drag if it targets the given terminal ID
+    pub fn clear_resize_drag_for_terminal(&mut self, id: TerminalId) {
+        if let Some(drag) = &self.resizing {
+            if drag.window_identity == FocusedWindow::Terminal(id) {
+                tracing::info!(
+                    terminal_id = id.0,
+                    "clearing resize drag for removed terminal"
+                );
+                self.resizing = None;
+            }
+        }
     }
 }

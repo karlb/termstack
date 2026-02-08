@@ -13,6 +13,18 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use thiserror::Error;
 
+/// Maximum IPC message size (1 MB)
+const MAX_IPC_MESSAGE_SIZE: usize = 1024 * 1024;
+
+/// Maximum number of environment variables in a spawn request
+const MAX_ENV_VARS: usize = 1000;
+
+/// Maximum size of a single environment variable (key + value)
+const MAX_ENV_VAR_SIZE: usize = 1024 * 10; // 10 KB
+
+/// Maximum command string size
+const MAX_COMMAND_SIZE: usize = 1024 * 10; // 10 KB
+
 /// IPC errors
 #[derive(Debug, Error)]
 pub enum IpcError {
@@ -31,6 +43,14 @@ pub enum IpcError {
     /// Empty message received
     #[error("empty message received")]
     EmptyMessage,
+
+    /// Message too large
+    #[error("message too large: {size} bytes (max {max})")]
+    MessageTooLarge { size: usize, max: usize },
+
+    /// Validation error
+    #[error("validation error: {0}")]
+    ValidationError(String),
 }
 
 /// Resize mode for terminals
@@ -181,6 +201,14 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
         return Err(IpcError::EmptyMessage);
     }
 
+    // Check message size before parsing
+    if line.len() > MAX_IPC_MESSAGE_SIZE {
+        return Err(IpcError::MessageTooLarge {
+            size: line.len(),
+            max: MAX_IPC_MESSAGE_SIZE,
+        });
+    }
+
     tracing::debug!(message = %line.trim(), "received IPC message");
 
     // Parse JSON
@@ -191,6 +219,27 @@ pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), 
 
     match message {
         IpcMessage::Spawn { prompt, command, cwd, env, foreground } => {
+            // Validate spawn request fields
+            if command.len() > MAX_COMMAND_SIZE {
+                return Err(IpcError::ValidationError(format!(
+                    "command too large: {} bytes (max {})", command.len(), MAX_COMMAND_SIZE
+                )));
+            }
+            if env.len() > MAX_ENV_VARS {
+                return Err(IpcError::ValidationError(format!(
+                    "too many environment variables: {} (max {})", env.len(), MAX_ENV_VARS
+                )));
+            }
+            for (key, value) in &env {
+                let total = key.len() + value.len();
+                if total > MAX_ENV_VAR_SIZE {
+                    return Err(IpcError::ValidationError(format!(
+                        "environment variable too large: {}={} ({} bytes, max {})",
+                        key, &value[..value.len().min(20)], total, MAX_ENV_VAR_SIZE
+                    )));
+                }
+            }
+
             let spawn_type = match foreground {
                 None => "terminal",
                 Some(true) => "gui (foreground)",

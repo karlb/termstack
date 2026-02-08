@@ -237,6 +237,8 @@ pub enum FocusedWindow {
 pub struct ResizeDrag {
     /// Index of the cell being resized
     pub window_index: usize,
+    /// Identity of the window being resized (for stale index detection)
+    pub window_identity: FocusedWindow,
     /// Initial pointer Y in screen coordinates (Y=0 at top)
     pub start_screen_y: i32,
     /// Cell height when drag started
@@ -362,6 +364,9 @@ pub struct TermStack {
     /// Set when processing a gui_spawn request, consumed by add_window()
     pub pending_gui_foreground: bool,
 
+    /// When the pending window state was set (for timeout detection)
+    pub pending_window_set_at: Option<Instant>,
+
     /// Maps output_terminal_id -> (launching_terminal_id, window_was_linked)
     /// For restoring launcher when GUI exits. The bool tracks whether a window
     /// was ever linked to this output terminal.
@@ -385,6 +390,9 @@ pub struct TermStack {
     /// and sends the result here to avoid blocking the compositor.
     pub clipboard_receiver: Option<mpsc::Receiver<String>>,
 
+    /// When the clipboard read was started (for timeout detection)
+    pub clipboard_read_started_at: Option<Instant>,
+
     /// Pending paste request (set by keybinding, triggers async clipboard read)
     pub pending_paste: bool,
 
@@ -393,6 +401,9 @@ pub struct TermStack {
 
     /// Receiver for async PRIMARY selection read results (middle-click paste).
     pub primary_selection_receiver: Option<mpsc::Receiver<String>>,
+
+    /// When the PRIMARY selection read was started (for timeout detection)
+    pub primary_selection_read_started_at: Option<Instant>,
 
     /// Active selection state, set when mouse button is pressed on a terminal, cleared on release.
     /// See [`SelectionState`] for field details.
@@ -693,14 +704,17 @@ impl TermStack {
             pending_gui_spawn_requests: Vec::new(),
             pending_builtin_requests: Vec::new(),
             pending_gui_foreground: false,
+            pending_window_set_at: None,
             foreground_gui_sessions: HashMap::new(),
             pending_output_terminal_cleanup: Vec::new(),
             pending_launcher_restoration: Vec::new(),
             clipboard: arboard::Clipboard::new().ok(),
             clipboard_receiver: None,
+            clipboard_read_started_at: None,
             pending_paste: false,
             pending_copy: false,
             primary_selection_receiver: None,
+            primary_selection_read_started_at: None,
             selecting: None,
             cross_selection: None,
             title_bar_char_info: HashMap::new(),
@@ -993,6 +1007,7 @@ impl TermStack {
             match receiver.try_recv() {
                 Ok(text) => {
                     self.primary_selection_receiver = None;
+                    self.primary_selection_read_started_at = None;
                     if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
                         if terminal.has_exited() {
                             tracing::debug!("ignoring primary paste to exited terminal");
@@ -1004,12 +1019,60 @@ impl TermStack {
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    // Still waiting
+                    // Still waiting - check for timeout
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.primary_selection_receiver = None;
+                    self.primary_selection_read_started_at = None;
                     tracing::debug!("PRIMARY selection read thread disconnected");
                 }
+            }
+        }
+    }
+
+    /// Timeout stale clipboard and PRIMARY selection reads
+    ///
+    /// If a clipboard read has been pending for too long (clipboard owner unresponsive),
+    /// drop the receiver so future paste operations aren't blocked.
+    pub fn timeout_stale_clipboard_reads(&mut self) {
+        const CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+        let now = Instant::now();
+
+        if let Some(started) = self.clipboard_read_started_at {
+            if now.duration_since(started) > CLIPBOARD_TIMEOUT {
+                self.clipboard_receiver = None;
+                self.clipboard_read_started_at = None;
+                tracing::warn!("clipboard read timed out after {:?}, unblocking paste", CLIPBOARD_TIMEOUT);
+            }
+        }
+
+        if let Some(started) = self.primary_selection_read_started_at {
+            if now.duration_since(started) > CLIPBOARD_TIMEOUT {
+                self.primary_selection_receiver = None;
+                self.primary_selection_read_started_at = None;
+                tracing::warn!("PRIMARY selection read timed out after {:?}, unblocking paste", CLIPBOARD_TIMEOUT);
+            }
+        }
+    }
+
+    /// Clear pending GUI window state if it has been stale for too long
+    ///
+    /// If a GUI app was spawned but never opened a window, the pending state
+    /// would incorrectly link the next unrelated window. This timeout prevents that.
+    pub fn timeout_stale_pending_window(&mut self) {
+        const PENDING_WINDOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+        if let Some(set_at) = self.pending_window_set_at {
+            if Instant::now().duration_since(set_at) > PENDING_WINDOW_TIMEOUT {
+                let command = self.pending_window_command.take().unwrap_or_default();
+                self.pending_window_output_terminal = None;
+                self.pending_gui_foreground = false;
+                self.pending_window_set_at = None;
+                tracing::warn!(
+                    command = %command,
+                    "pending GUI window state timed out after {:?}, clearing",
+                    PENDING_WINDOW_TIMEOUT
+                );
             }
         }
     }

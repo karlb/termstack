@@ -27,7 +27,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use crate::coords::{RenderY, ScreenY};
 use crate::render::FOCUS_INDICATOR_WIDTH;
 use crate::selection;
-use crate::state::{SelectionState, StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
+use crate::state::{FocusedWindow, SelectionState, StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
@@ -57,6 +57,7 @@ fn spawn_primary_selection_read(state: &mut TermStack) {
     let host_display = std::env::var("HOST_DISPLAY").ok();
     let (tx, rx) = std::sync::mpsc::channel();
     state.primary_selection_receiver = Some(rx);
+    state.primary_selection_read_started_at = Some(std::time::Instant::now());
 
     std::thread::spawn(move || {
         use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind};
@@ -456,6 +457,7 @@ impl TermStack {
                     // the clipboard owner to respond (can take several seconds)
                     let (tx, rx) = std::sync::mpsc::channel();
                     self.clipboard_receiver = Some(rx);
+                    self.clipboard_read_started_at = Some(std::time::Instant::now());
 
                     std::thread::spawn(move || {
                         // Temporarily set DISPLAY for this thread so arboard can connect
@@ -490,7 +492,8 @@ impl TermStack {
             if let Some(ref receiver) = self.clipboard_receiver {
                 match receiver.try_recv() {
                     Ok(text) => {
-                        self.clipboard_receiver = None; // Clear receiver, read complete
+                        self.clipboard_receiver = None;
+                        self.clipboard_read_started_at = None;
                         if let Some(terminal) = terminals.get_focused_mut(self.focused_window.as_ref()) {
                             // Only paste if terminal process is still running
                             if terminal.has_exited() {
@@ -508,6 +511,7 @@ impl TermStack {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         // Thread finished without sending (error case)
                         self.clipboard_receiver = None;
+                        self.clipboard_read_started_at = None;
                         tracing::debug!("clipboard read thread disconnected without result");
                     }
                 }
@@ -672,6 +676,10 @@ impl TermStack {
         self.cursor_on_resize_handle = on_resize_handle || self.resizing.is_some();
 
         // Handle resize drag if active
+        if self.resizing.is_some() {
+            // Validate identity before proceeding (window may have been removed/shifted)
+            self.clear_stale_resize_drag();
+        }
         if let Some(drag) = &self.resizing {
             let window_index = drag.window_index;
             let delta = screen_y.value() as i32 - drag.start_screen_y;
@@ -952,8 +960,17 @@ impl TermStack {
                         raw_height
                     };
 
+                    // Extract window identity for stale index detection
+                    let window_identity = match &self.layout_nodes[window_index].cell {
+                        StackWindow::Terminal(id) => FocusedWindow::Terminal(*id),
+                        StackWindow::External(entry) => {
+                            FocusedWindow::External(entry.surface.wl_surface().id())
+                        }
+                    };
+
                     self.resizing = Some(ResizeDrag {
                         window_index,
+                        window_identity,
                         start_screen_y: screen_y.value() as i32,
                         start_height,
                         last_configure_time: std::time::Instant::now(),

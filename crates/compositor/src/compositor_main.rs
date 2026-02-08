@@ -293,6 +293,8 @@ fn run_compositor_headless() -> anyhow::Result<()> {
         config.font_size,
     );
     terminal_manager.set_max_terminals(config.max_terminals);
+    terminal_manager.set_max_dead_terminals(config.max_dead_terminals);
+    terminal_manager.set_dead_terminal_ttl(std::time::Duration::from_secs(config.dead_terminal_ttl_minutes * 60));
 
     tracing::info!("headless compositor entering main loop");
 
@@ -778,6 +780,8 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         config.font_size,
     );
     terminal_manager.set_max_terminals(config.max_terminals);
+    terminal_manager.set_max_dead_terminals(config.max_dead_terminals);
+    terminal_manager.set_dead_terminal_ttl(std::time::Duration::from_secs(config.dead_terminal_ttl_minutes * 60));
 
     // Create title bar renderer for external windows
     let mut title_bar_renderer = TitleBarRenderer::new(terminal_theme);
@@ -883,6 +887,10 @@ fn run_compositor_x11() -> anyhow::Result<()> {
 
         // Process pending PRIMARY selection paste (from middle-click)
         compositor.process_primary_selection_paste(&mut terminal_manager);
+
+        // Timeout stale clipboard reads and pending GUI window state
+        compositor.timeout_stale_clipboard_reads();
+        compositor.timeout_stale_pending_window();
 
         // Handle X11 resize events
         if let Some((new_w, new_h)) = compositor.compositor_window_resize_pending.take() {

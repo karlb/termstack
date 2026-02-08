@@ -347,8 +347,15 @@ pub fn cleanup_and_sync_focus(
         }
     }
 
+    // Clean up dead terminals that exceed TTL or max count
+    let ttl_removed = terminal_manager.cleanup_dead_terminals();
+    for id in &ttl_removed {
+        compositor.remove_terminal(*id);
+    }
+
     // Check if all cells are gone
-    if !dead.is_empty() && compositor.layout_nodes.is_empty() {
+    let all_dead = !dead.is_empty() || !ttl_removed.is_empty();
+    if all_dead && compositor.layout_nodes.is_empty() {
         tracing::info!("all cells removed, shutting down");
         return true;
     }

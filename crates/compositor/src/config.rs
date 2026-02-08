@@ -139,7 +139,70 @@ impl Default for KeyboardConfig {
     }
 }
 
+/// Configuration validation errors
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigValidationError {
+    #[error("font_size {0} out of range (must be 6.0..=72.0)")]
+    InvalidFontSize(f32),
+    #[error("min_window_height {0} out of range (must be 20..=1000)")]
+    InvalidMinHeight(u32),
+    #[error("max_window_height ({max}) is less than min_window_height ({min})")]
+    MaxLessThanMin { min: u32, max: u32 },
+    #[error("scroll_speed {0} out of range (must be 0.1..=10.0)")]
+    InvalidScrollSpeed(f64),
+    #[error("max_terminals {0} out of range (must be 1..=1000)")]
+    InvalidMaxTerminals(usize),
+    #[error("max_gui_windows {0} out of range (must be 1..=1000)")]
+    InvalidMaxGuiWindows(usize),
+    #[error("max_dead_terminals {0} out of range (must be 0..=1000)")]
+    InvalidMaxDeadTerminals(usize),
+    #[error("dead_terminal_ttl_minutes {0} out of range (must be 1..=10080)")]
+    InvalidDeadTerminalTtl(u64),
+    #[error("repeat_delay {0} out of range (must be 100..=2000)")]
+    InvalidRepeatDelay(u32),
+    #[error("repeat_rate {0} out of range (must be 1..=100)")]
+    InvalidRepeatRate(u32),
+}
+
 impl Config {
+    /// Validate configuration values, returning the first error found
+    pub fn validate(&self) -> Result<(), ConfigValidationError> {
+        if !(6.0..=72.0).contains(&self.font_size) {
+            return Err(ConfigValidationError::InvalidFontSize(self.font_size));
+        }
+        if !(20..=1000).contains(&self.min_window_height) {
+            return Err(ConfigValidationError::InvalidMinHeight(self.min_window_height));
+        }
+        if self.max_window_height != 0 && self.max_window_height < self.min_window_height {
+            return Err(ConfigValidationError::MaxLessThanMin {
+                min: self.min_window_height,
+                max: self.max_window_height,
+            });
+        }
+        if !(0.1..=10.0).contains(&self.scroll_speed) {
+            return Err(ConfigValidationError::InvalidScrollSpeed(self.scroll_speed));
+        }
+        if !(1..=1000).contains(&self.max_terminals) {
+            return Err(ConfigValidationError::InvalidMaxTerminals(self.max_terminals));
+        }
+        if !(1..=1000).contains(&self.max_gui_windows) {
+            return Err(ConfigValidationError::InvalidMaxGuiWindows(self.max_gui_windows));
+        }
+        if self.max_dead_terminals > 1000 {
+            return Err(ConfigValidationError::InvalidMaxDeadTerminals(self.max_dead_terminals));
+        }
+        if !(1..=10080).contains(&self.dead_terminal_ttl_minutes) {
+            return Err(ConfigValidationError::InvalidDeadTerminalTtl(self.dead_terminal_ttl_minutes));
+        }
+        if !(100..=2000).contains(&self.keyboard.repeat_delay) {
+            return Err(ConfigValidationError::InvalidRepeatDelay(self.keyboard.repeat_delay));
+        }
+        if !(1..=100).contains(&self.keyboard.repeat_rate) {
+            return Err(ConfigValidationError::InvalidRepeatRate(self.keyboard.repeat_rate));
+        }
+        Ok(())
+    }
+
     /// Load configuration from file, falling back to defaults
     pub fn load() -> Self {
         let config_paths = [
@@ -152,6 +215,11 @@ impl Config {
                 match std::fs::read_to_string(&path) {
                     Ok(content) => match toml::from_str::<Config>(&content) {
                         Ok(mut config) => {
+                            // Validate before using
+                            if let Err(e) = config.validate() {
+                                tracing::error!(?path, error = %e, "invalid config value, using defaults");
+                                return Self::default();
+                            }
                             // Apply theme-based background if not explicitly set
                             // (check if it's still the dark default when theme is light)
                             config.apply_theme_defaults();
@@ -385,6 +453,85 @@ mod tests {
         // Now background should be light theme color
         let expected = Theme::Light.background_color();
         assert_eq!(config.background_color, expected);
+    }
+
+    // ========== Config::validate tests ==========
+
+    #[test]
+    fn validate_default_config_passes() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_font_size_too_small() {
+        let mut config = Config::default();
+        config.font_size = 4.0;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidFontSize(_))));
+    }
+
+    #[test]
+    fn validate_rejects_font_size_too_large() {
+        let mut config = Config::default();
+        config.font_size = 100.0;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidFontSize(_))));
+    }
+
+    #[test]
+    fn validate_rejects_min_height_too_small() {
+        let mut config = Config::default();
+        config.min_window_height = 5;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidMinHeight(_))));
+    }
+
+    #[test]
+    fn validate_rejects_max_less_than_min() {
+        let mut config = Config::default();
+        config.min_window_height = 100;
+        config.max_window_height = 50;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::MaxLessThanMin { .. })));
+    }
+
+    #[test]
+    fn validate_allows_unlimited_max_height() {
+        let mut config = Config::default();
+        config.max_window_height = 0; // unlimited
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_scroll_speed_too_low() {
+        let mut config = Config::default();
+        config.scroll_speed = 0.01;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidScrollSpeed(_))));
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_terminals() {
+        let mut config = Config::default();
+        config.max_terminals = 0;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidMaxTerminals(_))));
+    }
+
+    #[test]
+    fn validate_rejects_excessive_max_terminals() {
+        let mut config = Config::default();
+        config.max_terminals = 5000;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidMaxTerminals(_))));
+    }
+
+    #[test]
+    fn validate_rejects_bad_repeat_delay() {
+        let mut config = Config::default();
+        config.keyboard.repeat_delay = 50;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidRepeatDelay(_))));
+    }
+
+    #[test]
+    fn validate_rejects_bad_repeat_rate() {
+        let mut config = Config::default();
+        config.keyboard.repeat_rate = 0;
+        assert!(matches!(config.validate(), Err(ConfigValidationError::InvalidRepeatRate(_))));
     }
 
     #[test]
