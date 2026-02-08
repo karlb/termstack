@@ -472,4 +472,74 @@ mod tests {
         let result = send_json_response(server, &data);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn concurrent_ipc_requests_all_parsed() {
+        // Simulate multiple clients sending IPC messages concurrently.
+        // Each client gets its own socket pair, mirroring real usage where
+        // the compositor accepts separate connections per client.
+        let count = 50;
+        let handles: Vec<_> = (0..count)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    let (client, server) = UnixStream::pair().unwrap();
+                    let mut client = client;
+                    let msg = format!(
+                        r#"{{"type":"spawn","prompt":"","command":"cmd_{}","cwd":"/tmp","env":{{}}}}"#,
+                        i
+                    );
+                    writeln!(client, "{}", msg).unwrap();
+                    drop(client);
+                    read_ipc_request(server).map(|(req, _)| req)
+                })
+            })
+            .collect();
+
+        let mut success_count = 0;
+        for handle in handles {
+            let result = handle.join().expect("thread panicked");
+            assert!(result.is_ok(), "IPC parse failed: {:?}", result.err());
+            success_count += 1;
+        }
+        assert_eq!(success_count, count);
+    }
+
+    #[test]
+    fn send_ack_to_disconnected_client_returns_error() {
+        let (client, server) = ipc_pair();
+        drop(client); // Disconnect before sending ACK
+        let result = send_ack(server);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_request_preserves_fields() {
+        let msg = r#"{"type":"spawn","prompt":"user@host> ","command":"vim file.txt","cwd":"/home/user","env":{"TERM":"xterm-256color"},"foreground":true}"#;
+        let req = send_and_read(msg).unwrap();
+        match req {
+            IpcRequest::Spawn(spawn) => {
+                assert_eq!(spawn.prompt, "user@host> ");
+                assert_eq!(spawn.command, "vim file.txt");
+                assert_eq!(spawn.cwd, PathBuf::from("/home/user"));
+                assert_eq!(spawn.env.get("TERM").unwrap(), "xterm-256color");
+                assert_eq!(spawn.foreground, Some(true));
+            }
+            _ => panic!("expected Spawn request"),
+        }
+    }
+
+    #[test]
+    fn builtin_request_preserves_fields() {
+        let msg = r#"{"type":"builtin","prompt":"$ ","command":"export FOO=bar","result":"","success":true}"#;
+        let req = send_and_read(msg).unwrap();
+        match req {
+            IpcRequest::Builtin(builtin) => {
+                assert_eq!(builtin.prompt, "$ ");
+                assert_eq!(builtin.command, "export FOO=bar");
+                assert_eq!(builtin.result, "");
+                assert!(builtin.success);
+            }
+            _ => panic!("expected Builtin request"),
+        }
+    }
 }

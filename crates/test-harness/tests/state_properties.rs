@@ -231,7 +231,7 @@ proptest! {
     #[test]
     fn add_remove_maintains_consistency(
         initial_count in 1usize..5,
-        operations in prop::collection::vec(prop::bool::ANY, 1..10),
+        operations in prop::collection::vec(prop::bool::ANY, 1..20),
     ) {
         let mut compositor = TestCompositor::new_headless(1280, 720);
 
@@ -247,7 +247,9 @@ proptest! {
                 compositor.add_external_window(150);
                 expected_count += 1;
             } else if expected_count > 0 {
-                // We can't remove in TestCompositor, but we can verify state after adds
+                // Remove last window
+                compositor.remove_window(expected_count - 1);
+                expected_count -= 1;
             }
 
             let snapshot = compositor.snapshot();
@@ -255,6 +257,67 @@ proptest! {
                 snapshot.window_count,
                 expected_count,
                 "Window count should be consistent"
+            );
+
+            // Focus must always be valid
+            if let Some(fi) = snapshot.focused_index {
+                prop_assert!(
+                    fi < snapshot.window_count,
+                    "Focus {} out of bounds (window_count={})",
+                    fi, snapshot.window_count
+                );
+            }
+        }
+    }
+
+    /// Rapid add/remove cycles maintain layout and focus consistency
+    #[test]
+    fn rapid_add_remove_focus_consistent(
+        initial_count in 2usize..6,
+        remove_indices in prop::collection::vec(0usize..10, 1..15),
+    ) {
+        let mut compositor = TestCompositor::new_headless(1280, 720);
+
+        for _ in 0..initial_count {
+            compositor.add_external_window(100);
+        }
+
+        for remove_idx in remove_indices {
+            let count = compositor.snapshot().window_count;
+            if count == 0 {
+                // Re-add some windows
+                compositor.add_external_window(100);
+                compositor.add_external_window(100);
+                continue;
+            }
+
+            let idx = remove_idx % count;
+            compositor.remove_window(idx);
+            compositor.add_external_window(120);
+
+            let snapshot = compositor.snapshot();
+
+            // Focus must be valid
+            if let Some(fi) = snapshot.focused_index {
+                prop_assert!(
+                    fi < snapshot.window_count,
+                    "Focus {} out of bounds after add/remove (count={})",
+                    fi, snapshot.window_count
+                );
+            }
+
+            // Total height must equal sum of heights
+            let sum: u32 = snapshot.window_heights.iter().sum();
+            prop_assert_eq!(
+                snapshot.total_height, sum,
+                "Total height must equal sum after add/remove"
+            );
+
+            // Click detection must work
+            let positions = compositor.render_positions();
+            prop_assert_eq!(
+                positions.len(), snapshot.window_count,
+                "Render position count must match window count"
             );
         }
     }

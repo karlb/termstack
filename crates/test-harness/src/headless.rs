@@ -351,6 +351,33 @@ impl TestCompositor {
         overlaps
     }
 
+    /// Remove a window at the given index and update focus
+    ///
+    /// Mirrors the real compositor's window removal behavior: if the focused
+    /// window is removed, focus shifts to the next window (or previous if last).
+    pub fn remove_window(&mut self, index: usize) {
+        if index >= self.windows.len() {
+            return;
+        }
+
+        self.windows.remove(index);
+
+        // Update focus: if we removed the focused window, shift to nearest
+        self.focused_index = match self.focused_index {
+            Some(fi) if fi == index => {
+                if self.windows.is_empty() {
+                    None
+                } else {
+                    Some(fi.min(self.windows.len() - 1))
+                }
+            }
+            Some(fi) if fi > index => Some(fi - 1),
+            other => other,
+        };
+
+        self.update_cached_window_heights();
+    }
+
     /// Set a specific window's cached height (simulates bbox returning different values)
     pub fn set_window_height(&mut self, index: usize, height: u32) {
         if let Some(window) = self.windows.get_mut(index) {
