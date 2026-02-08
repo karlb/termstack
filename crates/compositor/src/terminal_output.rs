@@ -75,6 +75,24 @@ pub fn process_terminal_output(
         }
     }
 
+    // Fix up heights for terminals that just became visible
+    // (e.g., command terminals that received output this frame).
+    // Without this, a terminal transitioning from WaitingForOutput to HasOutput
+    // would keep height 0, causing validate_state() to panic.
+    for node in &mut compositor.layout_nodes {
+        if let StackWindow::Terminal(tid) = node.cell {
+            if node.height == 0 && terminal_manager.is_terminal_visible(tid) {
+                if let Some(term) = terminal_manager.get(tid) {
+                    node.height = calculate_terminal_render_height(
+                        term.height as i32,
+                        term.show_title_bar,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
     // Auto-resize terminals entering alternate screen mode
     auto_resize_alt_screen_terminals(compositor, terminal_manager);
 }

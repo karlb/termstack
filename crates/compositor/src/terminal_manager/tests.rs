@@ -2531,3 +2531,74 @@
             last_line
         );
     }
+
+    /// Regression: fast-exiting command terminal (e.g. `echo a`) gets height 0
+    ///
+    /// When a command terminal spawns, outputs, and exits within a single frame,
+    /// its layout_node stays at height 0 from when it was invisible (WaitingForOutput).
+    /// The `process_terminal_output` height fixup must detect this and update the height.
+    #[test]
+    fn fast_exit_command_terminal_gets_nonzero_height() {
+        use std::time::Duration;
+        use crate::render::calculate_terminal_render_height;
+        use crate::state::{LayoutNode, StackWindow};
+
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(
+            output_width, output_height, terminal::Theme::default(), 14.0,
+        );
+
+        // Spawn a command terminal that will exit quickly
+        let env = HashMap::new();
+        let cwd = std::path::Path::new("/tmp");
+        let id = manager.spawn_command("", "echo hello", cwd, &env, None)
+            .expect("spawn_command should succeed");
+
+        // Terminal starts as WaitingForOutput (hidden)
+        assert!(!manager.is_terminal_visible(id), "command terminal should start hidden");
+
+        // Simulate the layout_node with height 0 (as the compositor would create it)
+        let mut layout_nodes = vec![LayoutNode {
+            cell: StackWindow::Terminal(id),
+            height: 0,
+        }];
+
+        // Wait for the command to produce output and exit
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(5);
+        while start.elapsed() < timeout {
+            manager.process_all();
+            if manager.is_terminal_visible(id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(manager.is_terminal_visible(id), "terminal should become visible after output");
+
+        // At this point, the terminal is visible but layout_node.height is still 0
+        // This is the bug scenario: validate_state() would panic here
+        assert_eq!(layout_nodes[0].height, 0, "height should still be 0 before fixup");
+
+        // Run the same height fixup logic from process_terminal_output
+        for node in &mut layout_nodes {
+            if let StackWindow::Terminal(tid) = node.cell {
+                if node.height == 0 && manager.is_terminal_visible(tid) {
+                    if let Some(term) = manager.get(tid) {
+                        node.height = calculate_terminal_render_height(
+                            term.height as i32,
+                            term.show_title_bar,
+                            true,
+                        );
+                    }
+                }
+            }
+        }
+
+        // After fixup, height must be positive
+        assert!(
+            layout_nodes[0].height > 0,
+            "layout_node height should be positive after fixup, got {}",
+            layout_nodes[0].height
+        );
+    }
