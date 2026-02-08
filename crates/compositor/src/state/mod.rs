@@ -1227,14 +1227,35 @@ impl XdgShellHandler for TermStack {
 
         let geo = positioner.get_unconstrained_geometry(target);
 
+        // Clamp popup geometry to prevent extreme offsets from buggy clients
+        let max_offset = self.output_size.w.max(self.output_size.h) * 2;
+        let clamped_geo = Rectangle::new(
+            Point::from((
+                geo.loc.x.max(-max_offset).min(max_offset),
+                geo.loc.y.max(-max_offset).min(max_offset),
+            )),
+            Size::from((
+                geo.size.w.max(1).min(self.output_size.w * 2),
+                geo.size.h.max(1).min(self.output_size.h * 2),
+            )),
+        );
+
+        if clamped_geo != geo {
+            tracing::warn!(
+                original = ?geo,
+                clamped = ?clamped_geo,
+                "popup geometry clamped to screen bounds"
+            );
+        }
+
         tracing::debug!(
-            ?geo,
+            geo = ?clamped_geo,
             ?target,
             "new_popup: XDG popup created"
         );
 
         surface.with_pending_state(|state| {
-            state.geometry = geo;
+            state.geometry = clamped_geo;
             state.positioner = positioner;
         });
 
@@ -1400,16 +1421,29 @@ impl XdgShellHandler for TermStack {
 
         let new_geo = positioner.get_unconstrained_geometry(target);
 
+        // Clamp popup geometry (same as new_popup)
+        let max_offset = self.output_size.w.max(self.output_size.h) * 2;
+        let clamped_geo = Rectangle::new(
+            Point::from((
+                new_geo.loc.x.max(-max_offset).min(max_offset),
+                new_geo.loc.y.max(-max_offset).min(max_offset),
+            )),
+            Size::from((
+                new_geo.size.w.max(1).min(self.output_size.w * 2),
+                new_geo.size.h.max(1).min(self.output_size.h * 2),
+            )),
+        );
+
         tracing::info!(
             ?token,
-            ?new_geo,
+            geo = ?clamped_geo,
             ?target,
             "reposition_request: updating popup position"
         );
 
         // Update popup geometry and positioner
         surface.with_pending_state(|state| {
-            state.geometry = new_geo;
+            state.geometry = clamped_geo;
             state.positioner = positioner;
         });
 

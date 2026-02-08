@@ -161,8 +161,20 @@ impl Pty {
         cols: u16,
         rows: u16,
     ) -> Result<Self, PtyError> {
-        // Use SHELL from env, or fall back to /bin/sh
+        // Use SHELL from env if it exists and is executable, otherwise fall back to /bin/sh
         let shell = env.get("SHELL")
+            .filter(|s| {
+                let path = Path::new(s.as_str());
+                if !path.is_absolute() {
+                    tracing::warn!(shell = %s, "SHELL is not an absolute path, falling back to /bin/sh");
+                    return false;
+                }
+                if !path.exists() {
+                    tracing::warn!(shell = %s, "SHELL does not exist, falling back to /bin/sh");
+                    return false;
+                }
+                true
+            })
             .map(|s| s.as_str())
             .unwrap_or("/bin/sh");
         let winsize = Winsize {

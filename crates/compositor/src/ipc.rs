@@ -342,3 +342,134 @@ pub fn socket_path() -> PathBuf {
     let uid = rustix::process::getuid().as_raw();
     PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    /// Helper to create a connected pair for testing
+    fn ipc_pair() -> (UnixStream, UnixStream) {
+        UnixStream::pair().expect("failed to create socket pair")
+    }
+
+    /// Helper to send a message and read the IPC request
+    fn send_and_read(message: &str) -> Result<IpcRequest, IpcError> {
+        let (client, server) = ipc_pair();
+        let mut client = client;
+        writeln!(client, "{}", message).unwrap();
+        drop(client);
+        read_ipc_request(server).map(|(req, _)| req)
+    }
+
+    #[test]
+    fn parse_valid_spawn_request() {
+        let msg = r#"{"type":"spawn","prompt":"$ ","command":"ls","cwd":"/tmp","env":{}}"#;
+        let req = send_and_read(msg).unwrap();
+        assert!(matches!(req, IpcRequest::Spawn(_)));
+    }
+
+    #[test]
+    fn parse_valid_resize_request() {
+        let msg = r#"{"type":"resize","mode":"full"}"#;
+        let req = send_and_read(msg).unwrap();
+        assert!(matches!(req, IpcRequest::Resize(ResizeMode::Full)));
+    }
+
+    #[test]
+    fn parse_valid_builtin_request() {
+        let msg = r#"{"type":"builtin","prompt":"$ ","command":"cd ..","result":"","success":true}"#;
+        let req = send_and_read(msg).unwrap();
+        assert!(matches!(req, IpcRequest::Builtin(_)));
+    }
+
+    #[test]
+    fn parse_valid_query_windows_request() {
+        let msg = r#"{"type":"query_windows"}"#;
+        let req = send_and_read(msg).unwrap();
+        assert!(matches!(req, IpcRequest::QueryWindows));
+    }
+
+    #[test]
+    fn reject_empty_message() {
+        let result = send_and_read("");
+        assert!(matches!(result, Err(IpcError::EmptyMessage)));
+    }
+
+    #[test]
+    fn reject_invalid_json() {
+        let result = send_and_read("not json at all");
+        assert!(matches!(result, Err(IpcError::ParseError(_))));
+    }
+
+    #[test]
+    fn reject_oversized_message() {
+        let (client, server) = ipc_pair();
+        // Spawn writer thread because >1MB write blocks on socket buffer
+        std::thread::spawn(move || {
+            let mut client = client;
+            let huge = "x".repeat(MAX_IPC_MESSAGE_SIZE + 100);
+            let _ = writeln!(client, "{}", huge);
+        });
+        let result = read_ipc_request(server);
+        assert!(matches!(result, Err(IpcError::MessageTooLarge { .. })));
+    }
+
+    #[test]
+    fn reject_command_too_large() {
+        let big_command = "x".repeat(MAX_COMMAND_SIZE + 1);
+        let msg = format!(
+            r#"{{"type":"spawn","prompt":"","command":"{}","cwd":"/tmp","env":{{}}}}"#,
+            big_command
+        );
+        let result = send_and_read(&msg);
+        assert!(matches!(result, Err(IpcError::ValidationError(_))));
+    }
+
+    #[test]
+    fn reject_too_many_env_vars() {
+        let mut env_entries = Vec::new();
+        for i in 0..=MAX_ENV_VARS {
+            env_entries.push(format!(r#""K{}":"V{}""#, i, i));
+        }
+        let env_str = format!("{{{}}}", env_entries.join(","));
+        let msg = format!(
+            r#"{{"type":"spawn","prompt":"","command":"ls","cwd":"/tmp","env":{}}}"#,
+            env_str
+        );
+        let result = send_and_read(&msg);
+        assert!(matches!(result, Err(IpcError::ValidationError(_))));
+    }
+
+    #[test]
+    fn reject_env_var_too_large() {
+        let big_value = "x".repeat(MAX_ENV_VAR_SIZE + 1);
+        let msg = format!(
+            r#"{{"type":"spawn","prompt":"","command":"ls","cwd":"/tmp","env":{{"KEY":"{}"}}}}"#,
+            big_value
+        );
+        let result = send_and_read(&msg);
+        assert!(matches!(result, Err(IpcError::ValidationError(_))));
+    }
+
+    #[test]
+    fn send_ack_works_on_connected_stream() {
+        let (_client, server) = ipc_pair();
+        let result = send_ack(server);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn send_json_response_works() {
+        let (_client, server) = ipc_pair();
+        let data = vec![WindowInfo {
+            index: 0,
+            width: 100,
+            height: 50,
+            is_external: false,
+            command: "test".to_string(),
+        }];
+        let result = send_json_response(server, &data);
+        assert!(result.is_ok());
+    }
+}
