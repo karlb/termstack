@@ -800,6 +800,10 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     let mut last_render_time = Instant::now();
     const MIN_FRAME_TIME: Duration = Duration::from_millis(8); // ~120fps max
 
+    // Periodic resource usage logging
+    let mut last_resource_log = Instant::now();
+    const RESOURCE_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
     // Main event loop
     while compositor.running {
         // Clear stale drag state if no pointer buttons are pressed
@@ -892,6 +896,26 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         compositor.timeout_stale_clipboard_reads();
         compositor.timeout_stale_pending_window();
 
+        // Periodic resource usage logging
+        if last_resource_log.elapsed() >= RESOURCE_LOG_INTERVAL {
+            last_resource_log = Instant::now();
+            let window_count = compositor.layout_nodes.len();
+            let terminal_count = terminal_manager.count();
+            let active_terminals = terminal_manager.count_active();
+            let dead_terminals = terminal_manager.count_dead();
+            let gui_windows = compositor.count_gui_spawned_windows();
+            let has_pending_gui = compositor.pending_window_set_at.is_some();
+            tracing::info!(
+                window_count,
+                terminal_count,
+                active_terminals,
+                dead_terminals,
+                gui_windows,
+                has_pending_gui,
+                "resource usage"
+            );
+        }
+
         // Handle X11 resize events
         if let Some((new_w, new_h)) = compositor.compositor_window_resize_pending.take() {
             let new_size: Size<i32, Physical> = (new_w as i32, new_h as i32).into();
@@ -983,6 +1007,10 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
             break;
         }
+
+        // Validate state invariants in debug builds
+        #[cfg(debug_assertions)]
+        compositor.validate_state();
 
         // Frame rate limiting: wait until it's time to render
         // This prevents busy-looping while still processing events at a steady rate

@@ -1076,6 +1076,83 @@ impl TermStack {
             }
         }
     }
+
+    /// Validate state machine invariants (debug builds only).
+    ///
+    /// Checks that critical state relationships hold. Called periodically
+    /// from the main event loop in debug builds to catch bugs early.
+    #[cfg(debug_assertions)]
+    pub fn validate_state(&self) {
+        // 1. Focused window must resolve to a valid index or be None
+        if let Some(focused) = &self.focused_window {
+            let index = self.focused_index();
+            debug_assert!(
+                index.is_some(),
+                "focused_window is set ({:?}) but has no matching layout_node",
+                focused
+            );
+            if let Some(idx) = index {
+                debug_assert!(
+                    idx < self.layout_nodes.len(),
+                    "focused_index {} >= layout_nodes.len() {}",
+                    idx,
+                    self.layout_nodes.len()
+                );
+            }
+        }
+
+        // 2. No duplicate terminal IDs in layout_nodes
+        let terminal_ids: Vec<_> = self.layout_nodes.iter()
+            .filter_map(|n| n.cell.terminal_id())
+            .collect();
+        for (i, id) in terminal_ids.iter().enumerate() {
+            for (j, other) in terminal_ids.iter().enumerate() {
+                if i != j {
+                    debug_assert_ne!(
+                        id, other,
+                        "duplicate terminal ID {} in layout_nodes at positions {} and {}",
+                        id.0, i, j
+                    );
+                }
+            }
+        }
+
+        // 3. Scroll offset must be non-negative
+        debug_assert!(
+            self.scroll_offset >= 0.0,
+            "scroll_offset is negative: {}",
+            self.scroll_offset
+        );
+
+        // 4. All layout node heights must be positive
+        for (i, node) in self.layout_nodes.iter().enumerate() {
+            debug_assert!(
+                node.height > 0,
+                "layout_nodes[{}] has non-positive height: {}",
+                i, node.height
+            );
+        }
+
+        // 5. Resize drag target must be valid if set
+        if let Some(drag) = &self.resizing {
+            debug_assert!(
+                drag.window_index < self.layout_nodes.len(),
+                "resize drag window_index {} >= layout_nodes.len() {}",
+                drag.window_index,
+                self.layout_nodes.len()
+            );
+        }
+
+        // 6. Pending window state consistency
+        if self.pending_window_set_at.is_some() {
+            debug_assert!(
+                self.pending_window_output_terminal.is_some()
+                    || self.pending_window_command.is_some()
+                    || self.pending_gui_foreground,
+                "pending_window_set_at is set but no pending window data"
+            );
+        }
+    }
 }
 
 // Wayland protocol implementations
