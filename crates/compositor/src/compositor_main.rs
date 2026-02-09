@@ -943,6 +943,24 @@ fn run_compositor_x11() -> anyhow::Result<()> {
             current_size = (new_w, new_h).into();
         }
 
+        // Handle font size change requests (Ctrl+Shift+Plus/Minus)
+        if compositor.pending_font_size_delta != 0.0 {
+            let delta = compositor.pending_font_size_delta;
+            compositor.pending_font_size_delta = 0.0;
+
+            let new_font_size = (terminal_manager.font_size() + delta).clamp(6.0, 72.0);
+            terminal_manager.set_font_size(
+                new_font_size,
+                compositor.output_size.w as u32,
+                compositor.output_size.h as u32,
+            );
+
+            // Recalculate layout with new terminal sizes
+            let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
+            compositor.update_layout_heights(window_heights);
+            compositor.recalculate_layout();
+        }
+
         // Update cursor icon based on whether pointer is on a resize handle
         if let Some(ref mut cm) = cursor_manager {
             cm.set_resize_cursor(compositor.cursor_on_resize_handle);

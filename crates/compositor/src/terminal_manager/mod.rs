@@ -1281,6 +1281,68 @@ impl TerminalManager {
         self.terminals.iter_mut()
     }
 
+    /// Get the current font size
+    pub fn font_size(&self) -> f32 {
+        self.font_size
+    }
+
+    /// Change font size for all terminals at runtime
+    ///
+    /// Updates cell dimensions, recalculates cols/rows, and resizes every terminal.
+    pub fn set_font_size(&mut self, new_font_size: f32, output_width: u32, output_height: u32) {
+        let new_font_size = new_font_size.clamp(6.0, 72.0);
+        if (new_font_size - self.font_size).abs() < f32::EPSILON {
+            return;
+        }
+
+        self.font_size = new_font_size;
+
+        // Get new cell dimensions from a font config probe
+        let Some(font_config) = terminal::render::FontConfig::default_font_with_size(new_font_size) else {
+            tracing::warn!("failed to load font at size {}", new_font_size);
+            return;
+        };
+        let new_cell_width = font_config.cell_width;
+        let new_cell_height = font_config.cell_height;
+
+        self.cell_width = new_cell_width;
+        self.cell_height = new_cell_height;
+        self.default_cols = (output_width / new_cell_width).max(1) as u16;
+        self.max_rows = (output_height / new_cell_height).max(1) as u16;
+
+        let new_cols = self.default_cols;
+
+        // Update every terminal
+        for terminal in self.terminals.values_mut() {
+            terminal.terminal.set_font_size(new_font_size);
+            terminal.terminal.resize_cols(new_cols);
+            terminal.width = new_cols as u32 * new_cell_width;
+
+            // Recalculate height in new cell units (preserve row count)
+            let current_rows = (terminal.height / new_cell_height).max(1);
+            terminal.height = current_rows * new_cell_height;
+
+            // Resize PTY to new row count
+            let rows = (terminal.height / new_cell_height).max(1) as u16;
+            let action = terminal.terminal.configure(rows);
+            if let terminal::sizing::SizingAction::ApplyResize { .. } = action {
+                terminal.terminal.complete_resize();
+            }
+
+            terminal.mark_dirty();
+        }
+
+        tracing::info!(
+            font_size = new_font_size,
+            cell_width = new_cell_width,
+            cell_height = new_cell_height,
+            cols = new_cols,
+            max_rows = self.max_rows,
+            terminal_count = self.terminals.len(),
+            "font size changed for all terminals"
+        );
+    }
+
 
     /// Get the Y position of a visible terminal (for scrolling to it)
     pub fn terminal_y_position(&self, target_id: TerminalId) -> Option<i32> {

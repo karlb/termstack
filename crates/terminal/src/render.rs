@@ -220,6 +220,14 @@ impl TerminalRenderer {
         (self.cell_width, self.cell_height)
     }
 
+    /// Replace font configuration and clear glyph cache
+    pub fn set_font_size(&mut self, font_config: FontConfig) {
+        self.cell_width = font_config.cell_width;
+        self.cell_height = font_config.cell_height;
+        self.glyph_cache.clear();
+        self.font = Some(font_config);
+    }
+
     /// Render terminal to buffer
     ///
     /// `viewport_offset` is how many lines we've scrolled back from the cursor:

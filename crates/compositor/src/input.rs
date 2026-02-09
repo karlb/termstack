@@ -211,6 +211,8 @@ enum CompositorAction {
     PageUp,
     Copy,
     Paste,
+    FontSizeUp,
+    FontSizeDown,
 }
 
 /// Parse compositor keybindings from modifiers and keysym
@@ -226,6 +228,8 @@ fn parse_compositor_keybinding(modifiers: &ModifiersState, keysym: Keysym) -> Op
             Keysym::Page_Up => Some(CompositorAction::PageUp),
             Keysym::v | Keysym::V => Some(CompositorAction::Paste),
             Keysym::c | Keysym::C => Some(CompositorAction::Copy),
+            Keysym::plus | Keysym::equal => Some(CompositorAction::FontSizeUp),
+            Keysym::minus | Keysym::underscore => Some(CompositorAction::FontSizeDown),
             _ => None,
         };
     }
@@ -555,6 +559,14 @@ impl TermStack {
             CompositorAction::Paste => {
                 tracing::debug!("paste from clipboard requested");
                 self.pending_paste = true;
+            }
+            CompositorAction::FontSizeUp => {
+                tracing::debug!("font size increase requested");
+                self.pending_font_size_delta += 1.0;
+            }
+            CompositorAction::FontSizeDown => {
+                tracing::debug!("font size decrease requested");
+                self.pending_font_size_delta -= 1.0;
             }
         }
 

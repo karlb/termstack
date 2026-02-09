@@ -464,6 +464,9 @@ pub struct TermStack {
 
     /// Flag to spawn initial terminal (set when XWayland is ready)
     pub spawn_initial_terminal: bool,
+
+    /// Pending font size change delta (set by keybinding, applied in main loop)
+    pub pending_font_size_delta: f32,
 }
 
 /// A node in the column layout containing the cell and its cached height.
@@ -731,6 +734,7 @@ impl TermStack {
             xwayland_satellite: None,
             x11_display_number: None,
             spawn_initial_terminal: false,
+            pending_font_size_delta: 0.0,
         };
 
         (compositor, display)

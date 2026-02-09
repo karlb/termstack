@@ -478,6 +478,13 @@ impl Terminal {
         self.renderer.cell_size()
     }
 
+    /// Change font size at runtime, returning the new (cell_width, cell_height)
+    pub fn set_font_size(&mut self, font_size: f32) -> Option<(u32, u32)> {
+        let font_config = crate::render::FontConfig::default_font_with_size(font_size)?;
+        self.renderer.set_font_size(font_config);
+        Some(self.renderer.cell_size())
+    }
+
     /// Get current PTY dimensions (what programs see via tcgetwinsize)
     pub fn dimensions(&self) -> (u16, u16) {
         (self.cols, self.pty_rows)
