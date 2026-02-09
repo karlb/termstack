@@ -1,5 +1,6 @@
     use super::*;
     use std::collections::HashMap;
+    use crate::state::{LayoutNode, StackWindow};
 
     #[test]
     fn command_terminal_starts_small() {
@@ -2541,7 +2542,6 @@
     fn fast_exit_command_terminal_gets_nonzero_height() {
         use std::time::Duration;
         use crate::render::calculate_terminal_render_height;
-        use crate::state::{LayoutNode, StackWindow};
 
         let output_width = 800;
         let output_height = 720;
@@ -2599,6 +2599,65 @@
         assert!(
             layout_nodes[0].height > 0,
             "layout_node height should be positive after fixup, got {}",
+            layout_nodes[0].height
+        );
+    }
+
+    /// Regression test: launcher terminal hidden for foreground GUI gets height 0,
+    /// which is correct for layout but must not trigger validate_state panic.
+    #[test]
+    fn hidden_for_gui_terminal_has_zero_height() {
+        let output_width = 800;
+        let output_height = 720;
+        let mut manager = TerminalManager::new_with_size(
+            output_width, output_height, terminal::Theme::default(), 14.0,
+        );
+
+        // Spawn a shell terminal (always visible)
+        let launcher_id = manager.spawn().expect("spawn should succeed");
+        assert!(manager.is_terminal_visible(launcher_id), "shell terminal should be visible");
+
+        // Create layout node with a realistic height
+        let launcher_height = manager.get(launcher_id).unwrap().height as i32;
+        assert!(launcher_height > 0);
+        let mut layout_nodes = vec![LayoutNode {
+            cell: StackWindow::Terminal(launcher_id),
+            height: launcher_height,
+        }];
+
+        // Hide the launcher terminal for foreground GUI
+        manager.get_mut(launcher_id).unwrap().visibility.hide_for_gui();
+        assert!(!manager.is_terminal_visible(launcher_id), "should be hidden after hide_for_gui");
+
+        // Recalculate heights (same logic as calculate_window_heights)
+        for node in &mut layout_nodes {
+            if let StackWindow::Terminal(tid) = &node.cell {
+                if !manager.is_terminal_visible(*tid) {
+                    node.height = 0;
+                }
+            }
+        }
+
+        // Height 0 for hidden terminal is correct - it should take no layout space
+        assert_eq!(layout_nodes[0].height, 0, "hidden terminal should have height 0");
+
+        // After GUI exit, restore visibility
+        manager.get_mut(launcher_id).unwrap().visibility.on_gui_exit();
+        assert!(manager.is_terminal_visible(launcher_id), "should be visible after on_gui_exit");
+
+        // Recalculate with fallback for cached height 0
+        // (same logic as calculate_window_heights)
+        for node in &mut layout_nodes {
+            if let StackWindow::Terminal(tid) = &node.cell {
+                if manager.is_terminal_visible(*tid) && node.height == 0 {
+                    node.height = manager.get(*tid).map(|t| t.height as i32).unwrap_or(200);
+                }
+            }
+        }
+
+        assert!(
+            layout_nodes[0].height > 0,
+            "restored terminal should have positive height, got {}",
             layout_nodes[0].height
         );
     }

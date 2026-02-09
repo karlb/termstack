@@ -1022,7 +1022,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
 
         // Validate state invariants in debug builds
         #[cfg(debug_assertions)]
-        compositor.validate_state();
+        compositor.validate_state(&terminal_manager);
 
         // Frame rate limiting: wait until it's time to render
         // This prevents busy-looping while still processing events at a steady rate

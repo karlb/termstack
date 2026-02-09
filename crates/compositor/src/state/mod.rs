@@ -1074,7 +1074,7 @@ impl TermStack {
     /// Checks that critical state relationships hold. Called periodically
     /// from the main event loop in debug builds to catch bugs early.
     #[cfg(debug_assertions)]
-    pub fn validate_state(&self) {
+    pub fn validate_state(&self, terminal_manager: &crate::terminal_manager::TerminalManager) {
         // 1. Focused window must resolve to a valid index or be None
         if let Some(focused) = &self.focused_window {
             let index = self.focused_index();
@@ -1116,13 +1116,21 @@ impl TermStack {
             self.scroll_offset
         );
 
-        // 4. All layout node heights must be positive
+        // 4. All visible layout node heights must be positive
+        // Hidden terminals (e.g., launcher hidden for foreground GUI) legitimately
+        // have height 0 since they should take no space in the layout.
         for (i, node) in self.layout_nodes.iter().enumerate() {
-            debug_assert!(
-                node.height > 0,
-                "layout_nodes[{}] has non-positive height: {}",
-                i, node.height
-            );
+            let is_hidden_terminal = match &node.cell {
+                StackWindow::Terminal(tid) => !terminal_manager.is_terminal_visible(*tid),
+                StackWindow::External(_) => false,
+            };
+            if !is_hidden_terminal {
+                debug_assert!(
+                    node.height > 0,
+                    "layout_nodes[{}] has non-positive height: {}",
+                    i, node.height
+                );
+            }
         }
 
         // 5. Resize drag target must be valid if set
