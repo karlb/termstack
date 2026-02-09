@@ -27,7 +27,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use crate::coords::{RenderY, ScreenY};
 use crate::render::FOCUS_INDICATOR_WIDTH;
 use crate::selection;
-use crate::state::{FocusedWindow, SelectionState, StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
+use crate::state::{FocusedWindow, StackWindow, TermStack, ResizeDrag, SurfaceKind, MIN_WINDOW_HEIGHT};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::title_bar::{CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
@@ -151,50 +151,6 @@ fn render_to_grid_coords(
     };
 
     (col, row, side)
-}
-
-/// Start a text selection on a terminal at the given render coordinates
-///
-/// Returns the selection tracking state which should be stored in `compositor.selecting`
-/// for drag tracking. See [`SelectionState`] for field details.
-///
-/// DEPRECATED: Use `selection::start_cross_selection` instead for cross-window selection.
-#[allow(dead_code)]
-fn start_terminal_selection(
-    compositor: &TermStack,
-    terminals: &mut TerminalManager,
-    terminal_id: TerminalId,
-    window_index: usize,
-    render_x: f64,
-    render_y: f64,
-) -> Option<SelectionState> {
-    let managed = terminals.get_mut(terminal_id)?;
-    let (window_render_y, window_height) = compositor.get_window_render_position(window_index);
-
-    let (char_width, char_height) = managed.terminal.cell_size();
-    let title_bar_height = if managed.show_title_bar {
-        TITLE_BAR_HEIGHT
-    } else {
-        0
-    };
-
-    let (col, row, _side) = render_to_grid_coords(
-        render_x,
-        render_y,
-        window_render_y.value(),
-        window_height as f64,
-        char_width,
-        char_height,
-        title_bar_height,
-    );
-
-    // Clear any previous selection and start new one
-    managed.terminal.clear_selection();
-    managed.terminal.start_selection(col, row);
-    managed.mark_dirty(); // Re-render to show selection highlight
-
-    // Return: start position (col, row) and last position (same at start)
-    Some((terminal_id, window_render_y.value() as i32, window_height, col, row, col, row, std::time::Instant::now()))
 }
 
 /// Update an ongoing selection during pointer drag

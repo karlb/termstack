@@ -879,6 +879,12 @@ impl TermStack {
         self.layout_nodes.get(index).map(|n| n.height)
     }
 
+    /// Sum of heights of layout nodes before the given index.
+    /// This is the content-space Y offset where the window at `index` begins.
+    fn content_y_before(&self, index: usize) -> i32 {
+        self.layout_nodes[..index].iter().map(|node| node.height).sum()
+    }
+
     /// Scroll to ensure a cell's bottom edge is visible on screen.
     /// Returns the new scroll offset if it changed, None otherwise.
     pub fn scroll_to_show_window_bottom(&mut self, window_index: usize) -> Option<f64> {
@@ -888,7 +894,7 @@ impl TermStack {
             window_index,
             self.layout_nodes.len()
         );
-        let y: i32 = self.layout_nodes[..window_index].iter().map(|node| node.height).sum();
+        let y = self.content_y_before(window_index);
         let height = self.layout_nodes.get(window_index).map(|n| n.height).unwrap_or(0);
         let bottom_y = y + height;
         let visible_height = self.output_size.h;
@@ -957,20 +963,14 @@ impl TermStack {
             index,
             self.layout_nodes.len()
         );
-        let screen_height = self.output_size.h as f64;
-        let mut content_y = -self.scroll_offset;
-
-        for i in 0..self.layout_nodes.len() {
-            if i == index {
-                let height = self.layout_nodes[i].height;
-                let render_y = crate::coords::content_to_render_y(content_y, height as f64, screen_height);
-                return (crate::coords::RenderY::new(render_y), height);
-            }
-            content_y += self.layout_nodes[i].height as f64;
+        if let Some(node) = self.layout_nodes.get(index) {
+            let content_y = self.content_y_before(index) as f64 - self.scroll_offset;
+            let height = node.height;
+            let render_y = crate::coords::content_to_render_y(content_y, height as f64, self.output_size.h as f64);
+            (crate::coords::RenderY::new(render_y), height)
+        } else {
+            (crate::coords::RenderY::new(0.0), 0)
         }
-
-        // Fallback if index out of bounds
-        (crate::coords::RenderY::new(0.0), 0)
     }
 
     /// Get the screen bounds (top_y, bottom_y) for a cell at the given index
@@ -982,19 +982,11 @@ impl TermStack {
             index,
             self.layout_nodes.len()
         );
-        let mut content_y = -(self.scroll_offset as i32);
-
-        for i in 0..self.layout_nodes.len() {
-            if i == index {
-                // In screen coords: top_y = content_y, bottom_y = content_y + height
-                let top_y = content_y;
-                let height = self.layout_nodes[i].height;
-                let bottom_y = content_y + height;
-                return Some((top_y, bottom_y));
-            }
-            content_y += self.layout_nodes[i].height;
-        }
-        None
+        self.layout_nodes.get(index).map(|node| {
+            let top_y = self.content_y_before(index) - self.scroll_offset as i32;
+            let bottom_y = top_y + node.height;
+            (top_y, bottom_y)
+        })
     }
 
     /// Process pending PRIMARY selection paste (from middle-click)

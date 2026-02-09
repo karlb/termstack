@@ -43,12 +43,14 @@ pub struct Config {
     pub background_color: [f32; 4],
 
     /// Gap between windows (pixels)
+    /// TODO: not yet applied in layout calculation
     pub window_gap: u32,
 
     /// Minimum window height (pixels)
     pub min_window_height: u32,
 
     /// Maximum window height (pixels, 0 = unlimited)
+    /// TODO: not yet enforced in layout/render
     pub max_window_height: u32,
 
     /// Scroll speed multiplier
