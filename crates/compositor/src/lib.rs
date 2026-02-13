@@ -10,7 +10,16 @@ pub mod ipc;
 pub mod layout;
 pub mod title_bar;
 
-// Linux-only modules (need Smithay backends/renderer/Wayland server)
+// Cross-platform compositor modules (Smithay wayland_frontend + desktop features)
+pub mod selection;
+pub mod spawn_handler;
+pub mod state;
+pub mod terminal_manager;
+pub mod terminal_output;
+pub mod window_height;
+pub mod window_lifecycle;
+
+// Linux-only modules (need Smithay backends/renderer/GPU)
 #[cfg(target_os = "linux")]
 pub mod backend;
 #[cfg(target_os = "linux")]
@@ -24,26 +33,17 @@ pub mod input_handler;
 #[cfg(target_os = "linux")]
 pub mod render;
 #[cfg(target_os = "linux")]
-pub mod selection;
-#[cfg(target_os = "linux")]
-pub mod spawn_handler;
-#[cfg(target_os = "linux")]
-pub mod state;
-#[cfg(target_os = "linux")]
-pub mod terminal_manager;
-#[cfg(target_os = "linux")]
-pub mod terminal_output;
-#[cfg(target_os = "linux")]
-pub mod window_height;
-#[cfg(target_os = "linux")]
-pub mod window_lifecycle;
-#[cfg(target_os = "linux")]
 pub mod xwayland_lifecycle;
 
 #[cfg(target_os = "linux")]
 mod compositor_main;
 #[cfg(target_os = "linux")]
 pub use compositor_main::run_compositor;
+
+#[cfg(target_os = "macos")]
+mod winit_backend;
+#[cfg(target_os = "macos")]
+pub use winit_backend::run_compositor_winit;
 
 // setup_logging is cross-platform (only uses tracing_subscriber)
 pub fn setup_logging() {

@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use crate::coords::RenderY;
-use crate::render::FOCUS_INDICATOR_WIDTH;
+use crate::layout::FOCUS_INDICATOR_WIDTH;
 use crate::state::{CrossSelection, StackWindow, TermStack, WindowPosition};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{TITLE_BAR_HEIGHT, TITLE_BAR_PADDING};

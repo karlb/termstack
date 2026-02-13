@@ -14,13 +14,13 @@ use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::path::Path;
 
-#[cfg(feature = "x11-backend")]
+#[cfg(all(feature = "x11-backend", target_os = "linux"))]
 use smithay::backend::renderer::gles::GlesRenderer;
-#[cfg(feature = "x11-backend")]
+#[cfg(all(feature = "x11-backend", target_os = "linux"))]
 use smithay::backend::renderer::gles::GlesTexture;
-#[cfg(feature = "x11-backend")]
+#[cfg(all(feature = "x11-backend", target_os = "linux"))]
 use smithay::backend::renderer::ImportMem;
-#[cfg(feature = "x11-backend")]
+#[cfg(all(feature = "x11-backend", target_os = "linux"))]
 use smithay::utils::Size;
 
 use terminal::Terminal;
@@ -166,7 +166,7 @@ pub struct ManagedTerminal {
     pub show_title_bar: bool,
 
     /// Cached texture for GPU rendering (X11 backend)
-    #[cfg(feature = "x11-backend")]
+    #[cfg(all(feature = "x11-backend", target_os = "linux"))]
     texture: Option<GlesTexture>,
 
     /// Cached pixel buffer for software rendering (headless backend)
@@ -228,7 +228,7 @@ impl ManagedTerminal {
             height: rows as u32 * cell_height,
             title,
             show_title_bar: false, // Shell terminals don't show title bar
-            #[cfg(feature = "x11-backend")]
+            #[cfg(all(feature = "x11-backend", target_os = "linux"))]
             texture: None,
             #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
             pixel_buffer: Vec::new(),
@@ -285,7 +285,7 @@ impl ManagedTerminal {
             height: visual_rows as u32 * cell_height, // Use visual rows for display
             title,
             show_title_bar: true, // Command terminals show title bar
-            #[cfg(feature = "x11-backend")]
+            #[cfg(all(feature = "x11-backend", target_os = "linux"))]
             texture: None,
             #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
             pixel_buffer: Vec::new(),
@@ -502,7 +502,7 @@ impl ManagedTerminal {
     }
 
     /// Render terminal to GPU texture (X11 backend)
-    #[cfg(feature = "x11-backend")]
+    #[cfg(all(feature = "x11-backend", target_os = "linux"))]
     pub fn render(&mut self, renderer: &mut GlesRenderer) -> Option<&GlesTexture> {
         // Re-render if dirty OR if selection coordinates changed
         // This ensures we only regenerate texture when selection actually moves, not every frame
@@ -613,7 +613,7 @@ impl ManagedTerminal {
     }
 
     /// Get cached texture (for rendering after pre-render pass)
-    #[cfg(feature = "x11-backend")]
+    #[cfg(all(feature = "x11-backend", target_os = "linux"))]
     pub fn get_texture(&self) -> Option<&GlesTexture> {
         self.texture.as_ref()
     }
@@ -997,7 +997,7 @@ impl TerminalManager {
             height: visual_rows as u32 * cell_height,
             title,
             show_title_bar: true,
-            #[cfg(feature = "x11-backend")]
+            #[cfg(all(feature = "x11-backend", target_os = "linux"))]
             texture: None,
             #[cfg(all(feature = "headless-backend", not(feature = "x11-backend")))]
             pixel_buffer: Vec::new(),
@@ -1456,5 +1456,5 @@ impl Default for TerminalManager {
 }
 
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests;

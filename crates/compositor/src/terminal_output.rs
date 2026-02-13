@@ -3,7 +3,7 @@
 //! Handles PTY output processing, automatic terminal growth, alternate screen
 //! detection, manual resize requests, and output terminal promotion.
 
-use crate::render::calculate_terminal_render_height;
+use crate::layout::calculate_terminal_render_height;
 use crate::state::{FocusedWindow, StackWindow, TermStack};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 

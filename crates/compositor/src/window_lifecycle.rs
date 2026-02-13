@@ -3,7 +3,7 @@
 //! Handles window creation, cleanup of dead terminals and windows,
 //! output terminal management, and focus synchronization.
 
-use crate::render::calculate_terminal_render_height;
+use crate::layout::calculate_terminal_render_height;
 use crate::state::{StackWindow, TermStack};
 use crate::terminal_manager::{TerminalId, TerminalManager};
 use crate::terminal_output::{find_terminal_window_index, is_window_bottom_visible};

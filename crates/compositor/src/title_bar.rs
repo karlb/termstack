@@ -153,6 +153,11 @@ impl TitleBarRenderer {
         "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
         "/usr/share/fonts/noto/NotoMono-Regular.ttf",
+        // macOS fonts
+        "/System/Library/Fonts/Supplemental/Courier New.ttf",
+        "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+        "/System/Library/Fonts/Menlo.ttc",
+        "/Library/Fonts/SF-Mono-Regular.otf",
     ];
 
     /// Try to find and load a font from common system locations

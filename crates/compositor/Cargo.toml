@@ -28,6 +28,7 @@ serde_json.workspace = true
 rustix.workspace = true
 fontdue.workspace = true
 softbuffer = { version = "0.4", optional = true }
+arboard = "3.4"
 
 terminal = { path = "../terminal" }
 
@@ -42,7 +43,11 @@ smithay = { workspace = true, features = [
 smithay-drm-extras = "0.1"
 calloop-wayland-source = "0.3"
 x11rb = { version = "0.13", features = ["cursor", "resource_manager"] }
-arboard = "3.4"
+
+# macOS-only dependencies (winit + softbuffer for display backend)
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { workspace = true }
+softbuffer = "0.4"
 
 [dev-dependencies]
 proptest.workspace = true

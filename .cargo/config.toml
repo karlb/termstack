@@ -4,3 +4,10 @@ b = "build -Zchecksum-freshness"
 t = "nextest run -Zchecksum-freshness"
 l = "clippy -Zchecksum-freshness"
 r = "run -Zchecksum-freshness --bin termstack"
+
+# macOS: help linker find Homebrew libraries (libxkbcommon)
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/opt/homebrew/lib"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-L", "/opt/homebrew/lib"]

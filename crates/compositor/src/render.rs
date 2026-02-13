@@ -33,35 +33,8 @@ use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT, TITLE_BAR_PADDING};
 /// Cache for title bar textures, keyed by (title, width)
 pub type TitleBarCache = HashMap<(String, u32), GlesTexture>;
 
-/// Focus indicator width in pixels (also used as left margin for content)
-pub const FOCUS_INDICATOR_WIDTH: i32 = 2;
-
-/// Calculate the visual/render height for a terminal.
-///
-/// This is the total height including the title bar (if shown).
-/// The title bar is shown when the terminal is visible and has `show_title_bar` set.
-///
-/// # Arguments
-/// * `content_height` - Height of the terminal content in pixels (may be 0)
-/// * `show_title_bar` - Whether the terminal should show a title bar
-/// * `is_visible` - Whether the terminal is visible (hidden terminals have 0 height)
-///
-/// # Returns
-/// The total visual height including title bar if applicable.
-pub fn calculate_terminal_render_height(
-    content_height: i32,
-    show_title_bar: bool,
-    is_visible: bool,
-) -> i32 {
-    if !is_visible {
-        return 0;
-    }
-    if show_title_bar {
-        content_height + TITLE_BAR_HEIGHT as i32
-    } else {
-        content_height
-    }
-}
+// Re-export from layout.rs for backwards compatibility
+pub use crate::layout::{FOCUS_INDICATOR_WIDTH, calculate_terminal_render_height, heights_changed_significantly};
 
 /// Draw focus indicator on left side of cell
 fn draw_focus_indicator(frame: &mut GlesFrame<'_, '_>, y: i32, height: i32) {
@@ -424,25 +397,6 @@ pub fn log_frame_state(
         render = %render_info.join(" "),
         "FRAME STATE"
     );
-}
-
-/// Check if any cell heights changed significantly (affecting scroll)
-pub fn heights_changed_significantly(
-    cached: &[i32],
-    actual: &[i32],
-    focused_index: Option<usize>,
-) -> bool {
-    cached.iter()
-        .zip(actual.iter())
-        .enumerate()
-        .any(|(i, (&cached_h, &actual_h))| {
-            if let Some(focused) = focused_index {
-                if i <= focused && actual_h != cached_h && (actual_h - cached_h).abs() > 10 {
-                    return true;
-                }
-            }
-            false
-        })
 }
 
 /// Render a terminal cell

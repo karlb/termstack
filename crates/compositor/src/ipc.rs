@@ -340,6 +340,9 @@ pub fn socket_path() -> PathBuf {
     if let Ok(path) = std::env::var("TERMSTACK_IPC_SOCKET") {
         return PathBuf::from(path);
     }
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return PathBuf::from(runtime_dir).join("termstack.sock");
+    }
     let uid = rustix::process::getuid().as_raw();
     PathBuf::from(format!("/run/user/{}/termstack.sock", uid))
 }

@@ -5,7 +5,7 @@
 
 use smithay::utils::{Physical, Size};
 
-use crate::render::{calculate_terminal_render_height, heights_changed_significantly};
+use crate::layout::{calculate_terminal_render_height, heights_changed_significantly};
 use crate::state::{StackWindow, TermStack};
 use crate::terminal_manager::TerminalManager;
 use crate::terminal_output::is_window_bottom_visible;

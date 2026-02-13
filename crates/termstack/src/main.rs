@@ -76,12 +76,13 @@ fn main() -> anyhow::Result<()> {
         {
             compositor::run_compositor()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
-            anyhow::bail!(
-                "The TermStack compositor requires Linux.\n\
-                 A macOS backend is not yet implemented."
-            )
+            compositor::run_compositor_winit()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            anyhow::bail!("Unsupported platform")
         }
     }
 }

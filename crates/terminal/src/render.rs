@@ -107,6 +107,11 @@ impl FontConfig {
             // Fira Code / Fira Mono
             "/usr/share/fonts/truetype/firacode/FiraCode-Regular.ttf",
             "/usr/share/fonts/opentype/firacode/FiraCode-Regular.otf",
+            // macOS fonts
+            "/System/Library/Fonts/Supplemental/Courier New.ttf",
+            "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+            "/System/Library/Fonts/Menlo.ttc",
+            "/Library/Fonts/SF-Mono-Regular.otf",
         ];
 
         for path in &font_paths {

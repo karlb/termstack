@@ -48,6 +48,7 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
+#[cfg(target_os = "linux")]
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
@@ -1180,6 +1181,7 @@ impl CompositorHandler for TermStack {
     fn commit(&mut self, surface: &WlSurface) {
 
         // Process buffer for desktop rendering abstractions
+        #[cfg(target_os = "linux")]
         on_commit_buffer_handler::<Self>(surface);
         // Update popup manager state (moves unmapped popups to mapped when committed)
         self.popup_manager.commit(surface);
@@ -1295,7 +1297,7 @@ impl XdgShellHandler for TermStack {
         let parent_screen_y = (parent_content_y as f64 - self.scroll_offset).max(0.0) as i32;
 
         // Parent X is at the focus indicator offset
-        let parent_screen_x = crate::render::FOCUS_INDICATOR_WIDTH;
+        let parent_screen_x = crate::layout::FOCUS_INDICATOR_WIDTH;
 
         // Create target rectangle in PARENT-SURFACE-LOCAL coordinates
         // This tells the positioner where the screen edges are relative to the parent's (0,0)
@@ -1492,7 +1494,7 @@ impl XdgShellHandler for TermStack {
 
         // Calculate parent surface position on screen (same as new_popup)
         let parent_screen_y = (parent_content_y as f64 - self.scroll_offset).max(0.0) as i32;
-        let parent_screen_x = crate::render::FOCUS_INDICATOR_WIDTH;
+        let parent_screen_x = crate::layout::FOCUS_INDICATOR_WIDTH;
 
         // Target in parent-surface-local coordinates
         let target = Rectangle::new(

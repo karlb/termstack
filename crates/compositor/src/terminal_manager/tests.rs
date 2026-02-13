@@ -2541,7 +2541,7 @@
     #[test]
     fn fast_exit_command_terminal_gets_nonzero_height() {
         use std::time::Duration;
-        use crate::render::calculate_terminal_render_height;
+        use crate::layout::calculate_terminal_render_height;
 
         let output_width = 800;
         let output_height = 720;
