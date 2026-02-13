@@ -174,15 +174,16 @@ pub struct SpawnRequest {
 /// Returns `IpcError::ParseError` if JSON parsing fails.
 /// Returns `IpcError::EmptyMessage` if an empty line is received.
 pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), IpcError> {
-    // Set a short timeout to avoid blocking the compositor
-    stream.set_read_timeout(Some(std::time::Duration::from_millis(100)))
-        .map_err(|e| {
-            if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut {
-                IpcError::Timeout
-            } else {
-                IpcError::Io(e)
-            }
-        })?;
+    // Set a short timeout to avoid blocking the compositor.
+    // On macOS, set_read_timeout returns EINVAL on socket pairs when the peer
+    // has already disconnected — ignore that since reads will return EOF anyway.
+    if let Err(e) = stream.set_read_timeout(Some(std::time::Duration::from_millis(100))) {
+        match e.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => return Err(IpcError::Timeout),
+            io::ErrorKind::InvalidInput => {} // macOS: peer already gone, reads won't block
+            _ => return Err(IpcError::Io(e)),
+        }
+    }
 
     let mut reader = BufReader::new(stream);
 
@@ -353,12 +354,16 @@ mod tests {
         UnixStream::pair().expect("failed to create socket pair")
     }
 
-    /// Helper to send a message and read the IPC request
+    /// Helper to send a message and read the IPC request.
+    /// Uses a thread for writing to avoid deadlock on macOS where Unix socket
+    /// buffers are ~8KB (large messages would block both writer and reader).
     fn send_and_read(message: &str) -> Result<IpcRequest, IpcError> {
         let (client, server) = ipc_pair();
-        let mut client = client;
-        writeln!(client, "{}", message).unwrap();
-        drop(client);
+        let msg = message.to_string();
+        std::thread::spawn(move || {
+            let mut client = client;
+            let _ = writeln!(client, "{}", msg);
+        });
         read_ipc_request(server).map(|(req, _)| req)
     }
 

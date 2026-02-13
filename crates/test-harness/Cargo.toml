@@ -6,13 +6,15 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-smithay.workspace = true
 calloop.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 compositor = { path = "../compositor" }
 rustix.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay.workspace = true
 
 [features]
 gui-tests = []

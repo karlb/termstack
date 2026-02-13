@@ -1430,22 +1430,4 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn setup_logging() {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,smithay=warn"));
-
-    // Respect NO_COLOR environment variable for testing
-    let use_ansi = std::env::var("NO_COLOR").is_err();
-
-    tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_target(true)
-                .with_line_number(true)
-                .with_ansi(use_ansi),
-        )
-        .with(filter)
-        .init();
-}
+// setup_logging() has been moved to lib.rs for cross-platform availability

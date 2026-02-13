@@ -71,6 +71,17 @@ fn main() -> anyhow::Result<()> {
         // Compositor mode - start the Wayland compositor
         // This is the main application entry point
         compositor::setup_logging();
-        compositor::run_compositor()
+
+        #[cfg(target_os = "linux")]
+        {
+            compositor::run_compositor()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            anyhow::bail!(
+                "The TermStack compositor requires Linux.\n\
+                 A macOS backend is not yet implemented."
+            )
+        }
     }
 }

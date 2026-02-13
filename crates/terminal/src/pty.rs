@@ -83,15 +83,16 @@ impl Pty {
                 "invalid PTY slave name",
             )))?;
 
-        // Set window size on master
-        tcsetwinsize(&master_fd, winsize).map_err(PtyError::Winsize)?;
-
         // Open slave and transfer ownership to raw fd
         let slave = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(slave_path)
             .map_err(PtyError::Open)?;
+
+        // Set window size on slave fd (must be done after opening slave;
+        // on macOS, TIOCSWINSZ on a master without an open slave fails with ENOTTY)
+        tcsetwinsize(&slave, winsize).map_err(PtyError::Winsize)?;
 
         // Transfer ownership from File to raw fd (File won't close it)
         let slave_fd = slave.into_raw_fd();
@@ -128,7 +129,7 @@ impl Pty {
                 .pre_exec(move || {
                     // Create new session and set controlling terminal
                     libc::setsid();
-                    libc::ioctl(slave_fd, libc::TIOCSCTTY, 0);
+                    libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0);
                     Ok(())
                 })
                 .spawn()
@@ -206,15 +207,16 @@ impl Pty {
                 "invalid PTY slave name",
             )))?;
 
-        // Set window size on master
-        tcsetwinsize(&master_fd, winsize).map_err(PtyError::Winsize)?;
-
         // Open slave and transfer ownership to raw fd
         let slave = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(slave_path)
             .map_err(PtyError::Open)?;
+
+        // Set window size on slave fd (must be done after opening slave;
+        // on macOS, TIOCSWINSZ on a master without an open slave fails with ENOTTY)
+        tcsetwinsize(&slave, winsize).map_err(PtyError::Winsize)?;
 
         // Transfer ownership from File to raw fd
         let slave_fd = slave.into_raw_fd();
@@ -244,7 +246,7 @@ impl Pty {
                 .stderr(Stdio::from_raw_fd(slave_fd_err))
                 .pre_exec(move || {
                     libc::setsid();
-                    libc::ioctl(slave_fd, libc::TIOCSCTTY, 0);
+                    libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0);
                     Ok(())
                 })
                 .spawn()
@@ -412,7 +414,7 @@ mod tests {
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let pty = Pty::spawn(&shell, 80, 24);
-        assert!(pty.is_ok());
+        assert!(pty.is_ok(), "Pty::spawn failed: {:?}", pty.err());
     }
 
     #[test]

@@ -15,11 +15,9 @@ x11-backend = []
 headless-backend = ["softbuffer"]
 
 [dependencies]
-softbuffer = { version = "0.4", optional = true }
+# Cross-platform dependencies
 smithay.workspace = true
-smithay-drm-extras.workspace = true
 calloop.workspace = true
-calloop-wayland-source.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
@@ -29,12 +27,22 @@ serde.workspace = true
 serde_json.workspace = true
 rustix.workspace = true
 fontdue.workspace = true
-arboard.workspace = true
-# Only used for cursor management (loading X11 cursor themes for compositor window)
-# NOT used for X11 window management (xwayland-satellite handles that)
-x11rb.workspace = true
+softbuffer = { version = "0.4", optional = true }
 
 terminal = { path = "../terminal" }
+
+# Linux-only dependencies (Smithay backends, GPU rendering, clipboard, etc.)
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay = { workspace = true, features = [
+    "backend_drm", "backend_libinput", "backend_udev",
+    "backend_winit", "backend_x11", "backend_gbm",
+    "backend_egl", "backend_session_libseat",
+    "renderer_gl", "xwayland",
+] }
+smithay-drm-extras = "0.1"
+calloop-wayland-source = "0.3"
+x11rb = { version = "0.13", features = ["cursor", "resource_manager"] }
+arboard = "3.4"
 
 [dev-dependencies]
 proptest.workspace = true

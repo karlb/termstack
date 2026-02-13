@@ -15,30 +15,17 @@ license = "MIT"
 rust-version = "1.75"
 
 [workspace.dependencies]
-# Compositor
+# Compositor (cross-platform features only; Linux backends added per-crate)
 smithay = { version = "0.7", default-features = false, features = [
-    "backend_drm",
-    "backend_libinput",
-    "backend_udev",
-    "backend_winit",
-    "backend_x11",
-    "backend_gbm",
-    "backend_egl",
-    "backend_session_libseat",
-    "renderer_gl",
     "desktop",
-    "xwayland",
     "wayland_frontend",
 ] }
-x11rb = { version = "0.13", features = ["cursor", "resource_manager"] }
-smithay-drm-extras = "0.1"
 
 # Terminal
 alacritty_terminal = "0.24"
 
 # Async
 calloop = { version = "0.14", features = ["executor"] }
-calloop-wayland-source = "0.3"
 
 # Rendering
 softbuffer = "0.4"
@@ -60,9 +47,6 @@ anyhow = "1"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Clipboard
-arboard = "3.4"
 
 # Testing
 proptest = "1"
