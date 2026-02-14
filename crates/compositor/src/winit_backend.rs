@@ -455,23 +455,28 @@ impl ApplicationHandler for App {
                             // Click-to-focus: find window at click position
                             if let Some(index) = compositor.window_at_screen_y(ScreenY::new(screen_y)) {
                                 // Check for close button click on title bar
-                                if let StackWindow::Terminal(tid) = compositor.layout_nodes[index].cell {
-                                    if let Some(term) = terminal_manager.get(tid) {
-                                        if term.show_title_bar {
-                                            // Compute window top Y from layout
-                                            let window_top: i32 = compositor.layout_nodes[..index]
-                                                .iter()
-                                                .map(|n| n.height)
-                                                .sum::<i32>()
-                                                - compositor.scroll_offset as i32;
-                                            let click_in_title_bar = (screen_y as i32) < window_top + TITLE_BAR_HEIGHT as i32;
-                                            let click_in_close_zone = self.cursor_position.0 >= (compositor.output_size.w as u32 - CLOSE_BUTTON_WIDTH) as f64;
+                                let window_top: i32 = compositor.layout_nodes[..index]
+                                    .iter()
+                                    .map(|n| n.height)
+                                    .sum::<i32>()
+                                    - compositor.scroll_offset as i32;
+                                let click_in_title_bar = (screen_y as i32) < window_top + TITLE_BAR_HEIGHT as i32;
+                                let click_in_close_zone = self.cursor_position.0 >= (compositor.output_size.w as u32 - CLOSE_BUTTON_WIDTH) as f64;
 
-                                            if click_in_title_bar && click_in_close_zone {
+                                if click_in_title_bar && click_in_close_zone {
+                                    match compositor.layout_nodes[index].cell {
+                                        StackWindow::Terminal(tid) => {
+                                            if terminal_manager.get(tid).is_some_and(|t| t.show_title_bar) {
                                                 compositor.layout_nodes.remove(index);
                                                 compositor.invalidate_focused_index_cache();
                                                 terminal_manager.remove(tid);
                                                 compositor.update_focus_after_removal(index);
+                                                return;
+                                            }
+                                        }
+                                        StackWindow::External(ref entry) => {
+                                            if !entry.uses_csd {
+                                                entry.surface.send_close();
                                                 return;
                                             }
                                         }
