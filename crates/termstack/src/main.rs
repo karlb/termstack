@@ -33,11 +33,10 @@ use std::env;
 
 mod cli;
 mod desktop;
-mod shell;
 mod util;
 
 #[cfg(test)]
-mod config_test;
+mod cli_test;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();

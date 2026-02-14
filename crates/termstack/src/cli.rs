@@ -1,147 +1,26 @@
 //! termstack CLI - Spawn terminals in TermStack
 //!
-//! This CLI tool allows spawning new terminals from the shell that share
+//! This CLI tool spawns new terminals from the shell that share
 //! the current terminal's environment. The new terminal appears above
 //! the current one in the stack layout.
 //!
-//! Commands are split into categories:
-//! - Shell builtins: run in current shell (cd, export, etc.)
-//! - All other commands: run in a new terminal window
+//! Command classification (shell builtins vs regular commands) is handled
+//! entirely in the shell integration script (scripts/integration.fish).
+//! When called with `-c`, the CLI always spawns in a new terminal.
 //!
 //! TUI apps (vim, mc, etc.) are auto-detected via alternate screen mode
 //! and automatically resized to full viewport height.
 //!
 //! GUI apps automatically get an output terminal that appears below the
 //! window when stderr/stdout is produced.
-//!
-//! # Usage
-//!
-//! ```fish
-//! # Run a command in a new terminal
-//! termstack -c "git status"
-//!
-//! # Run with no command (opens interactive shell)
-//! termstack
-//! ```
-//!
-//! # Shell Integration
-//!
-//! The integration script is available in the `scripts/` directory of the repository.
-//!
-//! ## Fish
-//!
-//! Add to your `~/.config/fish/config.fish` (or source `scripts/integration.fish`):
-//! ```fish
-//! if set -q TERMSTACK_SOCKET
-//!     function termstack_exec
-//!         set -l cmd (commandline)
-//!         test -z "$cmd"; and commandline -f execute; and return
-//!
-//!         termstack -c "$cmd"
-//!         switch $status
-//!             case 2 3  # Shell builtin or incomplete syntax
-//!                 commandline -f execute
-//!             case '*'  # Spawned in new terminal
-//!                 history append -- "$cmd"
-//!                 commandline ""
-//!                 commandline -f repaint
-//!         end
-//!     end
-//!     bind \r termstack_exec
-//!     bind \n termstack_exec
-//! end
-//! ```
-//!
-//! Exit codes:
-//! - 0: Command spawned in new terminal
-//! - 2: Shell builtin - run in current shell via eval
-//! - 3: Incomplete/invalid syntax - let shell handle it
 
 use std::env;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
 
-use crate::shell::{detect_shell, Shell};
 use crate::util::debug_enabled;
-
-/// Configuration for termstack
-#[derive(Debug, Deserialize)]
-pub(crate) struct Config {
-    /// List of shell builtins/commands that should run in the current shell
-    #[serde(default = "Config::default_shell_commands")]
-    shell_commands: Vec<String>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            shell_commands: Self::default_shell_commands(),
-        }
-    }
-}
-
-impl Config {
-    fn default_shell_commands() -> Vec<String> {
-        vec![
-            "cd", "pushd", "popd", "dirs",
-            "export", "unset", "set",
-            "source", ".",
-            "alias", "unalias",
-            "hash", "type", "which",
-            "jobs", "fg", "bg", "disown",
-            "exit", "logout",
-            "exec",
-            "eval",
-            "builtin", "command",
-            "local", "declare", "typeset", "readonly",
-            "shift",
-            "trap",
-            "ulimit", "umask",
-            "wait",
-            "history", "fc",
-        ].into_iter().map(String::from).collect()
-    }
-
-    /// Load config from ~/.config/termstack/config.toml
-    fn load() -> Self {
-        let config_path = Self::config_path();
-
-        if let Ok(contents) = std::fs::read_to_string(&config_path) {
-            match toml::from_str(&contents) {
-                Ok(config) => return config,
-                Err(e) => {
-                    eprintln!("warning: failed to parse config: {}", e);
-                }
-            }
-        }
-
-        Self::default()
-    }
-
-    fn config_path() -> PathBuf {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home)
-            .join(".config")
-            .join("termstack")
-            .join("config.toml")
-    }
-
-    /// Check if a command is a shell builtin that should run in current shell
-    pub fn is_shell_command(&self, command: &str, shell: &dyn Shell) -> bool {
-        shell.is_builtin(command, &self.shell_commands)
-    }
-}
-
-/// Exit code indicating command should run in current shell
-const EXIT_SHELL_COMMAND: i32 = 2;
-
-/// Exit code indicating command has incomplete/invalid syntax
-/// Shell integration should let the shell handle it (show continuation or error)
-const EXIT_INCOMPLETE_SYNTAX: i32 = 3;
 
 
 pub fn run() -> Result<()> {
@@ -224,16 +103,6 @@ pub fn run() -> Result<()> {
         return spawn_gui_app(&command, foreground);
     }
 
-    // If we're running inside a TUI terminal (like mc's subshell), don't intercept.
-    // This prevents mc's internal fish subshell commands from being spawned as
-    // separate terminals, which would break mc's communication with its subshell.
-    if env::var("TERMSTACK_TUI").is_ok() {
-        if debug { eprintln!("[termstack] TERMSTACK_TUI set, exit 2"); }
-        // Exit with code 2 (shell command) so the shell integration runs `eval "$cmd"`,
-        // allowing mc's subshell command to actually execute in the current shell.
-        std::process::exit(EXIT_SHELL_COMMAND);
-    }
-
     // Parse arguments
     let command = parse_command(&args)?;
     if debug { eprintln!("[termstack] command: {:?}", command); }
@@ -251,39 +120,14 @@ pub fn run() -> Result<()> {
     // Check if command is a termstack subcommand - execute it directly
     // This handles the case where fish integration intercepts "termstack test-x11"
     // and calls "termstack -c 'termstack test-x11'" - we run the subcommand here
-    // instead of returning exit code 2 (which would use PATH, not TERMSTACK_BIN)
     if let Some(subcommand) = extract_termstack_subcommand(&command) {
         if debug { eprintln!("[termstack] executing termstack subcommand directly: {}", subcommand); }
         return execute_subcommand(&subcommand);
     }
 
-    // Detect shell and normalize command
-    let shell = detect_shell();
-    let normalized_command = shell.normalize_command(&command);
-    if debug && normalized_command != command {
-        eprintln!("[termstack] normalized: '{}' -> '{}'", command, normalized_command);
-    }
-
-    // Load config and check command type
-    let config = Config::load();
-
-    if config.is_shell_command(&normalized_command, shell.as_ref()) {
-        if debug { eprintln!("[termstack] shell command, exit 2"); }
-        // Shell builtin - signal to run in current shell
-        std::process::exit(EXIT_SHELL_COMMAND);
-    }
-
-    // Check if command is syntactically complete
-    // If not, let the shell handle it (show continuation prompt or syntax error)
-    if !shell.is_syntax_complete(&normalized_command) {
-        if debug { eprintln!("[termstack] incomplete syntax, exit 3"); }
-        std::process::exit(EXIT_INCOMPLETE_SYNTAX);
-    }
-
-    // Regular command - spawn terminal in termstack, but GUI windows go to host
-    // Only commands with 'gui' prefix should have windows inside termstack
-    if debug { eprintln!("[termstack] spawning in terminal (GUI windows go to host)"); }
-    spawn_in_terminal(&normalized_command, &prompt)
+    // Spawn in new terminal — classification is handled by the shell integration script
+    if debug { eprintln!("[termstack] spawning in terminal"); }
+    spawn_in_terminal(&command, &prompt)
 }
 
 /// Send a resize request to the compositor and wait for acknowledgement

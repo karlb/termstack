@@ -5,6 +5,19 @@ if set -q TERMSTACK_SOCKET
     if not set -q TERMSTACK_BIN
         set TERMSTACK_BIN termstack
     end
+
+    # Shell commands that modify launcher shell state — run in current shell.
+    # Users can extend via: set -g __termstack_shell_commands ... in config.fish
+    if not set -q __termstack_shell_commands
+        set -g __termstack_shell_commands \
+            cd pushd popd dirs \
+            set export unset \
+            source . \
+            alias unalias abbr \
+            exit logout exec \
+            eval
+    end
+
     # Define 'gui' as a function for launching GUI apps
     # Usage: gui <command>           # foreground mode (launcher hidden until GUI exits)
     # Usage: gui -b <command>        # background mode (launcher stays visible)
@@ -53,77 +66,72 @@ if set -q TERMSTACK_SOCKET
         # Handle empty command (just pressing Enter)
         if test -z "$cmd"
             # Create entry showing just the prompt (like a normal terminal)
-            # Run synchronously - socket write is fast and avoids job notification issues
             $TERMSTACK_BIN --builtin "$prompt_str" "" ""
-            # Don't execute - just clear and repaint (no extra prompt in launcher)
             commandline ""
             commandline -f repaint
             return
         end
 
+        set -l trimmed (string trim "$cmd")
+        set -l first_word (string split ' ' -- $trimmed)[1]
+
         # Debug: show what command we're processing
         if set -q TERMSTACK_DEBUG
-            echo "[termstack_exec] cmd='$cmd'" >&2
+            echo "[termstack_exec] cmd='$cmd' first_word='$first_word'" >&2
         end
 
-        # Let 'gui' commands execute normally (handled by gui function above)
-        # Check both with and without leading/trailing whitespace
-        set -l trimmed_cmd (string trim "$cmd")
-        if string match -q 'gui' "$trimmed_cmd"; or string match -q 'gui *' "$trimmed_cmd"
-            if set -q TERMSTACK_DEBUG
-                echo "[termstack_exec] detected gui command, executing normally" >&2
-            end
+        # TUI subshell — run everything in current shell
+        if set -q TERMSTACK_TUI
             commandline -f execute
             return
         end
 
-        # Check command type and syntax via termstack
-        # Exit codes:
-        #   0 = spawned in new terminal
-        #   2 = shell builtin, run in current shell
-        #   3 = incomplete/invalid syntax, let shell handle it
-        # Pass prompt via environment variable for spawn commands
-        TERMSTACK_PROMPT="$prompt_str" $TERMSTACK_BIN -c "$cmd"
-        set -l ret $status
+        # Let 'gui' commands execute normally (handled by gui function above)
+        if test "$first_word" = gui
+            commandline -f execute
+            return
+        end
 
-        switch $ret
-            case 2
-                # Shell builtin - execute in current shell AND capture output
-                # Using eval with redirection: state changes persist, output is captured
-                set -l tmpfile (mktemp)
+        # Syntax check (fish 3.4+): 0 = valid, 1 = error, 2 = incomplete
+        commandline --is-valid
+        if test $status -ne 0
+            commandline -f execute
+            return
+        end
 
-                # eval runs in current shell context, so cd/export/etc affect this shell
-                # Redirect stdout+stderr to temp file to capture output
-                eval $cmd >$tmpfile 2>&1
-                set -l exit_status $status
+        # State-affecting commands — run in current shell, record in stack
+        if contains -- $first_word $__termstack_shell_commands
+            set -l tmpfile (mktemp)
 
-                # Read captured output (may be empty for cd, export, etc.)
-                set -l output (cat $tmpfile)
-                rm -f $tmpfile
+            # eval runs in current shell context, so cd/export/etc affect this shell
+            # Redirect stdout+stderr to temp file to capture output
+            eval $cmd >$tmpfile 2>&1
+            set -l exit_status $status
 
-                # Determine success/error flag
-                set -l error_flag
-                if test $exit_status -ne 0
-                    set error_flag "--error"
-                end
+            # Read captured output (may be empty for cd, export, etc.)
+            set -l output (cat $tmpfile)
+            rm -f $tmpfile
 
-                # Send to compositor (creates persistent entry in stack)
-                # Run synchronously - socket write is fast and avoids job notification issues
-                $TERMSTACK_BIN --builtin "$prompt_str" "$cmd" "$output" $error_flag
+            # Determine success/error flag
+            set -l error_flag
+            if test $exit_status -ne 0
+                set error_flag "--error"
+            end
 
-                # Add to history and clear command line
-                history append -- "$cmd"
-                commandline ""
-                commandline -f repaint
-            case 3
-                # Incomplete syntax - let fish handle it
-                # (fish shows continuation prompt for incomplete, error for invalid)
-                commandline -f execute
-            case '*'
-                # Standard command - spawned in new terminal
-                history append -- "$cmd"
-                commandline ""
-                commandline -f repaint
+            # Send to compositor (creates persistent entry in stack)
+            $TERMSTACK_BIN --builtin "$prompt_str" "$cmd" "$output" $error_flag
+
+            # Add to history and clear command line
+            history append -- "$cmd"
+            commandline ""
+            commandline -f repaint
+        else
+            # Regular command — spawn in new terminal
+            TERMSTACK_PROMPT="$prompt_str" $TERMSTACK_BIN -c "$cmd"
+
+            history append -- "$cmd"
+            commandline ""
+            commandline -f repaint
         end
     end
 
