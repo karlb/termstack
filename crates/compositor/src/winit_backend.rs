@@ -9,7 +9,7 @@
 
 use std::os::unix::net::UnixListener;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
@@ -29,7 +29,10 @@ use crate::config::Config;
 use crate::coords::ScreenY;
 use crate::state::{ClientState, FocusedWindow, StackWindow, TermStack};
 use crate::terminal_manager::TerminalManager;
-use crate::title_bar::{TitleBarRenderer, TITLE_BAR_HEIGHT};
+use crate::title_bar::{TitleBarRenderer, CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
+
+/// Minimum time between frames (~120 FPS cap)
+const MIN_FRAME_TIME: Duration = Duration::from_millis(8);
 
 /// Run the compositor with the winit backend (macOS)
 pub fn run_compositor_winit() -> anyhow::Result<()> {
@@ -50,6 +53,7 @@ pub fn run_compositor_winit() -> anyhow::Result<()> {
         modifiers: ModifiersState::empty(),
         cursor_position: (0.0, 0.0),
         title_bar_renderer: None,
+        last_render_time: Instant::now(),
     };
 
     event_loop.run_app(&mut app)?;
@@ -74,6 +78,9 @@ struct App {
     // Input state
     modifiers: ModifiersState,
     cursor_position: (f64, f64),
+
+    // Frame timing
+    last_render_time: Instant,
 }
 
 impl ApplicationHandler for App {
@@ -360,6 +367,9 @@ impl ApplicationHandler for App {
                         }
                         _ => {}
                     }
+
+                    // Consume unmatched Ctrl+Shift combos so they don't leak to the terminal
+                    return;
                 }
 
                 // Send key to focused terminal
@@ -441,7 +451,31 @@ impl ApplicationHandler for App {
                             }
 
                             // Click-to-focus: find window at click position
-                            if let Some(index) = window_at_screen_y(compositor, screen_y) {
+                            if let Some(index) = compositor.window_at_screen_y(ScreenY::new(screen_y)) {
+                                // Check for close button click on title bar
+                                if let StackWindow::Terminal(tid) = compositor.layout_nodes[index].cell {
+                                    if let Some(term) = terminal_manager.get(tid) {
+                                        if term.show_title_bar {
+                                            // Compute window top Y from layout
+                                            let window_top: i32 = compositor.layout_nodes[..index]
+                                                .iter()
+                                                .map(|n| n.height)
+                                                .sum::<i32>()
+                                                - compositor.scroll_offset as i32;
+                                            let click_in_title_bar = (screen_y as i32) < window_top + TITLE_BAR_HEIGHT as i32;
+                                            let click_in_close_zone = self.cursor_position.0 >= (compositor.output_size.w as u32 - CLOSE_BUTTON_WIDTH) as f64;
+
+                                            if click_in_title_bar && click_in_close_zone {
+                                                compositor.layout_nodes.remove(index);
+                                                compositor.invalidate_focused_index_cache();
+                                                terminal_manager.remove(tid);
+                                                compositor.update_focus_after_removal(index);
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 compositor.set_focus_by_index(index);
 
                                 // Scroll to show focused window
@@ -471,13 +505,27 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(pos) => pos.y,
                     MouseScrollDelta::LineDelta(_, lines) => lines as f64 * 100.0,
                 };
-                // Winit: positive = scroll up (content moves down), negative = scroll down
-                // Compositor: positive scroll_offset = content scrolled up
-                // So negate: scroll-up gesture should decrease offset (show earlier content)
-                let scroll_delta = -pixels;
-                let max_scroll = compositor.max_scroll();
-                let new_offset = (compositor.scroll_offset + scroll_delta).clamp(0.0, max_scroll);
-                compositor.pending_scroll_delta += new_offset - compositor.scroll_offset;
+
+                if self.modifiers.shift_key() {
+                    // Shift+Scroll: terminal scrollback
+                    let lines = match delta {
+                        MouseScrollDelta::LineDelta(_, lines) => (lines * 3.0) as i32,
+                        MouseScrollDelta::PixelDelta(pos) => (pos.y / 5.0) as i32,
+                    };
+                    if lines != 0 {
+                        if let Some(index) = compositor.window_at_screen_y(ScreenY::new(self.cursor_position.1)) {
+                            if let StackWindow::Terminal(tid) = compositor.layout_nodes[index].cell {
+                                if let Some(term) = terminal_manager.get_mut(tid) {
+                                    term.terminal.scroll_display(lines);
+                                    term.mark_dirty();
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Negate: winit positive = scroll up gesture, compositor positive = scroll down
+                    compositor.pending_scroll_delta -= pixels;
+                }
             }
 
             WindowEvent::RedrawRequested => {
@@ -508,26 +556,7 @@ impl ApplicationHandler for App {
             .expect("failed to dispatch clients");
 
         // 3. Handle focus change requests
-        if compositor.focus_change_requested != 0 {
-            let direction = compositor.focus_change_requested;
-            compositor.focus_change_requested = 0;
-
-            let window_count = compositor.layout_nodes.len();
-            if window_count > 0 {
-                let current = compositor.focused_index().unwrap_or(0);
-                let new_index = if direction > 0 {
-                    (current + 1) % window_count
-                } else {
-                    (current + window_count - 1) % window_count
-                };
-                compositor.set_focus_by_index(new_index);
-
-                // Scroll to show focused window
-                if let Some(new_scroll) = compositor.scroll_to_show_window_bottom(new_index) {
-                    tracing::info!(new_index, new_scroll, "focus changed, scrolled to show");
-                }
-            }
-        }
+        crate::input_handler::handle_focus_change_requests(compositor, terminal_manager);
 
         // 4. Handle external window events
         crate::window_lifecycle::handle_external_window_events(compositor);
@@ -623,9 +652,11 @@ impl ApplicationHandler for App {
         compositor.timeout_stale_clipboard_reads();
         compositor.timeout_stale_pending_window();
 
-        // 20. Request redraw
-        if let Some(window) = &self.window {
-            window.request_redraw();
+        // 20. Request redraw (throttled to avoid burning CPU)
+        if self.last_render_time.elapsed() >= MIN_FRAME_TIME {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
         }
     }
 }
@@ -767,6 +798,8 @@ impl App {
         if let Err(e) = buffer.present() {
             tracing::warn!(error = ?e, "failed to present softbuffer frame");
         }
+
+        self.last_render_time = Instant::now();
     }
 }
 
@@ -979,24 +1012,3 @@ fn winit_key_to_bytes(key: &Key, ctrl: bool) -> Vec<u8> {
     }
 }
 
-/// Find which window is at a given screen Y coordinate (Y=0 at top).
-///
-/// Uses the same layout walk as `find_resize_handle_at` but returns the
-/// window index whose vertical extent contains the point.
-fn window_at_screen_y(compositor: &TermStack, screen_y: f64) -> Option<usize> {
-    let mut content_y = -(compositor.scroll_offset as i32);
-
-    for (i, node) in compositor.layout_nodes.iter().enumerate() {
-        let height = node.height;
-        let top_y = content_y;
-        let bottom_y = content_y + height;
-
-        if (screen_y as i32) >= top_y && (screen_y as i32) < bottom_y {
-            return Some(i);
-        }
-
-        content_y = bottom_y;
-    }
-
-    None
-}

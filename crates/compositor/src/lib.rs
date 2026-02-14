@@ -19,6 +19,9 @@ pub mod terminal_output;
 pub mod window_height;
 pub mod window_lifecycle;
 
+// Cross-platform input handling (no Smithay backend dependencies)
+pub mod input_handler;
+
 // Linux-only modules (need Smithay backends/renderer/GPU)
 #[cfg(target_os = "linux")]
 pub mod backend;
@@ -28,8 +31,6 @@ pub mod cursor;
 pub mod icon;
 #[cfg(target_os = "linux")]
 pub mod input;
-#[cfg(target_os = "linux")]
-pub mod input_handler;
 #[cfg(target_os = "linux")]
 pub mod render;
 #[cfg(target_os = "linux")]

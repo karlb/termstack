@@ -429,6 +429,27 @@ impl TermStack {
         None
     }
 
+    /// Find which window is at a given screen Y coordinate (Y=0 at top).
+    ///
+    /// Uses the same layout walk as `find_resize_handle_at` but returns the
+    /// window index whose vertical extent contains the point.
+    pub fn window_at_screen_y(&self, screen_y: ScreenY) -> Option<usize> {
+        let screen_y_value = screen_y.value() as i32;
+        let mut content_y = -(self.scroll_offset as i32);
+
+        for (i, node) in self.layout_nodes.iter().enumerate() {
+            let bottom_y = content_y + node.height;
+
+            if screen_y_value >= content_y && screen_y_value < bottom_y {
+                return Some(i);
+            }
+
+            content_y = bottom_y;
+        }
+
+        None
+    }
+
     /// Clear resize drag if the dragged window no longer exists or has moved.
     ///
     /// Call this after removing windows from layout_nodes. The identity check
