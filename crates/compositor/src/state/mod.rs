@@ -48,7 +48,6 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
-#[cfg(target_os = "linux")]
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
@@ -1181,7 +1180,6 @@ impl CompositorHandler for TermStack {
     fn commit(&mut self, surface: &WlSurface) {
 
         // Process buffer for desktop rendering abstractions
-        #[cfg(target_os = "linux")]
         on_commit_buffer_handler::<Self>(surface);
         // Update popup manager state (moves unmapped popups to mapped when committed)
         self.popup_manager.commit(surface);

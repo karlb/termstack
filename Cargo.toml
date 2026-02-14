@@ -4,6 +4,7 @@ members = [
     "crates/compositor",
     "crates/terminal",
     "crates/test-harness",
+    "crates/test-wayland-client",
     "crates/termstack",
 ]
 exclude = ["fuzz"]

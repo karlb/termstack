@@ -1,20 +1,22 @@
 //! macOS display backend using winit + softbuffer
 //!
 //! Provides a full compositor experience on macOS by rendering terminals
-//! directly to a winit window via softbuffer (CPU-based pixel presentation).
-//!
-//! The Wayland server still runs for potential external clients, but
-//! rendering external windows is deferred — only internal terminals
-//! are composited in this backend.
+//! and external Wayland client windows to a winit window via softbuffer
+//! (CPU-based pixel presentation).
 
 use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
 use smithay::reexports::wayland_server::{Display, Resource};
 use smithay::utils::{Physical, Size, Transform};
+use smithay::wayland::compositor::{
+    with_surface_tree_downward, SubsurfaceCachedState, TraversalAction,
+};
+use smithay::wayland::shm::with_buffer_contents;
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::desktop::utils::send_frames_surface_tree;
 
@@ -786,8 +788,49 @@ impl App {
                         }
                     }
                 }
-                StackWindow::External(_) => {
-                    // External window rendering deferred for MVP
+                StackWindow::External(entry) => {
+                    let wl_surface = entry.surface.wl_surface();
+
+                    // Render title bar for SSD windows
+                    let mut window_content_y = content_y;
+                    if !entry.uses_csd {
+                        if let Some(ref mut tb_renderer) = self.title_bar_renderer {
+                            let (tb_pixels, _tb_w, tb_h) =
+                                tb_renderer.render(&entry.command, width);
+                            blit_bgra_to_surface(
+                                &tb_pixels,
+                                width,
+                                tb_h,
+                                &mut buffer,
+                                width,
+                                height,
+                                0,
+                                content_y,
+                            );
+                        }
+                        window_content_y += TITLE_BAR_HEIGHT as i32;
+                    }
+
+                    // Blit the Wayland surface tree
+                    blit_surface_tree(
+                        wl_surface,
+                        &mut buffer,
+                        width,
+                        height,
+                        0,
+                        window_content_y,
+                    );
+
+                    // Draw focus indicator
+                    if is_focused {
+                        draw_focus_indicator(
+                            &mut buffer,
+                            width,
+                            height,
+                            content_y,
+                            window_height,
+                        );
+                    }
                 }
             }
 
@@ -915,6 +958,98 @@ fn draw_focus_indicator(
             }
         }
     }
+}
+
+/// Blit a single Wayland SHM surface's buffer onto the softbuffer framebuffer.
+///
+/// Takes `&SurfaceData` directly (instead of `&WlSurface`) to avoid deadlocking
+/// when called from inside `with_surface_tree_downward`, which already holds the
+/// surface data lock.
+#[allow(clippy::too_many_arguments)]
+fn blit_surface_from_data(
+    surface_data: &smithay::wayland::compositor::SurfaceData,
+    dst: &mut [u32],
+    dst_width: u32,
+    dst_height: u32,
+    dst_x: i32,
+    dst_y: i32,
+) {
+    let Some(buffer) = surface_data
+        .data_map
+        .get::<RendererSurfaceStateUserData>()
+        .and_then(|state| {
+            let guard = state.lock().ok()?;
+            guard.buffer().cloned()
+        })
+    else {
+        return;
+    };
+
+    let _ = with_buffer_contents(&buffer, |ptr, len, data| {
+        let src_width = data.width as u32;
+        let src_height = data.height as u32;
+        let stride = data.stride as usize;
+
+        for row in 0..src_height {
+            let screen_y = dst_y + row as i32;
+            if screen_y < 0 || screen_y >= dst_height as i32 {
+                continue;
+            }
+
+            let src_row_offset = row as usize * stride;
+            let dst_row_start = screen_y as usize * dst_width as usize;
+
+            for col in 0..src_width {
+                let screen_x = dst_x + col as i32;
+                if screen_x < 0 || screen_x >= dst_width as i32 {
+                    continue;
+                }
+
+                let src_byte_offset = src_row_offset + col as usize * 4;
+                if src_byte_offset + 3 >= len {
+                    break;
+                }
+
+                // SAFETY: we checked bounds above and ptr points to the SHM pool
+                let pixel = unsafe {
+                    (ptr.add(src_byte_offset) as *const u32).read_unaligned()
+                };
+                // ARGB8888 → 0x00RRGGBB for softbuffer
+                let dst_idx = dst_row_start + screen_x as usize;
+                if dst_idx < dst.len() {
+                    dst[dst_idx] = pixel & 0x00FFFFFF;
+                }
+            }
+        }
+    });
+}
+
+/// Walk the surface tree of a Wayland surface and blit each surface at its
+/// accumulated position (handling subsurface offsets).
+fn blit_surface_tree(
+    wl_surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    dst: &mut [u32],
+    dst_width: u32,
+    dst_height: u32,
+    base_x: i32,
+    base_y: i32,
+) {
+    with_surface_tree_downward(
+        wl_surface,
+        (base_x, base_y),
+        |_surface, states, &(x, y)| {
+            let offset = states
+                .cached_state
+                .get::<SubsurfaceCachedState>()
+                .current()
+                .location;
+            TraversalAction::DoChildren((x + offset.x, y + offset.y))
+        },
+        |_surface, states, &(x, y)| {
+            blit_surface_from_data(states, dst, dst_width, dst_height, x, y);
+        },
+        |_, _, _| true,
+    );
 }
 
 /// Convert a winit key event to terminal bytes
