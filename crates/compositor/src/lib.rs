@@ -11,7 +11,9 @@ pub mod layout;
 pub mod title_bar;
 
 // Cross-platform compositor modules (Smithay wayland_frontend + desktop features)
+pub mod frame;
 pub mod selection;
+pub mod setup;
 pub mod spawn_handler;
 pub mod state;
 pub mod terminal_manager;

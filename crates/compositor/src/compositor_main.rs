@@ -71,9 +71,6 @@ pub fn run_compositor() -> anyhow::Result<()> {
 
 #[cfg(feature = "headless-backend")]
 fn run_compositor_headless() -> anyhow::Result<()> {
-    use std::sync::Arc;
-    use std::os::unix::net::UnixListener;
-
     tracing::info!("starting termstack with headless backend");
 
     // Load configuration
@@ -85,25 +82,8 @@ fn run_compositor_headless() -> anyhow::Result<()> {
     // Create Wayland display
     let display: Display<TermStack> = Display::new()?;
 
-    // Create a virtual output for layout calculations (no actual rendering)
-    let mode = Mode {
-        size: (1280, 800).into(),
-        refresh: 60_000,
-    };
-
-    let output = Output::new(
-        "headless".to_string(),
-        PhysicalProperties {
-            size: (0, 0).into(),
-            subpixel: Subpixel::Unknown,
-            make: "TermStack".to_string(),
-            model: "Headless".to_string(),
-        },
-    );
-    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
-    output.set_preferred(mode);
-
-    let output_size: Size<i32, Physical> = Size::from((mode.size.w, mode.size.h));
+    // Create output
+    let (output, _mode, output_size) = crate::setup::create_output("headless", 1280, 800);
 
     // Create compositor state (no renderer needed for headless)
     let (mut compositor, mut display) = TermStack::new(
@@ -116,185 +96,23 @@ fn run_compositor_headless() -> anyhow::Result<()> {
 
     // Add output to compositor
     compositor.space.map_output(&output, (0, 0));
-
-    // Create output global so clients can discover it
     let _output_global = output.create_global::<TermStack>(&compositor.display_handle);
 
-    // Create listening socket for Wayland clients
-    let listening_socket = ListeningSocketSource::new_auto()
-        .expect("failed to create Wayland socket");
-
-    let socket_name = listening_socket
-        .socket_name()
-        .to_string_lossy()
-        .to_string();
-
-    tracing::info!(?socket_name, "headless compositor listening on Wayland socket");
-
-    // Set WAYLAND_DISPLAY for child processes
-    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-
-    // Force GTK and Qt apps to use Wayland backend
-    std::env::set_var("GDK_BACKEND", "wayland");
-    std::env::set_var("QT_QPA_PLATFORM", "wayland");
-
-    // Insert socket source into event loop for new client connections
-    event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
-        tracing::info!("new Wayland client connected (headless)");
-        if let Err(e) = state.display_handle.insert_client(client_stream, Arc::new(ClientState {
-            compositor_state: Default::default(),
-        })) {
-            tracing::error!(error = ?e, "Failed to insert Wayland client");
-        }
-    }).map_err(|e| anyhow::anyhow!("Failed to insert Wayland socket source: {e:?}"))?;
-
-    // Create IPC socket for termstack commands
-    let ipc_socket_path = crate::ipc::socket_path();
-    let _ = std::fs::remove_file(&ipc_socket_path); // Clean up old socket
-    let ipc_listener = UnixListener::bind(&ipc_socket_path)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AddrInUse {
-                anyhow::anyhow!(
-                    "IPC socket already in use: {:?}\n\
-                     Another termstack compositor may be running, or a stale socket exists.\n\
-                     Try: rm {:?}",
-                    ipc_socket_path, ipc_socket_path
-                )
-            } else {
-                anyhow::anyhow!("Failed to create IPC socket at {:?}: {}", ipc_socket_path, e)
-            }
-        })?;
-    ipc_listener.set_nonblocking(true)
-        .map_err(|e| anyhow::anyhow!("Failed to set IPC socket nonblocking: {}", e))?;
-
-    // Set environment variable for child processes
-    std::env::set_var("TERMSTACK_SOCKET", &ipc_socket_path);
-
-    // Set TERMSTACK_BIN so spawned terminals use matching CLI version
-    // Fall back to "termstack" in PATH if binary path cannot be determined
-    let binary_path = std::env::current_exe()
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = ?e, "Failed to determine binary path, using 'termstack' from PATH");
-            std::path::PathBuf::from("termstack")
-        });
-    std::env::set_var("TERMSTACK_BIN", &binary_path);
-
-    tracing::info!(
-        path = ?ipc_socket_path,
-        binary = ?binary_path,
-        "headless IPC socket created, TERMSTACK_SOCKET and TERMSTACK_BIN env vars set"
-    );
-
-    // Insert IPC socket source into event loop
-    event_loop.handle().insert_source(
-        Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
-        |_, listener, state| {
-            // Accept incoming connections
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        tracing::debug!("IPC connection received (headless)");
-                        match crate::ipc::read_ipc_request(stream) {
-                            Ok((request, stream)) => {
-                                match request {
-                                    crate::ipc::IpcRequest::Spawn(spawn_req) => {
-                                        if spawn_req.foreground.is_some() {
-                                            tracing::info!(
-                                                command = %spawn_req.command,
-                                                foreground = spawn_req.foreground,
-                                                "IPC GUI spawn request queued (headless)"
-                                            );
-                                            state.pending_gui_spawn_requests.push(spawn_req);
-                                        } else {
-                                            tracing::info!(command = %spawn_req.command, "IPC terminal spawn request queued (headless)");
-                                            state.pending_spawn_requests.push(spawn_req);
-                                        }
-                                    }
-                                    crate::ipc::IpcRequest::Resize(mode) => {
-                                        tracing::info!(?mode, "IPC resize request queued (headless)");
-                                        state.pending_resize_request = Some((mode, stream));
-                                    }
-                                    crate::ipc::IpcRequest::Builtin(builtin_req) => {
-                                        tracing::info!(
-                                            command = %builtin_req.command,
-                                            "IPC builtin request queued (headless)"
-                                        );
-                                        state.pending_builtin_requests.push(builtin_req);
-                                    }
-                                    crate::ipc::IpcRequest::QueryWindows => {
-                                        // Build window info from layout_nodes
-                                        let windows: Vec<crate::ipc::WindowInfo> = state.layout_nodes
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, node)| {
-                                                let (is_external, command, actual_width) = match &node.cell {
-                                                    crate::state::StackWindow::Terminal(_) => {
-                                                        (false, String::new(), state.output_size.w)
-                                                    }
-                                                    crate::state::StackWindow::External(entry) => {
-                                                        // Get actual window width from geometry
-                                                        let geo = entry.window.geometry();
-                                                        let width = if geo.size.w > 0 {
-                                                            geo.size.w
-                                                        } else {
-                                                            state.output_size.w
-                                                        };
-                                                        (true, entry.command.clone(), width)
-                                                    }
-                                                };
-                                                crate::ipc::WindowInfo {
-                                                    index: i,
-                                                    width: actual_width,
-                                                    height: node.height,
-                                                    is_external,
-                                                    command,
-                                                }
-                                            })
-                                            .collect();
-                                        tracing::info!(window_count = windows.len(), "IPC query_windows response (headless)");
-                                        if let Err(e) = crate::ipc::send_json_response(stream, &windows) {
-                                            tracing::warn!(error = ?e, "Failed to send query_windows response");
-                                        }
-                                    }
-                                }
-                            }
-                            Err(crate::ipc::IpcError::Timeout) => {
-                                tracing::debug!("IPC read timeout (headless)");
-                            }
-                            Err(crate::ipc::IpcError::EmptyMessage) => {
-                                tracing::debug!("IPC received empty message (headless)");
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = ?e, "IPC request parsing failed (headless)");
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => {
-                        tracing::warn!(error = ?e, "IPC accept error (headless)");
-                        break;
-                    }
-                }
-            }
-            Ok(smithay::reexports::calloop::PostAction::Continue)
-        },
-    ).expect("failed to insert IPC socket source");
+    // Set up Wayland socket, IPC socket, and toolkit env vars
+    crate::setup::setup_wayland_socket(&event_loop.handle())?;
+    crate::setup::setup_ipc_socket(&event_loop.handle())?;
+    crate::setup::set_toolkit_env_vars();
 
     // Spawn initial terminal immediately in headless mode
     // (no XWayland to wait for)
     compositor.spawn_initial_terminal = true;
 
-    // Create terminal manager for headless mode
-    let terminal_theme = config.theme.to_terminal_theme();
-    let mut terminal_manager = TerminalManager::new_with_size(
+    // Create terminal manager
+    let mut terminal_manager = crate::setup::create_terminal_manager(
+        &config,
         output_size.w as u32,
         output_size.h as u32,
-        terminal_theme,
-        config.font_size,
     );
-    terminal_manager.set_max_terminals(config.max_terminals);
-    terminal_manager.set_max_dead_terminals(config.max_dead_terminals);
-    terminal_manager.set_dead_terminal_ttl(std::time::Duration::from_secs(config.dead_terminal_ttl_minutes * 60));
 
     tracing::info!("headless compositor entering main loop");
 
@@ -315,63 +133,19 @@ fn run_compositor_headless() -> anyhow::Result<()> {
             }
         }
 
-        // Handle external window insert/resize events
-        crate::window_lifecycle::handle_external_window_events(&mut compositor);
-
-        // Update cell heights for proper layout
-        let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
-        compositor.update_layout_heights(window_heights);
-        compositor.recalculate_layout();
-
         // Dispatch Wayland client requests
         display.dispatch_clients(&mut compositor)
             .expect("failed to dispatch clients");
 
-        // Handle terminal spawn requests from IPC
-        crate::spawn_handler::handle_ipc_spawn_requests(
+        // Process shared frame logic
+        let frame_result = crate::frame::process_frame(
             &mut compositor,
             &mut terminal_manager,
             crate::window_height::calculate_window_heights,
         );
-
-        // Handle GUI spawn requests from IPC
-        crate::spawn_handler::handle_gui_spawn_requests(
-            &mut compositor,
-            &mut terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // Handle builtin command requests from IPC
-        crate::spawn_handler::handle_builtin_requests(
-            &mut compositor,
-            &mut terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // Handle resize requests from IPC
-        crate::terminal_output::handle_ipc_resize_request(&mut compositor, &mut terminal_manager);
-
-        // Process terminal PTY output
-        crate::terminal_output::process_terminal_output(&mut compositor, &mut terminal_manager);
-
-        // Promote output terminals that have content
-        crate::terminal_output::promote_output_terminals(&mut compositor, &terminal_manager);
-
-        // Handle cleanup of output terminals from closed windows
-        crate::window_lifecycle::handle_output_terminal_cleanup(&mut compositor, &mut terminal_manager);
-
-        // Handle restoration of launchers when output terminals are already gone
-        crate::window_lifecycle::handle_launcher_restoration(&mut compositor, &mut terminal_manager);
-
-        // Cleanup dead terminals
-        if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
+        if frame_result.all_terminals_exited {
             break;
         }
-
-        // Recalculate heights for any windows added during this frame
-        let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
-        compositor.update_layout_heights(window_heights);
-        compositor.recalculate_layout();
 
         if !compositor.running {
             break;
@@ -499,25 +273,8 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     };
 
     let initial_size = x11_window.size();
-    let mode = Mode {
-        size: (initial_size.w as i32, initial_size.h as i32).into(),
-        refresh: 60_000,
-    };
-
-    let output = Output::new(
-        "x11".to_string(),
-        PhysicalProperties {
-            size: (0, 0).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Smithay".to_string(),
-            model: "X11".to_string(),
-        },
-    );
-    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
-    output.set_preferred(mode);
-
-    // Convert logical to physical size
-    let output_size: Size<i32, Physical> = Size::from((mode.size.w, mode.size.h));
+    let (output, _mode, output_size) =
+        crate::setup::create_output("x11", initial_size.w as i32, initial_size.h as i32);
 
     // Track current window size for resize events
     let mut current_size = initial_size;
@@ -537,17 +294,6 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     // Create output global so clients can discover it
     let _output_global = output.create_global::<TermStack>(&compositor.display_handle);
 
-    // Create listening socket
-    let listening_socket = ListeningSocketSource::new_auto()
-        .map_err(|e| anyhow::anyhow!("Failed to create Wayland socket: {e:?}"))?;
-
-    let socket_name = listening_socket
-        .socket_name()
-        .to_string_lossy()
-        .to_string();
-
-    tracing::info!(?socket_name, "listening on Wayland socket");
-
     // Save original WAYLAND_DISPLAY for running apps on host
     let host_wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
     if let Some(ref host) = host_wayland_display {
@@ -556,181 +302,20 @@ fn run_compositor_x11() -> anyhow::Result<()> {
     }
 
     // Save original DISPLAY for clipboard operations
-    // We need this because arboard uses X11 clipboard, and some X11 operations
-    // may need the DISPLAY variable even after initial connection
     let host_x11_display = std::env::var("DISPLAY").ok();
     if let Some(ref x11_display) = host_x11_display {
         std::env::set_var("HOST_DISPLAY", x11_display);
         tracing::info!(x11_display, "saved host DISPLAY");
     }
 
-    // Set WAYLAND_DISPLAY for child processes (apps will open inside compositor)
-    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-
-    // Force GTK and Qt apps to use Wayland backend (otherwise they may use X11/Xwayland)
-    std::env::set_var("GDK_BACKEND", "wayland");
-    std::env::set_var("QT_QPA_PLATFORM", "wayland");
+    // Set up Wayland socket, IPC socket, and toolkit env vars
+    crate::setup::setup_wayland_socket(&event_loop.handle())?;
+    crate::setup::setup_ipc_socket(&event_loop.handle())?;
+    crate::setup::set_toolkit_env_vars();
 
     // Unset DISPLAY so X11 apps spawned from terminals use our XWayland, not the host.
     // XWayland will set DISPLAY when it's ready.
-    // Note: Terminals spawned before XWayland is ready won't have DISPLAY set.
     std::env::remove_var("DISPLAY");
-
-    // Insert socket source into event loop for new client connections
-    event_loop.handle().insert_source(listening_socket, |client_stream, _, state| {
-        tracing::info!("new Wayland client connected");
-        if let Err(e) = state.display_handle.insert_client(client_stream, std::sync::Arc::new(ClientState {
-            compositor_state: Default::default(),
-        })) {
-            tracing::error!(error = ?e, "Failed to insert Wayland client");
-        }
-    }).map_err(|e| anyhow::anyhow!("Failed to insert Wayland socket source: {e:?}"))?;
-
-    // Create IPC socket for termstack commands
-    let ipc_socket_path = crate::ipc::socket_path();
-    let _ = std::fs::remove_file(&ipc_socket_path); // Clean up old socket
-    let ipc_listener = UnixListener::bind(&ipc_socket_path)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AddrInUse {
-                anyhow::anyhow!(
-                    "IPC socket already in use: {:?}\n\
-                     Another termstack compositor may be running, or a stale socket exists.\n\
-                     Try: rm {:?}",
-                    ipc_socket_path, ipc_socket_path
-                )
-            } else {
-                anyhow::anyhow!("Failed to create IPC socket at {:?}: {}", ipc_socket_path, e)
-            }
-        })?;
-    ipc_listener.set_nonblocking(true)
-        .map_err(|e| anyhow::anyhow!("Failed to set IPC socket nonblocking: {}", e))?;
-
-    // Set environment variable for child processes
-    std::env::set_var("TERMSTACK_SOCKET", &ipc_socket_path);
-
-    // Set TERMSTACK_BIN so spawned terminals use matching CLI version
-    // Fall back to "termstack" in PATH if binary path cannot be determined
-    let binary_path = std::env::current_exe()
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = ?e, "Failed to determine binary path, using 'termstack' from PATH");
-            std::path::PathBuf::from("termstack")
-        });
-    std::env::set_var("TERMSTACK_BIN", &binary_path);
-
-    tracing::info!(
-        path = ?ipc_socket_path,
-        env_set = ?std::env::var("TERMSTACK_SOCKET"),
-        binary = ?binary_path,
-        "IPC socket created, TERMSTACK_SOCKET and TERMSTACK_BIN env vars set"
-    );
-
-    // Insert IPC socket source into event loop
-    event_loop.handle().insert_source(
-        Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
-        |_, listener, state| {
-            // Accept incoming connections
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        tracing::info!("IPC connection received");
-                        match crate::ipc::read_ipc_request(stream) {
-                            Ok((request, stream)) => {
-                                match request {
-                                    crate::ipc::IpcRequest::Spawn(spawn_req) => {
-                                        // Detect if this is a gui command that slipped through the fish integration
-                                        if spawn_req.command.starts_with("gui ") || spawn_req.command == "gui" {
-                                            tracing::warn!(
-                                                command = %spawn_req.command,
-                                                "Ignoring 'gui' command - use 'gui' function from shell integration"
-                                            );
-                                            // Don't spawn - this would cause an infinite loop
-                                        } else if spawn_req.foreground.is_some() {
-                                            // GUI spawn request (foreground or background mode)
-                                            tracing::info!(
-                                                command = %spawn_req.command,
-                                                foreground = spawn_req.foreground,
-                                                "IPC GUI spawn request queued"
-                                            );
-                                            state.pending_gui_spawn_requests.push(spawn_req);
-                                        } else {
-                                            // Terminal spawn request
-                                            tracing::info!(command = %spawn_req.command, "IPC terminal spawn request queued");
-                                            state.pending_spawn_requests.push(spawn_req);
-                                        }
-                                        // Spawn doesn't need ACK - it's fire-and-forget
-                                    }
-                                    crate::ipc::IpcRequest::Resize(mode) => {
-                                        tracing::info!(?mode, "IPC resize request queued");
-                                        // Store stream for ACK after resize completes
-                                        state.pending_resize_request = Some((mode, stream));
-                                    }
-                                    crate::ipc::IpcRequest::Builtin(builtin_req) => {
-                                        tracing::info!(
-                                            command = %builtin_req.command,
-                                            success = builtin_req.success,
-                                            has_result = !builtin_req.result.is_empty(),
-                                            "IPC builtin request queued"
-                                        );
-                                        state.pending_builtin_requests.push(builtin_req);
-                                    }
-                                    crate::ipc::IpcRequest::QueryWindows => {
-                                        // Build window info from layout_nodes
-                                        let windows: Vec<crate::ipc::WindowInfo> = state.layout_nodes
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, node)| {
-                                                let (is_external, command, actual_width) = match &node.cell {
-                                                    crate::state::StackWindow::Terminal(_) => {
-                                                        (false, String::new(), state.output_size.w)
-                                                    }
-                                                    crate::state::StackWindow::External(entry) => {
-                                                        // Get actual window width from geometry
-                                                        let geo = entry.window.geometry();
-                                                        let width = if geo.size.w > 0 {
-                                                            geo.size.w
-                                                        } else {
-                                                            state.output_size.w
-                                                        };
-                                                        (true, entry.command.clone(), width)
-                                                    }
-                                                };
-                                                crate::ipc::WindowInfo {
-                                                    index: i,
-                                                    width: actual_width,
-                                                    height: node.height,
-                                                    is_external,
-                                                    command,
-                                                }
-                                            })
-                                            .collect();
-                                        tracing::info!(window_count = windows.len(), "IPC query_windows response");
-                                        if let Err(e) = crate::ipc::send_json_response(stream, &windows) {
-                                            tracing::warn!(error = ?e, "Failed to send query_windows response");
-                                        }
-                                    }
-                                }
-                            }
-                            Err(crate::ipc::IpcError::Timeout) => {
-                                tracing::debug!("IPC read timeout");
-                            }
-                            Err(crate::ipc::IpcError::EmptyMessage) => {
-                                tracing::debug!("IPC received empty message");
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = ?e, "IPC request parsing failed");
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => {
-                        tracing::warn!(error = ?e, "IPC accept error");
-                        break;
-                    }
-                }
-            }
-            Ok(smithay::reexports::calloop::PostAction::Continue)
-        },
-    ).map_err(|e| anyhow::anyhow!("Failed to insert IPC socket source: {e:?}"))?;
 
     // Create channel for X11 input events
     // The X11 backend callback will send events, main loop will receive them
@@ -776,19 +361,15 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         config.background_color[3],
     );
 
-    // Create terminal manager with output size, theme, and font size
-    let terminal_theme = config.theme.to_terminal_theme();
-    let mut terminal_manager = TerminalManager::new_with_size(
+    // Create terminal manager
+    let mut terminal_manager = crate::setup::create_terminal_manager(
+        &config,
         output_size.w as u32,
         output_size.h as u32,
-        terminal_theme,
-        config.font_size,
     );
-    terminal_manager.set_max_terminals(config.max_terminals);
-    terminal_manager.set_max_dead_terminals(config.max_dead_terminals);
-    terminal_manager.set_dead_terminal_ttl(std::time::Duration::from_secs(config.dead_terminal_ttl_minutes * 60));
 
     // Create title bar renderer for external windows
+    let terminal_theme = config.theme.to_terminal_theme();
     let mut title_bar_renderer = TitleBarRenderer::new(terminal_theme);
     if title_bar_renderer.is_none() {
         tracing::warn!("Title bar renderer unavailable - no font found");
@@ -811,13 +392,6 @@ fn run_compositor_x11() -> anyhow::Result<()> {
 
     // Main event loop
     while compositor.running {
-        // Clear stale drag state if no pointer buttons are pressed
-        // This handles lost release events when window loses focus mid-drag
-        compositor.clear_stale_drag_state(compositor.pointer_buttons_pressed > 0);
-
-        // Cancel pending resizes from unresponsive clients
-        compositor.cancel_stale_pending_resizes();
-
         // Spawn initial terminal once XWayland is ready
         if compositor.spawn_initial_terminal {
             compositor.spawn_initial_terminal = false;
@@ -835,9 +409,6 @@ fn run_compositor_x11() -> anyhow::Result<()> {
 
         // Monitor xwayland-satellite health and auto-restart on crash with backoff
         xwayland_lifecycle::monitor_xwayland_satellite_health(&mut compositor);
-
-        // Handle external window insert/resize events
-        crate::window_lifecycle::handle_external_window_events(&mut compositor);
 
         // Update cell heights for input event processing
         let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
@@ -891,16 +462,6 @@ fn run_compositor_x11() -> anyhow::Result<()> {
             }
         }
 
-        // Apply accumulated scroll delta (once per frame)
-        compositor.apply_pending_scroll();
-
-        // Process pending PRIMARY selection paste (from middle-click)
-        compositor.process_primary_selection_paste(&mut terminal_manager);
-
-        // Timeout stale clipboard reads and pending GUI window state
-        compositor.timeout_stale_clipboard_reads();
-        compositor.timeout_stale_pending_window();
-
         // Periodic resource usage logging
         if last_resource_log.elapsed() >= RESOURCE_LOG_INTERVAL {
             last_resource_log = Instant::now();
@@ -943,24 +504,6 @@ fn run_compositor_x11() -> anyhow::Result<()> {
             current_size = (new_w, new_h).into();
         }
 
-        // Handle font size change requests (Ctrl+Shift+Plus/Minus)
-        if compositor.pending_font_size_delta != 0.0 {
-            let delta = compositor.pending_font_size_delta;
-            compositor.pending_font_size_delta = 0.0;
-
-            let new_font_size = (terminal_manager.font_size() + delta).clamp(6.0, 72.0);
-            terminal_manager.set_font_size(
-                new_font_size,
-                compositor.output_size.w as u32,
-                compositor.output_size.h as u32,
-            );
-
-            // Recalculate layout with new terminal sizes
-            let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
-            compositor.update_layout_heights(window_heights);
-            compositor.recalculate_layout();
-        }
-
         // Update cursor icon based on whether pointer is on a resize handle
         if let Some(ref mut cm) = cursor_manager {
             cm.set_resize_cursor(compositor.cursor_on_resize_handle);
@@ -970,77 +513,19 @@ fn run_compositor_x11() -> anyhow::Result<()> {
             break;
         }
 
-        // Cleanup popup internal resources
-        compositor.popup_manager.cleanup();
-
         // Dispatch Wayland client requests
         display.dispatch_clients(&mut compositor)
             .expect("failed to dispatch clients");
 
-        // Handle terminal spawn requests (keyboard shortcut)
-        crate::window_lifecycle::handle_terminal_spawn(
+        // Process shared frame logic
+        let frame_result = crate::frame::process_frame(
             &mut compositor,
             &mut terminal_manager,
             crate::window_height::calculate_window_heights,
         );
-
-        // Handle command spawn requests from IPC (termstack)
-        crate::spawn_handler::handle_ipc_spawn_requests(
-            &mut compositor,
-            &mut terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // Handle GUI spawn requests from IPC (termstack gui)
-        crate::spawn_handler::handle_gui_spawn_requests(
-            &mut compositor,
-            &mut terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // Handle builtin command requests from IPC (termstack --builtin)
-        crate::spawn_handler::handle_builtin_requests(
-            &mut compositor,
-            &mut terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // Handle resize requests from IPC (termstack --resize)
-        crate::terminal_output::handle_ipc_resize_request(&mut compositor, &mut terminal_manager);
-
-        // Handle key repeat for terminals
-        crate::input_handler::handle_key_repeat(&mut compositor, &mut terminal_manager);
-
-        // Handle focus change requests from input (scroll is applied immediately)
-        crate::input_handler::handle_focus_change_requests(&mut compositor, &mut terminal_manager);
-
-        // Process terminal PTY output and handle sizing actions
-        crate::terminal_output::process_terminal_output(&mut compositor, &mut terminal_manager);
-
-        // Promote output terminals that have content to standalone cells
-        crate::terminal_output::promote_output_terminals(&mut compositor, &terminal_manager);
-
-        // Handle cleanup of output terminals from closed windows
-        crate::window_lifecycle::handle_output_terminal_cleanup(&mut compositor, &mut terminal_manager);
-
-        // Handle restoration of launchers when output terminals are already gone
-        crate::window_lifecycle::handle_launcher_restoration(&mut compositor, &mut terminal_manager);
-
-        // Cleanup dead terminals and handle focus changes
-        if crate::window_lifecycle::cleanup_and_sync_focus(&mut compositor, &mut terminal_manager) {
+        if frame_result.all_terminals_exited {
             break;
         }
-
-        // Recalculate heights for any windows added during this frame (e.g., external
-        // Wayland windows from dispatch_clients start with height 0). Without this,
-        // layout calculations and validate_state() would see stale zero heights.
-        let window_heights = crate::window_height::calculate_window_heights(&compositor, &terminal_manager);
-        compositor.update_layout_heights(window_heights);
-        compositor.recalculate_layout();
-
-        // Validate state invariants in debug builds
-        #[cfg(debug_assertions)]
-        compositor.validate_state(&terminal_manager);
 
         // Frame rate limiting: wait until it's time to render
         // This prevents busy-looping while still processing events at a steady rate

@@ -267,6 +267,7 @@ impl TermStack {
             } else {
                 (None, false, None)
             };
+            self.invalidate_focused_index_cache();
 
             // Queue output terminal for cleanup in main loop (if it still exists)
             if let Some(term_id) = output_terminal {

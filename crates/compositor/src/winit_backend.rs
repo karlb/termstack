@@ -4,20 +4,18 @@
 //! and external Wayland client windows to a winit window via softbuffer
 //! (CPU-based pixel presentation).
 
-use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
-use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::reexports::calloop::{EventLoop, generic::Generic, Interest, Mode as CalloopMode};
+use smithay::output::Output;
+use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::{Display, Resource};
-use smithay::utils::{Physical, Size, Transform};
+use smithay::utils::Size;
 use smithay::wayland::compositor::{
     with_surface_tree_downward, SubsurfaceCachedState, TraversalAction,
 };
 use smithay::wayland::shm::with_buffer_contents;
-use smithay::wayland::socket::ListeningSocketSource;
 use smithay::desktop::utils::send_frames_surface_tree;
 
 use softbuffer::Surface;
@@ -29,7 +27,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::config::Config;
 use crate::coords::ScreenY;
-use crate::state::{ClientState, FocusedWindow, StackWindow, TermStack};
+use crate::state::{FocusedWindow, StackWindow, TermStack};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::{TitleBarRenderer, CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
 
@@ -126,24 +124,8 @@ impl ApplicationHandler for App {
         let display: Display<TermStack> = Display::new().expect("failed to create Wayland display");
 
         // Create output
-        let mode = Mode {
-            size: (output_width as i32, output_height as i32).into(),
-            refresh: 60_000,
-        };
-
-        let output = Output::new(
-            "winit".to_string(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "TermStack".to_string(),
-                model: "Winit".to_string(),
-            },
-        );
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
-        output.set_preferred(mode);
-
-        let output_size: Size<i32, Physical> = Size::from((output_width as i32, output_height as i32));
+        let (output, _mode, output_size) =
+            crate::setup::create_output("winit", output_width as i32, output_height as i32);
 
         // Create compositor state
         let (mut compositor, display) = TermStack::new(
@@ -158,131 +140,18 @@ impl ApplicationHandler for App {
         compositor.space.map_output(&output, (0, 0));
         let _output_global = output.create_global::<TermStack>(&compositor.display_handle);
 
-        // Create listening socket for Wayland clients
-        let listening_socket = ListeningSocketSource::new_auto()
-            .expect("failed to create Wayland socket");
-
-        let socket_name = listening_socket
-            .socket_name()
-            .to_string_lossy()
-            .to_string();
-
-        tracing::info!(?socket_name, "winit compositor listening on Wayland socket");
-
-        // Set environment variables for child processes
-        std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-
-        // Insert socket source into calloop
-        calloop.handle().insert_source(listening_socket, |client_stream, _, state| {
-            tracing::info!("new Wayland client connected (winit)");
-            if let Err(e) = state.display_handle.insert_client(client_stream, Arc::new(ClientState {
-                compositor_state: Default::default(),
-            })) {
-                tracing::error!(error = ?e, "Failed to insert Wayland client");
-            }
-        }).expect("failed to insert Wayland socket source");
-
-        // Create IPC socket
-        let ipc_socket_path = crate::ipc::socket_path();
-        let _ = std::fs::remove_file(&ipc_socket_path);
-        let ipc_listener = UnixListener::bind(&ipc_socket_path)
-            .expect("failed to create IPC socket");
-        ipc_listener.set_nonblocking(true).expect("failed to set IPC socket nonblocking");
-
-        std::env::set_var("TERMSTACK_SOCKET", &ipc_socket_path);
-
-        let binary_path = std::env::current_exe()
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = ?e, "Failed to determine binary path");
-                std::path::PathBuf::from("termstack")
-            });
-        std::env::set_var("TERMSTACK_BIN", &binary_path);
-
-        tracing::info!(
-            path = ?ipc_socket_path,
-            binary = ?binary_path,
-            "winit IPC socket created"
-        );
-
-        // Insert IPC socket source into calloop
-        calloop.handle().insert_source(
-            Generic::new(ipc_listener, Interest::READ, CalloopMode::Level),
-            |_, listener, state| {
-                loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            tracing::debug!("IPC connection received (winit)");
-                            match crate::ipc::read_ipc_request(stream) {
-                                Ok((request, stream)) => {
-                                    match request {
-                                        crate::ipc::IpcRequest::Spawn(spawn_req) => {
-                                            if spawn_req.foreground.is_some() {
-                                                state.pending_gui_spawn_requests.push(spawn_req);
-                                            } else {
-                                                state.pending_spawn_requests.push(spawn_req);
-                                            }
-                                        }
-                                        crate::ipc::IpcRequest::Resize(mode) => {
-                                            state.pending_resize_request = Some((mode, stream));
-                                        }
-                                        crate::ipc::IpcRequest::Builtin(builtin_req) => {
-                                            state.pending_builtin_requests.push(builtin_req);
-                                        }
-                                        crate::ipc::IpcRequest::QueryWindows => {
-                                            let windows: Vec<crate::ipc::WindowInfo> = state.layout_nodes
-                                                .iter()
-                                                .enumerate()
-                                                .map(|(i, node)| {
-                                                    let (is_external, command) = match &node.cell {
-                                                        StackWindow::Terminal(_) => (false, String::new()),
-                                                        StackWindow::External(entry) => (true, entry.command.clone()),
-                                                    };
-                                                    crate::ipc::WindowInfo {
-                                                        index: i,
-                                                        width: state.output_size.w,
-                                                        height: node.height,
-                                                        is_external,
-                                                        command,
-                                                    }
-                                                })
-                                                .collect();
-                                            if let Err(e) = crate::ipc::send_json_response(stream, &windows) {
-                                                tracing::warn!(error = ?e, "Failed to send query_windows response");
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(crate::ipc::IpcError::Timeout) => {}
-                                Err(crate::ipc::IpcError::EmptyMessage) => {}
-                                Err(e) => {
-                                    tracing::warn!(error = ?e, "IPC request parsing failed (winit)");
-                                }
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(e) => {
-                            tracing::warn!(error = ?e, "IPC accept error (winit)");
-                            break;
-                        }
-                    }
-                }
-                Ok(smithay::reexports::calloop::PostAction::Continue)
-            },
-        ).expect("failed to insert IPC socket source");
+        // Set up Wayland socket, IPC socket, and toolkit env vars
+        crate::setup::setup_wayland_socket(&calloop.handle())
+            .expect("failed to set up Wayland socket");
+        crate::setup::setup_ipc_socket(&calloop.handle())
+            .expect("failed to set up IPC socket");
 
         // Create terminal manager
-        let terminal_theme = self.config.theme.to_terminal_theme();
-        let mut terminal_manager = TerminalManager::new_with_size(
-            output_width,
-            output_height,
-            terminal_theme,
-            self.config.font_size,
-        );
-        terminal_manager.set_max_terminals(self.config.max_terminals);
-        terminal_manager.set_max_dead_terminals(self.config.max_dead_terminals);
-        terminal_manager.set_dead_terminal_ttl(Duration::from_secs(self.config.dead_terminal_ttl_minutes * 60));
+        let mut terminal_manager =
+            crate::setup::create_terminal_manager(&self.config, output_width, output_height);
 
         // Create title bar renderer
+        let terminal_theme = self.config.theme.to_terminal_theme();
         self.title_bar_renderer = TitleBarRenderer::new(terminal_theme);
         if self.title_bar_renderer.is_none() {
             tracing::warn!("Title bar renderer unavailable - no font found");
@@ -324,12 +193,15 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != ElementState::Pressed {
-                    return;
-                }
-
                 let ctrl = self.modifiers.control_key();
                 let shift = self.modifiers.shift_key();
+                let alt = self.modifiers.alt_key();
+
+                // On key release, clear key repeat
+                if event.state != ElementState::Pressed {
+                    compositor.key_repeat = None;
+                    return;
+                }
 
                 // Compositor keybindings (Ctrl+Shift+...)
                 if ctrl && shift {
@@ -375,7 +247,7 @@ impl ApplicationHandler for App {
                 }
 
                 // Send key to focused terminal
-                let bytes = winit_key_to_bytes(&event.logical_key, ctrl);
+                let bytes = winit_key_to_bytes(&event.logical_key, ctrl, alt);
                 if !bytes.is_empty() {
                     if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
                         if !terminal.has_exited() {
@@ -384,6 +256,11 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+
+                    // Set up key repeat
+                    let next_repeat = Instant::now()
+                        + Duration::from_millis(compositor.repeat_delay_ms);
+                    compositor.key_repeat = Some((bytes, next_repeat));
                 }
             }
 
@@ -401,6 +278,17 @@ impl ApplicationHandler for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
+
+                // Update text selection drag
+                if compositor.cross_selection.as_ref().is_some_and(|s| s.active) {
+                    let render_y = ScreenY::new(position.y).to_render(compositor.output_size.h);
+                    crate::selection::update_cross_selection(
+                        compositor,
+                        terminal_manager,
+                        position.x,
+                        render_y,
+                    );
+                }
 
                 // Handle resize drag motion
                 if let Some(ref mut drag) = compositor.resizing {
@@ -430,6 +318,9 @@ impl ApplicationHandler for App {
 
                 match state {
                     ElementState::Pressed => {
+                        compositor.pointer_buttons_pressed =
+                            compositor.pointer_buttons_pressed.saturating_add(1);
+
                         if button == MouseButton::Left {
                             // Check for resize handle first
                             if let Some(handle_idx) = compositor.find_resize_handle_at(ScreenY::new(screen_y)) {
@@ -483,15 +374,58 @@ impl ApplicationHandler for App {
                                     }
                                 }
 
+                                // Start text selection
+                                let render_y = ScreenY::new(screen_y).to_render(compositor.output_size.h);
+                                crate::selection::start_cross_selection(
+                                    compositor,
+                                    terminal_manager,
+                                    self.cursor_position.0,
+                                    render_y,
+                                );
+
                                 compositor.set_focus_by_index(index);
 
                                 // Scroll to show focused window
                                 compositor.scroll_to_show_window_bottom(index);
                             }
+                        } else if button == MouseButton::Middle {
+                            // Middle-click paste from system clipboard
+                            if let Some(ref mut clipboard) = compositor.clipboard {
+                                match clipboard.get_text() {
+                                    Ok(text) => {
+                                        if let Some(terminal) =
+                                            terminal_manager.get_focused_mut(compositor.focused_window.as_ref())
+                                        {
+                                            if !terminal.has_exited() {
+                                                if let Err(e) = terminal.write(text.as_bytes()) {
+                                                    tracing::warn!(?e, "failed to write clipboard paste to terminal");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(?e, "failed to read clipboard for middle-click paste");
+                                    }
+                                }
+                            }
                         }
                     }
                     ElementState::Released => {
+                        compositor.pointer_buttons_pressed =
+                            compositor.pointer_buttons_pressed.saturating_sub(1);
+
                         if button == MouseButton::Left {
+                            // End text selection and copy to clipboard
+                            if let Some(text) =
+                                crate::selection::end_cross_selection(compositor, terminal_manager)
+                            {
+                                if let Some(ref mut clipboard) = compositor.clipboard {
+                                    if let Err(e) = clipboard.set_text(&text) {
+                                        tracing::warn!(?e, "failed to copy selection to clipboard");
+                                    }
+                                }
+                            }
+
                             if let Some(drag) = compositor.resizing.take() {
                                 // Mark terminal dirty for re-render
                                 if let Some(node) = compositor.layout_nodes.get(drag.window_index) {
@@ -562,83 +496,17 @@ impl ApplicationHandler for App {
         display.dispatch_clients(compositor)
             .expect("failed to dispatch clients");
 
-        // 3. Handle focus change requests
-        crate::input_handler::handle_focus_change_requests(compositor, terminal_manager);
-
-        // 4. Handle external window events
-        crate::window_lifecycle::handle_external_window_events(compositor);
-
-        // 5. Handle IPC spawn requests
-        crate::spawn_handler::handle_ipc_spawn_requests(
+        // 3. Process shared frame logic
+        let result = crate::frame::process_frame(
             compositor,
             terminal_manager,
             crate::window_height::calculate_window_heights,
         );
-
-        // 6. Handle GUI spawn requests
-        crate::spawn_handler::handle_gui_spawn_requests(
-            compositor,
-            terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // 7. Handle builtin requests
-        crate::spawn_handler::handle_builtin_requests(
-            compositor,
-            terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // 8. Handle resize requests from IPC
-        crate::terminal_output::handle_ipc_resize_request(compositor, terminal_manager);
-
-        // 9. Process terminal PTY output
-        crate::terminal_output::process_terminal_output(compositor, terminal_manager);
-
-        // 10. Promote output terminals
-        crate::terminal_output::promote_output_terminals(compositor, terminal_manager);
-
-        // 11. Handle output terminal cleanup
-        crate::window_lifecycle::handle_output_terminal_cleanup(compositor, terminal_manager);
-
-        // 12. Handle launcher restoration
-        crate::window_lifecycle::handle_launcher_restoration(compositor, terminal_manager);
-
-        // 13. Cleanup dead terminals
-        if crate::window_lifecycle::cleanup_and_sync_focus(compositor, terminal_manager) {
-            // All terminals gone - exit
+        if result.all_terminals_exited {
             compositor.running = false;
         }
 
-        // 14. Handle terminal spawn requests (Ctrl+Shift+Enter)
-        crate::window_lifecycle::handle_terminal_spawn(
-            compositor,
-            terminal_manager,
-            crate::window_height::calculate_window_heights,
-        );
-
-        // 15. Handle font size changes
-        if compositor.pending_font_size_delta != 0.0 {
-            let delta = compositor.pending_font_size_delta;
-            compositor.pending_font_size_delta = 0.0;
-            let new_size = (terminal_manager.font_size() + delta).clamp(6.0, 72.0);
-            terminal_manager.set_font_size(
-                new_size,
-                compositor.output_size.w as u32,
-                compositor.output_size.h as u32,
-            );
-            tracing::info!(new_size, "font size changed (winit)");
-        }
-
-        // 16. Apply accumulated scroll delta
-        compositor.apply_pending_scroll();
-
-        // 17. Calculate and update window heights
-        let window_heights = crate::window_height::calculate_window_heights(compositor, terminal_manager);
-        crate::window_height::check_and_handle_height_changes(compositor, window_heights);
-        compositor.recalculate_layout();
-
-        // 17. Send frame callbacks to Wayland clients
+        // 4. Send frame callbacks to Wayland clients and their popups
         for surface in compositor.xdg_shell_state.toplevel_surfaces() {
             send_frames_surface_tree(
                 surface.wl_surface(),
@@ -647,19 +515,26 @@ impl ApplicationHandler for App {
                 Some(Duration::ZERO),
                 |_, _| Some(output.clone()),
             );
+
+            for (popup, _) in
+                smithay::desktop::PopupManager::popups_for_surface(surface.wl_surface())
+            {
+                send_frames_surface_tree(
+                    popup.wl_surface(),
+                    output,
+                    Duration::ZERO,
+                    Some(Duration::ZERO),
+                    |_, _| Some(output.clone()),
+                );
+            }
         }
 
-        // 18. Flush clients
+        // 5. Flush clients
         if let Err(e) = compositor.display_handle.flush_clients() {
             tracing::warn!(error = ?e, "failed to flush Wayland clients");
         }
 
-        // 19. Process pending clipboard operations
-        compositor.process_primary_selection_paste(terminal_manager);
-        compositor.timeout_stale_clipboard_reads();
-        compositor.timeout_stale_pending_window();
-
-        // 20. Request redraw (throttled to avoid burning CPU)
+        // 6. Request redraw (throttled to avoid burning CPU)
         if self.last_render_time.elapsed() >= MIN_FRAME_TIME {
             if let Some(window) = &self.window {
                 window.request_redraw();
@@ -842,6 +717,59 @@ impl App {
             content_y += window_height;
         }
 
+        // Render popups on top of all windows
+        {
+            use smithay::desktop::{PopupKind, PopupManager};
+            let mut popup_content_y: i32 = -(compositor.scroll_offset as i32);
+
+            for node in compositor.layout_nodes.iter() {
+                let window_height = node.height;
+                if let StackWindow::External(entry) = &node.cell {
+                    let wl_surface = entry.surface.wl_surface();
+                    let parent_window_geo = entry.window.geometry();
+                    let title_bar_offset = if entry.uses_csd { 0 } else { TITLE_BAR_HEIGHT as i32 };
+                    let client_area_y = popup_content_y + title_bar_offset;
+
+                    for (popup_kind, popup_offset) in PopupManager::popups_for_surface(wl_surface) {
+                        let popup_surface = match &popup_kind {
+                            PopupKind::Xdg(xdg_popup) => xdg_popup,
+                            _ => continue,
+                        };
+
+                        let popup_position_geo =
+                            popup_surface.with_pending_state(|state| state.geometry);
+                        let popup_window_geo = popup_kind.geometry();
+
+                        let popup_position = if popup_offset.x != 0 || popup_offset.y != 0 {
+                            popup_offset
+                        } else {
+                            smithay::utils::Point::from((
+                                popup_position_geo.loc.x,
+                                popup_position_geo.loc.y,
+                            ))
+                        };
+
+                        // In screen coords (Y=0 at top), popup is below parent's top
+                        let popup_x =
+                            popup_position.x - parent_window_geo.loc.x - popup_window_geo.loc.x;
+                        let popup_y = client_area_y + popup_position.y
+                            - parent_window_geo.loc.y
+                            - popup_window_geo.loc.y;
+
+                        blit_surface_tree(
+                            popup_surface.wl_surface(),
+                            &mut buffer,
+                            width,
+                            height,
+                            popup_x,
+                            popup_y,
+                        );
+                    }
+                }
+                popup_content_y += window_height;
+            }
+        }
+
         // Present the frame
         if let Err(e) = buffer.present() {
             tracing::warn!(error = ?e, "failed to present softbuffer frame");
@@ -863,33 +791,29 @@ fn blit_bgra_to_surface(
     dst_x: i32,
     dst_y: i32,
 ) {
-    for row in 0..src_height {
-        let screen_y = dst_y + row as i32;
-        if screen_y < 0 || screen_y >= dst_height as i32 {
-            continue;
-        }
+    // Pre-compute visible row range
+    let row_start = if dst_y < 0 { (-dst_y) as u32 } else { 0 };
+    let row_end = src_height.min((dst_height as i32 - dst_y).max(0) as u32);
 
-        for col in 0..src_width {
-            let screen_x = dst_x + col as i32;
-            if screen_x < 0 || screen_x >= dst_width as i32 {
-                continue;
-            }
+    // Pre-compute visible column range
+    let col_start = if dst_x < 0 { (-dst_x) as u32 } else { 0 };
+    let col_end = src_width.min((dst_width as i32 - dst_x).max(0) as u32);
 
-            let src_idx = ((row * src_width + col) * 4) as usize;
-            if src_idx + 3 >= src.len() {
-                continue;
-            }
+    for row in row_start..row_end {
+        let screen_y = (dst_y + row as i32) as usize;
+        let src_row_offset = (row * src_width + col_start) as usize * 4;
+        let dst_start = screen_y * dst_width as usize + (dst_x + col_start as i32) as usize;
 
-            let b = src[src_idx] as u32;
-            let g = src[src_idx + 1] as u32;
-            let r = src[src_idx + 2] as u32;
-            // Strip alpha for softbuffer (expects 0x00RRGGBB)
-            let pixel = (r << 16) | (g << 8) | b;
+        let src_row = &src[src_row_offset..];
+        let dst_row = &mut dst[dst_start..];
 
-            let dst_idx = (screen_y as u32 * dst_width + screen_x as u32) as usize;
-            if dst_idx < dst.len() {
-                dst[dst_idx] = pixel;
-            }
+        for (col, chunk) in src_row
+            .chunks_exact(4)
+            .take((col_end - col_start) as usize)
+            .enumerate()
+        {
+            // BGRA → 0x00RRGGBB for softbuffer
+            dst_row[col] = (chunk[2] as u32) << 16 | (chunk[1] as u32) << 8 | chunk[0] as u32;
         }
     }
 }
@@ -906,33 +830,26 @@ fn blit_argb_to_surface(
     dst_x: i32,
     dst_y: i32,
 ) {
-    for row in 0..src_height {
-        let screen_y = dst_y + row as i32;
-        if screen_y < 0 || screen_y >= dst_height as i32 {
-            continue;
-        }
+    // Pre-compute visible row range
+    let row_start = if dst_y < 0 { (-dst_y) as u32 } else { 0 };
+    let row_end = src_height.min((dst_height as i32 - dst_y).max(0) as u32);
 
-        let src_row_start = (row * src_width) as usize;
-        let dst_row_start = screen_y as usize * dst_width as usize;
+    // Pre-compute visible column range
+    let col_start = if dst_x < 0 { (-dst_x) as u32 } else { 0 };
+    let col_end = src_width.min((dst_width as i32 - dst_x).max(0) as u32);
 
-        // Calculate visible column range
-        let col_start = if dst_x < 0 { (-dst_x) as u32 } else { 0 };
-        let col_end = src_width.min((dst_width as i32 - dst_x).max(0) as u32);
+    for row in row_start..row_end {
+        let screen_y = (dst_y + row as i32) as usize;
+        let src_start = (row * src_width + col_start) as usize;
+        let dst_start = screen_y * dst_width as usize + (dst_x + col_start as i32) as usize;
+        let count = (col_end - col_start) as usize;
 
-        for col in col_start..col_end {
-            let src_idx = src_row_start + col as usize;
-            if src_idx >= src.len() {
-                break;
-            }
+        let src_slice = &src[src_start..src_start + count];
+        let dst_slice = &mut dst[dst_start..dst_start + count];
 
-            let pixel = src[src_idx];
-            // Strip alpha: ARGB → 0x00RRGGBB
-            let out = pixel & 0x00FFFFFF;
-
-            let dst_idx = dst_row_start + (dst_x + col as i32) as usize;
-            if dst_idx < dst.len() {
-                dst[dst_idx] = out;
-            }
+        // Strip alpha: ARGB → 0x00RRGGBB
+        for (d, &s) in dst_slice.iter_mut().zip(src_slice) {
+            *d = s & 0x00FFFFFF;
         }
     }
 }
@@ -995,21 +912,18 @@ fn blit_surface_from_data(
         let src_height = data.height as u32;
         let stride = data.stride as usize;
 
-        for row in 0..src_height {
-            let screen_y = dst_y + row as i32;
-            if screen_y < 0 || screen_y >= dst_height as i32 {
-                continue;
-            }
+        // Pre-compute visible ranges
+        let row_start = if dst_y < 0 { (-dst_y) as u32 } else { 0 };
+        let row_end = src_height.min((dst_height as i32 - dst_y).max(0) as u32);
+        let col_start = if dst_x < 0 { (-dst_x) as u32 } else { 0 };
+        let col_end = src_width.min((dst_width as i32 - dst_x).max(0) as u32);
 
+        for row in row_start..row_end {
+            let screen_y = (dst_y + row as i32) as usize;
             let src_row_offset = row as usize * stride;
-            let dst_row_start = screen_y as usize * dst_width as usize;
+            let dst_row_start = screen_y * dst_width as usize;
 
-            for col in 0..src_width {
-                let screen_x = dst_x + col as i32;
-                if screen_x < 0 || screen_x >= dst_width as i32 {
-                    continue;
-                }
-
+            for col in col_start..col_end {
                 let src_byte_offset = src_row_offset + col as usize * 4;
                 if src_byte_offset + 3 >= len {
                     break;
@@ -1019,11 +933,24 @@ fn blit_surface_from_data(
                 let pixel = unsafe {
                     (ptr.add(src_byte_offset) as *const u32).read_unaligned()
                 };
-                // ARGB8888 → 0x00RRGGBB for softbuffer
-                let dst_idx = dst_row_start + screen_x as usize;
-                if dst_idx < dst.len() {
+                // Premultiplied ARGB8888 alpha compositing
+                let dst_idx = dst_row_start + (dst_x + col as i32) as usize;
+                let alpha = pixel >> 24;
+
+                if alpha == 0xFF {
+                    // Fully opaque: write directly (common case)
                     dst[dst_idx] = pixel & 0x00FFFFFF;
+                } else if alpha > 0 {
+                    // Blend: result = src + dst * (1 - src_alpha/255)
+                    // Source is premultiplied, so src channels are already scaled by alpha
+                    let inv_alpha = 255 - alpha;
+                    let bg = dst[dst_idx];
+                    let r = ((pixel >> 16) & 0xFF) + (((bg >> 16) & 0xFF) * inv_alpha / 255);
+                    let g = ((pixel >> 8) & 0xFF) + (((bg >> 8) & 0xFF) * inv_alpha / 255);
+                    let b = (pixel & 0xFF) + ((bg & 0xFF) * inv_alpha / 255);
+                    dst[dst_idx] = (r.min(255) << 16) | (g.min(255) << 8) | b.min(255);
                 }
+                // alpha == 0: skip (fully transparent)
             }
         }
     });
@@ -1058,7 +985,7 @@ fn blit_surface_tree(
 }
 
 /// Convert a winit key event to terminal bytes
-fn winit_key_to_bytes(key: &Key, ctrl: bool) -> Vec<u8> {
+fn winit_key_to_bytes(key: &Key, ctrl: bool, alt: bool) -> Vec<u8> {
     // Handle control characters
     if ctrl {
         if let Key::Character(s) = key {
@@ -1103,7 +1030,7 @@ fn winit_key_to_bytes(key: &Key, ctrl: bool) -> Vec<u8> {
         }
     }
 
-    match key {
+    let mut result = match key {
         Key::Character(s) => s.as_bytes().to_vec(),
 
         Key::Named(named) => match named {
@@ -1149,6 +1076,12 @@ fn winit_key_to_bytes(key: &Key, ctrl: bool) -> Vec<u8> {
         },
 
         _ => vec![],
+    };
+
+    if alt && !result.is_empty() {
+        result.insert(0, 0x1b);
     }
+
+    result
 }
 
