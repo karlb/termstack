@@ -204,34 +204,18 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                // Compositor keybindings (Ctrl+Shift+...)
-                if ctrl && shift {
-                    match &event.logical_key {
-                        Key::Character(s) => match s.as_str() {
-                            "q" | "Q" => {
-                                compositor.running = false;
-                                event_loop.exit();
-                                return;
-                            }
-                            "j" | "J" => {
-                                compositor.focus_change_requested = 1;
-                                return;
-                            }
-                            "k" | "K" => {
-                                compositor.focus_change_requested = -1;
-                                return;
-                            }
+                // Copy/paste: Ctrl+Shift+C/V or Cmd+C/V (macOS)
+                let copy_paste_combo = (ctrl && shift) || super_key;
+                if copy_paste_combo {
+                    if let Key::Character(s) = &event.logical_key {
+                        match s.as_str() {
                             "c" | "C" => {
                                 if let Some(ref mut clipboard) = compositor.clipboard {
                                     if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
                                         let text = if let Some(selected) = terminal.terminal.selection_text() {
-                                            tracing::debug!(len = selected.len(), "copying selection to clipboard");
                                             selected
                                         } else {
-                                            let lines = terminal.terminal.grid_content();
-                                            let text = lines.join("\n");
-                                            tracing::debug!(len = text.len(), "copying entire terminal content to clipboard (no selection)");
-                                            text
+                                            terminal.terminal.grid_content().join("\n")
                                         };
                                         if let Err(e) = clipboard.set_text(text) {
                                             tracing::error!(?e, "failed to copy to clipboard");
@@ -247,16 +231,38 @@ impl ApplicationHandler for App {
                                             if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
                                                 if !terminal.has_exited() {
                                                     if let Err(e) = terminal.write(text.as_bytes()) {
-                                                        tracing::warn!(?e, "failed to write clipboard paste to terminal");
+                                                        tracing::warn!(?e, "failed to paste from clipboard");
                                                     }
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            tracing::debug!(?e, "failed to read clipboard for paste");
+                                            tracing::debug!(?e, "failed to read clipboard");
                                         }
                                     }
                                 }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Other compositor keybindings (Ctrl+Shift+...)
+                if ctrl && shift {
+                    match &event.logical_key {
+                        Key::Character(s) => match s.as_str() {
+                            "q" | "Q" => {
+                                compositor.running = false;
+                                event_loop.exit();
+                                return;
+                            }
+                            "j" | "J" => {
+                                compositor.focus_change_requested = 1;
+                                return;
+                            }
+                            "k" | "K" => {
+                                compositor.focus_change_requested = -1;
                                 return;
                             }
                             _ => {}
@@ -283,53 +289,6 @@ impl ApplicationHandler for App {
 
                     // Consume unmatched Ctrl+Shift combos so they don't leak to the terminal
                     return;
-                }
-
-                // Cmd+C / Cmd+V (macOS)
-                if super_key {
-                    if let Key::Character(s) = &event.logical_key {
-                        match s.as_str() {
-                            "c" | "C" => {
-                                if let Some(ref mut clipboard) = compositor.clipboard {
-                                    if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
-                                        let text = if let Some(selected) = terminal.terminal.selection_text() {
-                                            tracing::debug!(len = selected.len(), "copying selection to clipboard");
-                                            selected
-                                        } else {
-                                            let lines = terminal.terminal.grid_content();
-                                            let text = lines.join("\n");
-                                            tracing::debug!(len = text.len(), "copying entire terminal content to clipboard (no selection)");
-                                            text
-                                        };
-                                        if let Err(e) = clipboard.set_text(text) {
-                                            tracing::error!(?e, "failed to copy to clipboard");
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                            "v" | "V" => {
-                                if let Some(ref mut clipboard) = compositor.clipboard {
-                                    match clipboard.get_text() {
-                                        Ok(text) => {
-                                            if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
-                                                if !terminal.has_exited() {
-                                                    if let Err(e) = terminal.write(text.as_bytes()) {
-                                                        tracing::warn!(?e, "failed to write clipboard paste to terminal");
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::debug!(?e, "failed to read clipboard for paste");
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
                 }
 
                 // Send key to focused terminal
