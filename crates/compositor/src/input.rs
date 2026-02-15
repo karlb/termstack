@@ -1809,8 +1809,13 @@ mod tests {
     }
 }
 
-/// Convert a keysym to bytes for sending to a terminal
+/// Convert a keysym to bytes for sending to a terminal via the shared key table.
+///
+/// Alt is passed as `false` because Smithay's keyboard processing handles
+/// Alt modifier internally (key repeat, compose sequences, etc.).
 fn keysym_to_bytes(keysym: Keysym, modifiers: &ModifiersState) -> Vec<u8> {
+    use crate::terminal_keys::{TerminalKey, terminal_key_to_bytes};
+
     // Filter out modifier-only keys (they don't produce characters)
     match keysym {
         Keysym::Shift_L | Keysym::Shift_R |
@@ -1826,105 +1831,48 @@ fn keysym_to_bytes(keysym: Keysym, modifiers: &ModifiersState) -> Vec<u8> {
         _ => {}
     }
 
-    // Handle control characters
-    if modifiers.ctrl {
-        let c = match keysym {
-            Keysym::a | Keysym::A => Some(1),   // Ctrl+A
-            Keysym::b | Keysym::B => Some(2),   // Ctrl+B
-            Keysym::c | Keysym::C => Some(3),   // Ctrl+C
-            Keysym::d | Keysym::D => Some(4),   // Ctrl+D
-            Keysym::e | Keysym::E => Some(5),   // Ctrl+E
-            Keysym::f | Keysym::F => Some(6),   // Ctrl+F
-            Keysym::g | Keysym::G => Some(7),   // Ctrl+G
-            Keysym::h | Keysym::H => Some(8),   // Ctrl+H (backspace)
-            Keysym::i | Keysym::I => Some(9),   // Ctrl+I (tab)
-            Keysym::j | Keysym::J => Some(10),  // Ctrl+J (newline)
-            Keysym::k | Keysym::K => Some(11),  // Ctrl+K
-            Keysym::l | Keysym::L => Some(12),  // Ctrl+L
-            Keysym::m | Keysym::M => Some(13),  // Ctrl+M (carriage return)
-            Keysym::n | Keysym::N => Some(14),  // Ctrl+N
-            Keysym::o | Keysym::O => Some(15),  // Ctrl+O
-            Keysym::p | Keysym::P => Some(16),  // Ctrl+P
-            Keysym::q | Keysym::Q => Some(17),  // Ctrl+Q
-            Keysym::r | Keysym::R => Some(18),  // Ctrl+R
-            Keysym::s | Keysym::S => Some(19),  // Ctrl+S
-            Keysym::t | Keysym::T => Some(20),  // Ctrl+T
-            Keysym::u | Keysym::U => Some(21),  // Ctrl+U
-            Keysym::v | Keysym::V => Some(22),  // Ctrl+V
-            Keysym::w | Keysym::W => Some(23),  // Ctrl+W
-            Keysym::x | Keysym::X => Some(24),  // Ctrl+X
-            Keysym::y | Keysym::Y => Some(25),  // Ctrl+Y
-            Keysym::z | Keysym::Z => Some(26),  // Ctrl+Z
-            Keysym::bracketleft => Some(27),    // Ctrl+[ (escape)
-            Keysym::backslash => Some(28),      // Ctrl+\
-            Keysym::bracketright => Some(29),   // Ctrl+]
-            Keysym::asciicircum => Some(30),    // Ctrl+^
-            Keysym::underscore => Some(31),     // Ctrl+_
-            _ => None,
-        };
-        if let Some(byte) = c {
-            return vec![byte];
-        }
-    }
-
-    // Handle special keys
-    match keysym {
-        Keysym::Return => vec![b'\r'],
-        Keysym::BackSpace => vec![0x7f],  // DEL
-        Keysym::Tab => vec![b'\t'],
-        Keysym::Escape => vec![0x1b],
-        Keysym::space => vec![b' '],
-
-        // Arrow keys (send escape sequences)
-        Keysym::Up => vec![0x1b, b'[', b'A'],
-        Keysym::Down => vec![0x1b, b'[', b'B'],
-        Keysym::Right => vec![0x1b, b'[', b'C'],
-        Keysym::Left => vec![0x1b, b'[', b'D'],
-
-        // Home/End
-        Keysym::Home => vec![0x1b, b'[', b'H'],
-        Keysym::End => vec![0x1b, b'[', b'F'],
-
-        // Page Up/Down
-        Keysym::Page_Up => vec![0x1b, b'[', b'5', b'~'],
-        Keysym::Page_Down => vec![0x1b, b'[', b'6', b'~'],
-
-        // Insert/Delete
-        Keysym::Insert => vec![0x1b, b'[', b'2', b'~'],
-        Keysym::Delete => vec![0x1b, b'[', b'3', b'~'],
-
-        // Function keys
-        Keysym::F1 => vec![0x1b, b'O', b'P'],
-        Keysym::F2 => vec![0x1b, b'O', b'Q'],
-        Keysym::F3 => vec![0x1b, b'O', b'R'],
-        Keysym::F4 => vec![0x1b, b'O', b'S'],
-        Keysym::F5 => vec![0x1b, b'[', b'1', b'5', b'~'],
-        Keysym::F6 => vec![0x1b, b'[', b'1', b'7', b'~'],
-        Keysym::F7 => vec![0x1b, b'[', b'1', b'8', b'~'],
-        Keysym::F8 => vec![0x1b, b'[', b'1', b'9', b'~'],
-        Keysym::F9 => vec![0x1b, b'[', b'2', b'0', b'~'],
-        Keysym::F10 => vec![0x1b, b'[', b'2', b'1', b'~'],
-        Keysym::F11 => vec![0x1b, b'[', b'2', b'3', b'~'],
-        Keysym::F12 => vec![0x1b, b'[', b'2', b'4', b'~'],
-
-        // Regular characters
+    let term_key = match keysym {
+        Keysym::Return => TerminalKey::Enter,
+        Keysym::BackSpace => TerminalKey::Backspace,
+        Keysym::Tab => TerminalKey::Tab,
+        Keysym::Escape => TerminalKey::Escape,
+        Keysym::space => TerminalKey::Space,
+        Keysym::Up => TerminalKey::ArrowUp,
+        Keysym::Down => TerminalKey::ArrowDown,
+        Keysym::Right => TerminalKey::ArrowRight,
+        Keysym::Left => TerminalKey::ArrowLeft,
+        Keysym::Home => TerminalKey::Home,
+        Keysym::End => TerminalKey::End,
+        Keysym::Page_Up => TerminalKey::PageUp,
+        Keysym::Page_Down => TerminalKey::PageDown,
+        Keysym::Insert => TerminalKey::Insert,
+        Keysym::Delete => TerminalKey::Delete,
+        Keysym::F1 => TerminalKey::F1,
+        Keysym::F2 => TerminalKey::F2,
+        Keysym::F3 => TerminalKey::F3,
+        Keysym::F4 => TerminalKey::F4,
+        Keysym::F5 => TerminalKey::F5,
+        Keysym::F6 => TerminalKey::F6,
+        Keysym::F7 => TerminalKey::F7,
+        Keysym::F8 => TerminalKey::F8,
+        Keysym::F9 => TerminalKey::F9,
+        Keysym::F10 => TerminalKey::F10,
+        Keysym::F11 => TerminalKey::F11,
+        Keysym::F12 => TerminalKey::F12,
         _ => {
-            // Try to get the UTF-8 representation
             let raw = keysym.raw();
             if (0x20..0x7f).contains(&raw) {
-                // ASCII printable
-                vec![raw as u8]
+                TerminalKey::Char(char::from_u32(raw).unwrap())
             } else if raw >= 0x100 {
-                // Unicode - convert to UTF-8
-                if let Some(c) = char::from_u32(raw) {
-                    let mut buf = [0u8; 4];
-                    c.encode_utf8(&mut buf).as_bytes().to_vec()
-                } else {
-                    vec![]
+                match char::from_u32(raw) {
+                    Some(c) => TerminalKey::Char(c),
+                    None => return vec![],
                 }
             } else {
-                vec![]
+                return vec![];
             }
         }
-    }
+    };
+
+    terminal_key_to_bytes(term_key, modifiers.ctrl, false)
 }

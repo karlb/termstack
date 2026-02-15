@@ -8,6 +8,7 @@ pub mod config;
 pub mod coords;
 pub mod ipc;
 pub mod layout;
+pub mod terminal_keys;
 pub mod title_bar;
 
 // Cross-platform compositor modules (Smithay wayland_frontend + desktop features)

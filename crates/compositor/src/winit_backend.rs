@@ -1047,104 +1047,45 @@ fn blit_surface_tree(
     );
 }
 
-/// Convert a winit key event to terminal bytes
+/// Convert a winit key event to terminal bytes via the shared key table
 fn winit_key_to_bytes(key: &Key, ctrl: bool, alt: bool) -> Vec<u8> {
-    // Handle control characters
-    if ctrl {
-        if let Key::Character(s) = key {
-            let c = s.chars().next().unwrap_or('\0');
-            let code = match c.to_ascii_lowercase() {
-                'a' => Some(1),
-                'b' => Some(2),
-                'c' => Some(3),
-                'd' => Some(4),
-                'e' => Some(5),
-                'f' => Some(6),
-                'g' => Some(7),
-                'h' => Some(8),
-                'i' => Some(9),
-                'j' => Some(10),
-                'k' => Some(11),
-                'l' => Some(12),
-                'm' => Some(13),
-                'n' => Some(14),
-                'o' => Some(15),
-                'p' => Some(16),
-                'q' => Some(17),
-                'r' => Some(18),
-                's' => Some(19),
-                't' => Some(20),
-                'u' => Some(21),
-                'v' => Some(22),
-                'w' => Some(23),
-                'x' => Some(24),
-                'y' => Some(25),
-                'z' => Some(26),
-                '[' => Some(27),
-                '\\' => Some(28),
-                ']' => Some(29),
-                '^' => Some(30),
-                '_' => Some(31),
-                _ => None,
-            };
-            if let Some(byte) = code {
-                return vec![byte];
-            }
-        }
-    }
+    use crate::terminal_keys::{TerminalKey, terminal_key_to_bytes};
 
-    let mut result = match key {
-        Key::Character(s) => s.as_bytes().to_vec(),
-
+    let term_key = match key {
+        Key::Character(s) => TerminalKey::Str(s),
         Key::Named(named) => match named {
-            NamedKey::Enter => vec![b'\r'],
-            NamedKey::Backspace => vec![0x7f],
-            NamedKey::Tab => vec![b'\t'],
-            NamedKey::Escape => vec![0x1b],
-            NamedKey::Space => vec![b' '],
-
-            // Arrow keys
-            NamedKey::ArrowUp => vec![0x1b, b'[', b'A'],
-            NamedKey::ArrowDown => vec![0x1b, b'[', b'B'],
-            NamedKey::ArrowRight => vec![0x1b, b'[', b'C'],
-            NamedKey::ArrowLeft => vec![0x1b, b'[', b'D'],
-
-            // Home/End
-            NamedKey::Home => vec![0x1b, b'[', b'H'],
-            NamedKey::End => vec![0x1b, b'[', b'F'],
-
-            // Page Up/Down
-            NamedKey::PageUp => vec![0x1b, b'[', b'5', b'~'],
-            NamedKey::PageDown => vec![0x1b, b'[', b'6', b'~'],
-
-            // Insert/Delete
-            NamedKey::Insert => vec![0x1b, b'[', b'2', b'~'],
-            NamedKey::Delete => vec![0x1b, b'[', b'3', b'~'],
-
-            // Function keys
-            NamedKey::F1 => vec![0x1b, b'O', b'P'],
-            NamedKey::F2 => vec![0x1b, b'O', b'Q'],
-            NamedKey::F3 => vec![0x1b, b'O', b'R'],
-            NamedKey::F4 => vec![0x1b, b'O', b'S'],
-            NamedKey::F5 => vec![0x1b, b'[', b'1', b'5', b'~'],
-            NamedKey::F6 => vec![0x1b, b'[', b'1', b'7', b'~'],
-            NamedKey::F7 => vec![0x1b, b'[', b'1', b'8', b'~'],
-            NamedKey::F8 => vec![0x1b, b'[', b'1', b'9', b'~'],
-            NamedKey::F9 => vec![0x1b, b'[', b'2', b'0', b'~'],
-            NamedKey::F10 => vec![0x1b, b'[', b'2', b'1', b'~'],
-            NamedKey::F11 => vec![0x1b, b'[', b'2', b'3', b'~'],
-            NamedKey::F12 => vec![0x1b, b'[', b'2', b'4', b'~'],
-
-            _ => vec![],
+            NamedKey::Enter => TerminalKey::Enter,
+            NamedKey::Backspace => TerminalKey::Backspace,
+            NamedKey::Tab => TerminalKey::Tab,
+            NamedKey::Escape => TerminalKey::Escape,
+            NamedKey::Space => TerminalKey::Space,
+            NamedKey::ArrowUp => TerminalKey::ArrowUp,
+            NamedKey::ArrowDown => TerminalKey::ArrowDown,
+            NamedKey::ArrowRight => TerminalKey::ArrowRight,
+            NamedKey::ArrowLeft => TerminalKey::ArrowLeft,
+            NamedKey::Home => TerminalKey::Home,
+            NamedKey::End => TerminalKey::End,
+            NamedKey::PageUp => TerminalKey::PageUp,
+            NamedKey::PageDown => TerminalKey::PageDown,
+            NamedKey::Insert => TerminalKey::Insert,
+            NamedKey::Delete => TerminalKey::Delete,
+            NamedKey::F1 => TerminalKey::F1,
+            NamedKey::F2 => TerminalKey::F2,
+            NamedKey::F3 => TerminalKey::F3,
+            NamedKey::F4 => TerminalKey::F4,
+            NamedKey::F5 => TerminalKey::F5,
+            NamedKey::F6 => TerminalKey::F6,
+            NamedKey::F7 => TerminalKey::F7,
+            NamedKey::F8 => TerminalKey::F8,
+            NamedKey::F9 => TerminalKey::F9,
+            NamedKey::F10 => TerminalKey::F10,
+            NamedKey::F11 => TerminalKey::F11,
+            NamedKey::F12 => TerminalKey::F12,
+            _ => return vec![],
         },
-
-        _ => vec![],
+        _ => return vec![],
     };
 
-    if alt && !result.is_empty() {
-        result.insert(0, 0x1b);
-    }
-
-    result
+    terminal_key_to_bytes(term_key, ctrl, alt)
 }
 
