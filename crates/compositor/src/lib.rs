@@ -9,6 +9,7 @@ pub mod config;
 pub mod coords;
 pub mod ipc;
 pub mod layout;
+pub mod mouse_actions;
 pub mod terminal_keys;
 pub mod title_bar;
 

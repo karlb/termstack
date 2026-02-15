@@ -89,27 +89,33 @@ fn copy_to_primary_selection(text: &str) {
     });
 }
 
-/// Check if a click is on the close button in a title bar
+/// Check if a click is on the close button in a title bar (render-coord wrapper).
+///
+/// Converts render coordinates to screen coordinates and delegates to the
+/// shared `mouse_actions::is_click_on_close_button`.
 fn is_click_on_close_button(
     render_y: f64,
     window_render_top: f64,
     click_x: f64,
     output_width: i32,
+    output_height: i32,
     has_ssd: bool,
     button: u32,
 ) -> bool {
-    if !has_ssd || button != BTN_LEFT {
+    if button != BTN_LEFT {
         return false;
     }
-
-    let title_bar_top = window_render_top;
-    let title_bar_bottom = title_bar_top - TITLE_BAR_HEIGHT as f64;
-    let in_title_bar = render_y <= title_bar_top && render_y > title_bar_bottom;
-
-    let close_btn_left = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64;
-    let in_close_btn = click_x >= close_btn_left;
-
-    in_title_bar && in_close_btn
+    let screen_y = output_height as f64 - render_y;
+    let window_screen_top = (output_height as f64 - window_render_top) as i32;
+    crate::mouse_actions::is_click_on_close_button(
+        click_x,
+        screen_y,
+        window_screen_top,
+        output_width,
+        TITLE_BAR_HEIGHT as i32,
+        CLOSE_BUTTON_WIDTH as i32,
+        has_ssd,
+    )
 }
 
 /// Convert render coordinates to terminal grid coordinates (col, row)
@@ -947,6 +953,7 @@ impl TermStack {
                             window_render_top,
                             screen_x,
                             self.output_size.w,
+                            self.output_size.h,
                             has_ssd,
                             button,
                         ) {
@@ -981,6 +988,7 @@ impl TermStack {
                             window_render_top,
                             screen_x,
                             self.output_size.w,
+                            self.output_size.h,
                             has_ssd,
                             button,
                         ) {
@@ -1396,38 +1404,44 @@ mod tests {
     use super::*;
 
     // ========== is_click_on_close_button tests ==========
+    //
+    // These test the render-coord wrapper that delegates to
+    // mouse_actions::is_click_on_close_button. Core screen-coord
+    // tests live in mouse_actions::tests.
+
+    const TEST_OUTPUT_HEIGHT: i32 = 1080;
 
     #[test]
     fn close_button_click_inside_title_bar_on_button() {
-        // Click on close button area within title bar
         let output_width = 800;
-        let window_render_top = 600.0; // Top of window in render coords
-        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0; // Inside close button
-        let title_bar_y = window_render_top - 5.0; // Inside title bar (5px below top)
+        let window_render_top = 600.0;
+        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
+        let title_bar_y = window_render_top - 5.0;
 
         assert!(is_click_on_close_button(
             title_bar_y,
             window_render_top,
             close_button_x,
             output_width,
-            true, // has_ssd
+            TEST_OUTPUT_HEIGHT,
+            true,
             BTN_LEFT,
         ));
     }
 
     #[test]
     fn close_button_click_outside_title_bar() {
-        // Click below title bar (in content area)
         let output_width = 800;
         let window_render_top = 600.0;
         let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
-        let below_title_bar = window_render_top - TITLE_BAR_HEIGHT as f64 - 10.0; // Below title bar
+        let below_title_bar = window_render_top - TITLE_BAR_HEIGHT as f64 - 10.0;
 
         assert!(!is_click_on_close_button(
             below_title_bar,
             window_render_top,
             close_button_x,
             output_width,
+            TEST_OUTPUT_HEIGHT,
             true,
             BTN_LEFT,
         ));
@@ -1435,10 +1449,9 @@ mod tests {
 
     #[test]
     fn close_button_click_outside_button_x_range() {
-        // Click in title bar but not on close button (left side)
         let output_width = 800;
         let window_render_top = 600.0;
-        let left_of_button = 100.0; // Far from close button
+        let left_of_button = 100.0;
         let title_bar_y = window_render_top - 5.0;
 
         assert!(!is_click_on_close_button(
@@ -1446,6 +1459,7 @@ mod tests {
             window_render_top,
             left_of_button,
             output_width,
+            TEST_OUTPUT_HEIGHT,
             true,
             BTN_LEFT,
         ));
@@ -1453,7 +1467,6 @@ mod tests {
 
     #[test]
     fn close_button_not_triggered_without_ssd() {
-        // CSD windows don't have compositor close button
         let output_width = 800;
         let window_render_top = 600.0;
         let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
@@ -1464,14 +1477,14 @@ mod tests {
             window_render_top,
             close_button_x,
             output_width,
-            false, // no ssd (CSD app)
+            TEST_OUTPUT_HEIGHT,
+            false,
             BTN_LEFT,
         ));
     }
 
     #[test]
     fn close_button_not_triggered_by_right_click() {
-        // Only left click should activate close button
         let output_width = 800;
         let window_render_top = 600.0;
         let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
@@ -1482,6 +1495,7 @@ mod tests {
             window_render_top,
             close_button_x,
             output_width,
+            TEST_OUTPUT_HEIGHT,
             true,
             0x111, // BTN_RIGHT
         ));
@@ -1489,7 +1503,6 @@ mod tests {
 
     #[test]
     fn close_button_edge_at_boundary() {
-        // Click exactly at left edge of close button
         let output_width = 800;
         let window_render_top = 600.0;
         let close_button_left_edge = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64;
@@ -1498,18 +1511,19 @@ mod tests {
         assert!(is_click_on_close_button(
             title_bar_y,
             window_render_top,
-            close_button_left_edge, // Exactly at left edge
+            close_button_left_edge,
             output_width,
+            TEST_OUTPUT_HEIGHT,
             true,
             BTN_LEFT,
         ));
 
-        // Just before the close button
         assert!(!is_click_on_close_button(
             title_bar_y,
             window_render_top,
-            close_button_left_edge - 1.0, // One pixel left of close button
+            close_button_left_edge - 1.0,
             output_width,
+            TEST_OUTPUT_HEIGHT,
             true,
             BTN_LEFT,
         ));

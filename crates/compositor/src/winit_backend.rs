@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
 use smithay::output::Output;
 use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::{Display, Resource};
+use smithay::reexports::wayland_server::Display;
 use smithay::utils::Size;
 use smithay::wayland::compositor::{
     with_surface_tree_downward, SubsurfaceCachedState, TraversalAction,
@@ -27,7 +27,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::config::Config;
 use crate::coords::ScreenY;
-use crate::state::{FocusedWindow, StackWindow, TermStack};
+use crate::state::{StackWindow, TermStack};
 use crate::terminal_manager::TerminalManager;
 use crate::title_bar::TitleBarRenderer;
 
@@ -280,30 +280,17 @@ impl ApplicationHandler for App {
                 }
 
                 // Handle resize drag motion
-                if let Some(ref mut drag) = compositor.resizing {
-                    let screen_y = position.y as i32;
-                    let delta = screen_y - drag.start_screen_y;
-                    let new_height = (drag.start_height + delta).max(crate::state::MIN_WINDOW_HEIGHT);
-                    drag.target_height = new_height;
-
-                    if let Some(node) = compositor.layout_nodes.get_mut(drag.window_index) {
-                        node.height = new_height;
-                        // Resize terminal to match drag
-                        if let StackWindow::Terminal(tid) = node.cell {
-                            let cell_height = terminal_manager.cell_height;
-                            if let Some(term) = terminal_manager.get_mut(tid) {
-                                let content_height = new_height - if term.show_title_bar { title_bar_h } else { 0 };
-                                let new_rows = (content_height as u32 / cell_height).max(1) as u16;
-                                term.resize(new_rows, cell_height);
-                                term.manually_sized = true;
-                            }
-                        }
-                    }
-                }
+                crate::mouse_actions::update_resize_drag(
+                    compositor,
+                    terminal_manager,
+                    position.y as i32,
+                    title_bar_h,
+                );
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
-                let screen_y = self.cursor_position.1;
+                let screen_x = self.cursor_position.0;
+                let screen_y = ScreenY::new(self.cursor_position.1);
 
                 match state {
                     ElementState::Pressed => {
@@ -311,71 +298,42 @@ impl ApplicationHandler for App {
                             compositor.pointer_buttons_pressed.saturating_add(1);
 
                         if button == MouseButton::Left {
-                            // Check for resize handle first
-                            if let Some(handle_idx) = compositor.find_resize_handle_at(ScreenY::new(screen_y)) {
-                                let node = &compositor.layout_nodes[handle_idx];
-                                let identity = match &node.cell {
-                                    StackWindow::Terminal(id) => FocusedWindow::Terminal(*id),
-                                    StackWindow::External(e) => {
-                                        FocusedWindow::External(e.surface.wl_surface().id())
-                                    }
-                                };
-                                compositor.resizing = Some(crate::state::ResizeDrag {
-                                    window_index: handle_idx,
-                                    window_identity: identity,
-                                    start_screen_y: screen_y as i32,
-                                    start_height: node.height,
-                                    target_height: node.height,
-                                    last_configure_time: std::time::Instant::now(),
-                                    last_sent_height: None,
-                                });
-                                return;
-                            }
-
-                            // Click-to-focus: find window at click position
-                            if let Some(index) = compositor.window_at_screen_y(ScreenY::new(screen_y)) {
-                                // Check for close button click on title bar
-                                let window_top: i32 = compositor.layout_nodes[..index]
-                                    .iter()
-                                    .map(|n| n.height)
-                                    .sum::<i32>()
-                                    - compositor.scroll_offset as i32;
-                                let click_in_title_bar = (screen_y as i32) < window_top + title_bar_h;
-                                let click_in_close_zone = self.cursor_position.0 >= (compositor.output_size.w - close_btn_w) as f64;
-
-                                if click_in_title_bar && click_in_close_zone {
+                            use crate::mouse_actions::{process_left_click, ClickResult};
+                            match process_left_click(
+                                compositor,
+                                terminal_manager,
+                                screen_x,
+                                screen_y,
+                                title_bar_h,
+                                close_btn_w,
+                            ) {
+                                ClickResult::ResizeDragStarted => {}
+                                ClickResult::CloseButtonClicked { index } => {
                                     match compositor.layout_nodes[index].cell {
                                         StackWindow::Terminal(tid) => {
-                                            if terminal_manager.get(tid).is_some_and(|t| t.show_title_bar) {
-                                                compositor.layout_nodes.remove(index);
-                                                compositor.invalidate_focused_index_cache();
-                                                terminal_manager.remove(tid);
-                                                compositor.update_focus_after_removal(index);
-                                                return;
-                                            }
+                                            compositor.layout_nodes.remove(index);
+                                            compositor.invalidate_focused_index_cache();
+                                            terminal_manager.remove(tid);
+                                            compositor.update_focus_after_removal(index);
                                         }
                                         StackWindow::External(ref entry) => {
-                                            if !entry.uses_csd {
-                                                entry.surface.send_close();
-                                                return;
-                                            }
+                                            entry.surface.send_close();
                                         }
                                     }
                                 }
-
-                                // Start text selection
-                                let render_y = ScreenY::new(screen_y).to_render(compositor.output_size.h);
-                                crate::selection::start_cross_selection(
-                                    compositor,
-                                    terminal_manager,
-                                    self.cursor_position.0,
-                                    render_y,
-                                );
-
-                                compositor.set_focus_by_index(index);
-
-                                // Scroll to show focused window
-                                compositor.scroll_to_show_window_bottom(index);
+                                ClickResult::WindowClicked { index } => {
+                                    // Start text selection
+                                    let render_y = screen_y.to_render(compositor.output_size.h);
+                                    crate::selection::start_cross_selection(
+                                        compositor,
+                                        terminal_manager,
+                                        screen_x,
+                                        render_y,
+                                    );
+                                    // Scroll to show focused window
+                                    compositor.scroll_to_show_window_bottom(index);
+                                }
+                                ClickResult::NoHit => {}
                             }
                         } else if button == MouseButton::Middle {
                             // Middle-click paste from system clipboard
@@ -404,24 +362,13 @@ impl ApplicationHandler for App {
                             compositor.pointer_buttons_pressed.saturating_sub(1);
 
                         if button == MouseButton::Left {
-                            // End text selection and copy to clipboard
-                            if let Some(text) =
-                                crate::selection::end_cross_selection(compositor, terminal_manager)
-                            {
+                            if let Some(text) = crate::mouse_actions::process_left_release(
+                                compositor,
+                                terminal_manager,
+                            ) {
                                 if let Some(ref mut clipboard) = compositor.clipboard {
                                     if let Err(e) = clipboard.set_text(&text) {
                                         tracing::warn!(?e, "failed to copy selection to clipboard");
-                                    }
-                                }
-                            }
-
-                            if let Some(drag) = compositor.resizing.take() {
-                                // Mark terminal dirty for re-render
-                                if let Some(node) = compositor.layout_nodes.get(drag.window_index) {
-                                    if let StackWindow::Terminal(tid) = node.cell {
-                                        if let Some(term) = terminal_manager.get_mut(tid) {
-                                            term.mark_dirty();
-                                        }
                                     }
                                 }
                             }
@@ -431,31 +378,23 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                let pixels = match delta {
-                    MouseScrollDelta::PixelDelta(pos) => pos.y,
-                    MouseScrollDelta::LineDelta(_, lines) => lines as f64 * 100.0,
+                let pixel_delta = match delta {
+                    MouseScrollDelta::PixelDelta(pos) => -pos.y, // Negate: winit positive = scroll up gesture
+                    MouseScrollDelta::LineDelta(_, lines) => -(lines as f64 * 100.0),
+                };
+                let scrollback_lines = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => Some((lines * 3.0) as i32),
+                    MouseScrollDelta::PixelDelta(pos) => Some((pos.y / 5.0) as i32),
                 };
 
-                if self.modifiers.shift_key() {
-                    // Shift+Scroll: terminal scrollback
-                    let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, lines) => (lines * 3.0) as i32,
-                        MouseScrollDelta::PixelDelta(pos) => (pos.y / 5.0) as i32,
-                    };
-                    if lines != 0 {
-                        if let Some(index) = compositor.window_at_screen_y(ScreenY::new(self.cursor_position.1)) {
-                            if let StackWindow::Terminal(tid) = compositor.layout_nodes[index].cell {
-                                if let Some(term) = terminal_manager.get_mut(tid) {
-                                    term.terminal.scroll_display(lines);
-                                    term.mark_dirty();
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Negate: winit positive = scroll up gesture, compositor positive = scroll down
-                    compositor.pending_scroll_delta -= pixels;
-                }
+                crate::mouse_actions::handle_scroll(
+                    compositor,
+                    terminal_manager,
+                    pixel_delta,
+                    self.modifiers.shift_key(),
+                    ScreenY::new(self.cursor_position.1),
+                    scrollback_lines,
+                );
             }
 
             WindowEvent::RedrawRequested => {
