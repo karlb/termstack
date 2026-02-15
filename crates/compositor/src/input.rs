@@ -24,6 +24,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
+use crate::compositor_actions::{CompositorAction, apply_compositor_action, SCROLL_STEP};
 use crate::coords::{RenderY, ScreenY};
 use crate::render::FOCUS_INDICATOR_WIDTH;
 use crate::selection;
@@ -38,9 +39,6 @@ const BTN_LEFT: u32 = 0x110;
 
 /// Middle mouse button code (BTN_MIDDLE in evdev)
 const BTN_MIDDLE: u32 = 0x112;
-
-/// Scroll amount per key press (pixels)
-const SCROLL_STEP: f64 = 50.0;
 
 /// Compositor column scroll: pixels per discrete scroll wheel notch
 const COMPOSITOR_SCROLL_PIXELS_PER_NOTCH: f64 = 100.0;
@@ -194,25 +192,6 @@ fn update_terminal_selection(
     } else {
         None
     }
-}
-
-/// Compositor keybinding action
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CompositorAction {
-    Quit,
-    SpawnTerminal,
-    FocusNext,
-    FocusPrev,
-    ScrollDown,
-    ScrollUp,
-    ScrollToTop,
-    ScrollToBottom,
-    PageDown,
-    PageUp,
-    Copy,
-    Paste,
-    FontSizeUp,
-    FontSizeDown,
 }
 
 /// Parse compositor keybindings from modifiers and keysym
@@ -517,59 +496,7 @@ impl TermStack {
             return false;
         };
 
-        match action {
-            CompositorAction::Quit => {
-                tracing::info!("quit requested");
-                self.running = false;
-            }
-            CompositorAction::SpawnTerminal => {
-                tracing::debug!("spawn terminal binding triggered");
-                self.spawn_terminal_requested = true;
-            }
-            CompositorAction::FocusNext => {
-                tracing::debug!("focus next requested");
-                self.focus_change_requested = 1;
-            }
-            CompositorAction::FocusPrev => {
-                tracing::debug!("focus prev requested");
-                self.focus_change_requested = -1;
-            }
-            CompositorAction::ScrollDown => {
-                self.pending_scroll_delta += SCROLL_STEP;
-            }
-            CompositorAction::ScrollUp => {
-                self.pending_scroll_delta += -SCROLL_STEP;
-            }
-            CompositorAction::ScrollToTop => {
-                self.scroll_to_top();
-            }
-            CompositorAction::ScrollToBottom => {
-                self.scroll_to_bottom();
-            }
-            CompositorAction::PageDown => {
-                self.pending_scroll_delta += self.output_size.h as f64 * 0.9;
-            }
-            CompositorAction::PageUp => {
-                self.pending_scroll_delta += -(self.output_size.h as f64 * 0.9);
-            }
-            CompositorAction::Copy => {
-                tracing::debug!("copy to clipboard requested");
-                self.pending_copy = true;
-            }
-            CompositorAction::Paste => {
-                tracing::debug!("paste from clipboard requested");
-                self.pending_paste = true;
-            }
-            CompositorAction::FontSizeUp => {
-                tracing::debug!("font size increase requested");
-                self.pending_font_size_delta += 1.0;
-            }
-            CompositorAction::FontSizeDown => {
-                tracing::debug!("font size decrease requested");
-                self.pending_font_size_delta -= 1.0;
-            }
-        }
-
+        apply_compositor_action(self, action);
         true
     }
 
@@ -591,21 +518,11 @@ impl TermStack {
         };
 
         match action {
-            CompositorAction::Quit => {
-                tracing::debug!("quit requested");
-                self.running = false;
-            }
-            CompositorAction::SpawnTerminal => {
-                tracing::debug!("spawn terminal binding triggered");
-                self.spawn_terminal_requested = true;
-            }
-            CompositorAction::FocusNext => {
-                tracing::debug!("focus next requested");
-                self.focus_change_requested = 1;
-            }
-            CompositorAction::FocusPrev => {
-                tracing::debug!("focus prev requested");
-                self.focus_change_requested = -1;
+            CompositorAction::Quit
+            | CompositorAction::SpawnTerminal
+            | CompositorAction::FocusNext
+            | CompositorAction::FocusPrev => {
+                apply_compositor_action(self, action);
             }
             // Other actions not used in global bindings
             _ => return false,

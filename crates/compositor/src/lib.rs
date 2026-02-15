@@ -4,6 +4,7 @@
 //! compositor entry point for the unified binary.
 
 // Cross-platform modules (no Smithay backend/renderer dependencies)
+pub mod compositor_actions;
 pub mod config;
 pub mod coords;
 pub mod ipc;

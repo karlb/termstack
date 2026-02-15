@@ -211,7 +211,6 @@ impl ApplicationHandler for App {
                 let ctrl = self.modifiers.control_key();
                 let shift = self.modifiers.shift_key();
                 let alt = self.modifiers.alt_key();
-                let super_key = self.modifiers.super_key();
 
                 // On key release, clear key repeat
                 if event.state != ElementState::Pressed {
@@ -219,88 +218,20 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                // Copy/paste: Ctrl+Shift+C/V or Cmd+C/V (macOS)
-                let copy_paste_combo = (ctrl && shift) || super_key;
-                if copy_paste_combo {
-                    if let Key::Character(s) = &event.logical_key {
-                        match s.as_str() {
-                            "c" | "C" => {
-                                if let Some(ref mut clipboard) = compositor.clipboard {
-                                    if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
-                                        let text = if let Some(selected) = terminal.terminal.selection_text() {
-                                            selected
-                                        } else {
-                                            terminal.terminal.grid_content().join("\n")
-                                        };
-                                        if let Err(e) = clipboard.set_text(text) {
-                                            tracing::error!(?e, "failed to copy to clipboard");
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                            "v" | "V" => {
-                                if let Some(ref mut clipboard) = compositor.clipboard {
-                                    match clipboard.get_text() {
-                                        Ok(text) => {
-                                            if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
-                                                if !terminal.has_exited() {
-                                                    if let Err(e) = terminal.write(text.as_bytes()) {
-                                                        tracing::warn!(?e, "failed to paste from clipboard");
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::debug!(?e, "failed to read clipboard");
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
+                // Check compositor keybindings first
+                if let Some(action) = parse_winit_keybinding(&self.modifiers, &event.logical_key) {
+                    crate::compositor_actions::apply_compositor_action(compositor, action);
+
+                    // Ctrl+Shift+Q uses process::exit on macOS (no clean shutdown path)
+                    if action == crate::compositor_actions::CompositorAction::Quit {
+                        std::process::exit(0);
                     }
+
+                    return;
                 }
 
-                // Other compositor keybindings (Ctrl+Shift+...)
+                // Consume unmatched Ctrl+Shift combos so they don't leak to the terminal
                 if ctrl && shift {
-                    match &event.logical_key {
-                        Key::Character(s) => match s.as_str() {
-                            "q" | "Q" => {
-                                std::process::exit(0);
-                            }
-                            "j" | "J" => {
-                                compositor.focus_change_requested = 1;
-                                return;
-                            }
-                            "k" | "K" => {
-                                compositor.focus_change_requested = -1;
-                                return;
-                            }
-                            _ => {}
-                        },
-                        Key::Named(NamedKey::Enter) => {
-                            compositor.spawn_terminal_requested = true;
-                            return;
-                        }
-                        _ => {}
-                    }
-
-                    // Font size change
-                    match &event.logical_key {
-                        Key::Character(s) if s == "+" || s == "=" => {
-                            compositor.pending_font_size_delta = 1.0;
-                            return;
-                        }
-                        Key::Character(s) if s == "-" || s == "_" => {
-                            compositor.pending_font_size_delta = -1.0;
-                            return;
-                        }
-                        _ => {}
-                    }
-
-                    // Consume unmatched Ctrl+Shift combos so they don't leak to the terminal
                     return;
                 }
 
@@ -566,6 +497,42 @@ impl ApplicationHandler for App {
         );
         if result.all_terminals_exited {
             compositor.running = false;
+        }
+
+        // 3b. Handle clipboard operations (pending from keybindings)
+        if compositor.pending_copy {
+            compositor.pending_copy = false;
+            if let Some(ref mut clipboard) = compositor.clipboard {
+                if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
+                    let text = if let Some(selected) = terminal.terminal.selection_text() {
+                        selected
+                    } else {
+                        terminal.terminal.grid_content().join("\n")
+                    };
+                    if let Err(e) = clipboard.set_text(text) {
+                        tracing::error!(?e, "failed to copy to clipboard");
+                    }
+                }
+            }
+        }
+        if compositor.pending_paste {
+            compositor.pending_paste = false;
+            if let Some(ref mut clipboard) = compositor.clipboard {
+                match clipboard.get_text() {
+                    Ok(text) => {
+                        if let Some(terminal) = terminal_manager.get_focused_mut(compositor.focused_window.as_ref()) {
+                            if !terminal.has_exited() {
+                                if let Err(e) = terminal.write(text.as_bytes()) {
+                                    tracing::warn!(?e, "failed to paste from clipboard");
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(?e, "failed to read clipboard");
+                    }
+                }
+            }
         }
 
         // 4. Send frame callbacks to Wayland clients and their popups
@@ -1045,6 +1012,50 @@ fn blit_surface_tree(
         },
         |_, _, _| true,
     );
+}
+
+/// Parse compositor keybindings from winit modifiers and key.
+///
+/// Maps Cmd+C/V, Ctrl+Shift+... to `CompositorAction`.
+fn parse_winit_keybinding(
+    modifiers: &ModifiersState,
+    key: &Key,
+) -> Option<crate::compositor_actions::CompositorAction> {
+    use crate::compositor_actions::CompositorAction;
+
+    let ctrl = modifiers.control_key();
+    let shift = modifiers.shift_key();
+    let super_key = modifiers.super_key();
+
+    // Copy/paste: Ctrl+Shift+C/V or Cmd+C/V (macOS)
+    let copy_paste_combo = (ctrl && shift) || super_key;
+    if copy_paste_combo {
+        if let Key::Character(s) = key {
+            match s.as_str() {
+                "c" | "C" => return Some(CompositorAction::Copy),
+                "v" | "V" => return Some(CompositorAction::Paste),
+                _ => {}
+            }
+        }
+    }
+
+    // Other compositor keybindings (Ctrl+Shift+...)
+    if ctrl && shift {
+        match key {
+            Key::Character(s) => match s.as_str() {
+                "q" | "Q" => return Some(CompositorAction::Quit),
+                "j" | "J" => return Some(CompositorAction::FocusNext),
+                "k" | "K" => return Some(CompositorAction::FocusPrev),
+                "+" | "=" => return Some(CompositorAction::FontSizeUp),
+                "-" | "_" => return Some(CompositorAction::FontSizeDown),
+                _ => {}
+            },
+            Key::Named(NamedKey::Enter) => return Some(CompositorAction::SpawnTerminal),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Convert a winit key event to terminal bytes via the shared key table
