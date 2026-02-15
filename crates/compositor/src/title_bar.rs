@@ -132,6 +132,9 @@ pub struct TitleBarRenderer {
 
     /// Color theme
     theme: Theme,
+
+    /// UI scale factor (1.0 = no scaling, 2.0 = Retina)
+    scale: f32,
 }
 
 struct GlyphData {
@@ -172,16 +175,26 @@ impl TitleBarRenderer {
         })
     }
 
-    /// Create a new title bar renderer with theme
+    /// Create a new title bar renderer with theme (scale = 1.0)
     pub fn new(theme: Theme) -> Option<Self> {
+        Self::new_scaled(theme, 1.0)
+    }
+
+    /// Create a new title bar renderer with theme and UI scale factor.
+    ///
+    /// The scale factor multiplies font size and all title bar dimensions
+    /// (height, close button width, padding). Use 1.0 for standard displays,
+    /// 2.0 for Retina/HiDPI.
+    pub fn new_scaled(theme: Theme, scale: f32) -> Option<Self> {
         match Self::find_font() {
             Some((font, path)) => {
-                tracing::info!("TitleBarRenderer: loaded font from {}", path);
+                tracing::info!("TitleBarRenderer: loaded font from {} (scale={})", path, scale);
                 Some(Self {
                     font,
-                    font_size: 14.0,
+                    font_size: 14.0 * scale,
                     glyph_cache: HashMap::new(),
                     theme,
+                    scale,
                 })
             }
             None => {
@@ -189,6 +202,21 @@ impl TitleBarRenderer {
                 None
             }
         }
+    }
+
+    /// Scaled title bar height in pixels
+    pub fn title_bar_height(&self) -> u32 {
+        (TITLE_BAR_HEIGHT as f32 * self.scale) as u32
+    }
+
+    /// Scaled close button width in pixels
+    pub fn close_button_width(&self) -> u32 {
+        (CLOSE_BUTTON_WIDTH as f32 * self.scale) as u32
+    }
+
+    /// Scaled title bar padding in pixels
+    pub fn title_bar_padding(&self) -> u32 {
+        (TITLE_BAR_PADDING as f32 * self.scale) as u32
     }
 
     /// Render a title bar to a pixel buffer (ARGB32)
@@ -207,7 +235,9 @@ impl TitleBarRenderer {
         text: &str,
         width: u32,
     ) -> (Vec<u8>, u32, u32, TitleBarCharInfo) {
-        let height = TITLE_BAR_HEIGHT;
+        let height = self.title_bar_height();
+        let close_btn_width = self.close_button_width();
+        let padding = self.title_bar_padding();
         let mut buffer = vec![0u8; (width * height * 4) as usize];
         let colors = TitleBarColors::from_theme(self.theme);
 
@@ -231,7 +261,6 @@ impl TitleBarRenderer {
         let display_text = text;
 
         // Starting position with padding
-        let padding = TITLE_BAR_PADDING;
         let mut x_pos = padding as f32;
         let baseline_y = (height as f32 * 0.75) as i32; // Approximate baseline
 
@@ -300,7 +329,7 @@ impl TitleBarRenderer {
             x_pos += glyph.advance;
 
             // Stop if we're past the visible area (leave room for close button)
-            if x_pos >= (width - padding - CLOSE_BUTTON_WIDTH) as f32 {
+            if x_pos >= (width - padding - close_btn_width) as f32 {
                 break;
             }
         }
@@ -311,7 +340,7 @@ impl TitleBarRenderer {
         // Render gradient at bottom of title bar (blends into content below)
         // In buffer coords: higher Y = bottom of title bar (closer to content)
         let content_bg = colors.content_background(self.theme);
-        let gradient_pixels = GRADIENT_HEIGHT.min(height);
+        let gradient_pixels = ((GRADIENT_HEIGHT as f32 * self.scale) as u32).min(height);
         let gradient_start_y = height - gradient_pixels;  // Start N pixels from bottom
 
         for y_offset in gradient_start_y..height {
@@ -351,8 +380,8 @@ impl TitleBarRenderer {
 
     /// Render the close button
     fn render_close_button(&mut self, buffer: &mut [u8], width: u32, height: u32) {
-        let btn_x = width - CLOSE_BUTTON_WIDTH;
-        let btn_width = CLOSE_BUTTON_WIDTH;
+        let btn_width = self.close_button_width();
+        let btn_x = width - btn_width;
         let btn_height = height;
         let colors = TitleBarColors::from_theme(self.theme);
 

@@ -29,7 +29,7 @@ use crate::config::Config;
 use crate::coords::ScreenY;
 use crate::state::{FocusedWindow, StackWindow, TermStack};
 use crate::terminal_manager::TerminalManager;
-use crate::title_bar::{TitleBarRenderer, CLOSE_BUTTON_WIDTH, TITLE_BAR_HEIGHT};
+use crate::title_bar::TitleBarRenderer;
 
 /// Minimum time between frames (~120 FPS cap)
 const MIN_FRAME_TIME: Duration = Duration::from_millis(8);
@@ -53,6 +53,8 @@ pub fn run_compositor_winit() -> anyhow::Result<()> {
         modifiers: ModifiersState::empty(),
         cursor_position: (0.0, 0.0),
         title_bar_renderer: None,
+        title_bar_height: crate::title_bar::TITLE_BAR_HEIGHT as i32,
+        close_button_width: crate::title_bar::CLOSE_BUTTON_WIDTH as i32,
         last_render_time: Instant::now(),
     };
 
@@ -78,6 +80,10 @@ struct App {
     // Input state
     modifiers: ModifiersState,
     cursor_position: (f64, f64),
+
+    // Scaled title bar dimensions (for HiDPI)
+    title_bar_height: i32,
+    close_button_width: i32,
 
     // Frame timing
     last_render_time: Instant,
@@ -154,9 +160,13 @@ impl ApplicationHandler for App {
         let mut terminal_manager =
             crate::setup::create_terminal_manager(&self.config, output_width, output_height);
 
-        // Create title bar renderer
+        // Create title bar renderer (scaled for HiDPI)
         let terminal_theme = self.config.theme.to_terminal_theme();
-        self.title_bar_renderer = TitleBarRenderer::new(terminal_theme);
+        self.title_bar_renderer = TitleBarRenderer::new_scaled(terminal_theme, scale_factor as f32);
+        if let Some(ref tb) = self.title_bar_renderer {
+            self.title_bar_height = tb.title_bar_height() as i32;
+            self.close_button_width = tb.close_button_width() as i32;
+        }
         if self.title_bar_renderer.is_none() {
             tracing::warn!("Title bar renderer unavailable - no font found");
         }
@@ -183,6 +193,8 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, _event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+        let title_bar_h = self.title_bar_height;
+        let close_btn_w = self.close_button_width;
         let Some(compositor) = &mut self.compositor else { return };
         let Some(terminal_manager) = &mut self.terminal_manager else { return };
 
@@ -349,7 +361,7 @@ impl ApplicationHandler for App {
                         if let StackWindow::Terminal(tid) = node.cell {
                             let cell_height = terminal_manager.cell_height;
                             if let Some(term) = terminal_manager.get_mut(tid) {
-                                let content_height = new_height - if term.show_title_bar { TITLE_BAR_HEIGHT as i32 } else { 0 };
+                                let content_height = new_height - if term.show_title_bar { title_bar_h } else { 0 };
                                 let new_rows = (content_height as u32 / cell_height).max(1) as u16;
                                 term.resize(new_rows, cell_height);
                                 term.manually_sized = true;
@@ -397,8 +409,8 @@ impl ApplicationHandler for App {
                                     .map(|n| n.height)
                                     .sum::<i32>()
                                     - compositor.scroll_offset as i32;
-                                let click_in_title_bar = (screen_y as i32) < window_top + TITLE_BAR_HEIGHT as i32;
-                                let click_in_close_zone = self.cursor_position.0 >= (compositor.output_size.w as u32 - CLOSE_BUTTON_WIDTH) as f64;
+                                let click_in_title_bar = (screen_y as i32) < window_top + title_bar_h;
+                                let click_in_close_zone = self.cursor_position.0 >= (compositor.output_size.w - close_btn_w) as f64;
 
                                 if click_in_title_bar && click_in_close_zone {
                                     match compositor.layout_nodes[index].cell {
@@ -595,6 +607,7 @@ impl ApplicationHandler for App {
 
 impl App {
     fn render_frame(&mut self) {
+        let title_bar_h = self.title_bar_height;
         let Some(compositor) = &mut self.compositor else { return };
         let Some(terminal_manager) = &mut self.terminal_manager else { return };
         let Some(surface) = &mut self.surface else { return };
@@ -680,11 +693,11 @@ impl App {
                                     title_bar_y,
                                 );
                             }
-                            terminal_content_y += TITLE_BAR_HEIGHT as i32;
+                            terminal_content_y += title_bar_h;
                         }
 
                         // Render terminal content
-                        let content_height = window_height - if terminal.show_title_bar { TITLE_BAR_HEIGHT as i32 } else { 0 };
+                        let content_height = window_height - if terminal.show_title_bar { title_bar_h } else { 0 };
                         if content_height > 0 {
                             terminal.terminal.render(
                                 terminal.width,
@@ -738,7 +751,7 @@ impl App {
                                 content_y,
                             );
                         }
-                        window_content_y += TITLE_BAR_HEIGHT as i32;
+                        window_content_y += title_bar_h;
                     }
 
                     // Blit the Wayland surface tree
@@ -777,7 +790,7 @@ impl App {
                 if let StackWindow::External(entry) = &node.cell {
                     let wl_surface = entry.surface.wl_surface();
                     let parent_window_geo = entry.window.geometry();
-                    let title_bar_offset = if entry.uses_csd { 0 } else { TITLE_BAR_HEIGHT as i32 };
+                    let title_bar_offset = if entry.uses_csd { 0 } else { title_bar_h };
                     let client_area_y = popup_content_y + title_bar_offset;
 
                     for (popup_kind, popup_offset) in PopupManager::popups_for_surface(wl_surface) {
