@@ -174,10 +174,12 @@ pub struct SpawnRequest {
 /// Returns `IpcError::ParseError` if JSON parsing fails.
 /// Returns `IpcError::EmptyMessage` if an empty line is received.
 pub fn read_ipc_request(stream: UnixStream) -> Result<(IpcRequest, UnixStream), IpcError> {
-    // Set a short timeout to avoid blocking the compositor.
+    // Set a timeout to avoid blocking the compositor indefinitely on hung clients.
+    // Must be generous enough for large messages (env vars JSON can exceed the
+    // macOS ~8KB Unix socket buffer, requiring multiple read/write rounds).
     // On macOS, set_read_timeout returns EINVAL on socket pairs when the peer
     // has already disconnected — ignore that since reads will return EOF anyway.
-    if let Err(e) = stream.set_read_timeout(Some(std::time::Duration::from_millis(100))) {
+    if let Err(e) = stream.set_read_timeout(Some(std::time::Duration::from_secs(2))) {
         match e.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => return Err(IpcError::Timeout),
             io::ErrorKind::InvalidInput => {} // macOS: peer already gone, reads won't block
