@@ -23,7 +23,6 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::{Color32F, Frame, Renderer, Bind};
 use smithay::backend::x11::{X11Event, X11Input};
 use smithay::desktop::PopupKind;
-use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::desktop::PopupManager;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::Point;
@@ -133,38 +132,17 @@ fn run_compositor_headless() -> anyhow::Result<()> {
             }
         }
 
-        // Dispatch Wayland client requests
-        display.dispatch_clients(&mut compositor)
-            .expect("failed to dispatch clients");
-
-        // Process shared frame logic
-        let frame_result = crate::frame::process_frame(
+        // Wayland dispatch → process_frame → frame callbacks → flush
+        let frame_result = crate::frame::run_frame_body(
             &mut compositor,
+            &mut display,
             &mut terminal_manager,
+            &output,
             crate::window_height::calculate_window_heights,
         );
-        if frame_result.all_terminals_exited {
+        if frame_result.all_terminals_exited || !compositor.running {
             break;
         }
-
-        if !compositor.running {
-            break;
-        }
-
-        // Send frame callbacks to Wayland clients (required for them to render)
-        // In headless mode, we send these on a timer instead of after actual rendering
-        for surface in compositor.xdg_shell_state.toplevel_surfaces() {
-            send_frames_surface_tree(
-                surface.wl_surface(),
-                &output,
-                Duration::ZERO,
-                Some(Duration::ZERO),
-                |_, _| Some(output.clone()),
-            );
-        }
-
-        // Flush clients
-        compositor.display_handle.flush_clients()?;
 
         // Dispatch calloop events with ~60fps timing
         event_loop
@@ -854,39 +832,7 @@ fn run_compositor_x11() -> anyhow::Result<()> {
         last_render_time = now;
 
         // Send frame callbacks to all toplevel surfaces and their popups
-        let toplevel_count = compositor.xdg_shell_state.toplevel_surfaces().len();
-        let mut total_popup_count = 0;
-        let mut frame_callback_popup_ids: Vec<_> = Vec::new();
-        for surface in compositor.xdg_shell_state.toplevel_surfaces() {
-            send_frames_surface_tree(
-                surface.wl_surface(),
-                &output,
-                Duration::ZERO,
-                Some(Duration::ZERO),  // Also use throttle for toplevels
-                |_, _| Some(output.clone()),
-            );
-
-            // Send frame callbacks to popups for this toplevel
-            // Use Some(Duration::ZERO) throttle to always send callbacks when overdue.
-            // With None, callbacks only sent when on_primary_scanout_output matches,
-            // but popup surfaces may not have output_update called on them.
-            let popups: Vec<_> = PopupManager::popups_for_surface(surface.wl_surface()).collect();
-            let popup_count = popups.len();
-            total_popup_count += popup_count;
-            for (popup, _) in popups {
-                frame_callback_popup_ids.push(format!("{:?}", popup.wl_surface().id()));
-                send_frames_surface_tree(
-                    popup.wl_surface(),
-                    &output,
-                    Duration::ZERO,
-                    Some(Duration::ZERO),
-                    |_, _| Some(output.clone()),
-                );
-            }
-        }
-        if total_popup_count > 0 {
-            tracing::debug!(toplevel_count, total_popup_count, "frame callbacks sent to toplevels and popups");
-        }
+        crate::frame::send_all_frame_callbacks(&compositor, &output);
 
         // Flush clients
         compositor.display_handle.flush_clients()?;

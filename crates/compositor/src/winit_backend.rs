@@ -16,8 +16,6 @@ use smithay::wayland::compositor::{
     with_surface_tree_downward, SubsurfaceCachedState, TraversalAction,
 };
 use smithay::wayland::shm::with_buffer_contents;
-use smithay::desktop::utils::send_frames_surface_tree;
-
 use softbuffer::Surface;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -424,21 +422,19 @@ impl ApplicationHandler for App {
         calloop.dispatch(Some(Duration::ZERO), compositor)
             .expect("calloop dispatch failed");
 
-        // 2. Dispatch Wayland clients
-        display.dispatch_clients(compositor)
-            .expect("failed to dispatch clients");
-
-        // 3. Process shared frame logic
-        let result = crate::frame::process_frame(
+        // 2-4. Wayland dispatch → process_frame → frame callbacks → flush
+        let result = crate::frame::run_frame_body(
             compositor,
+            display,
             terminal_manager,
+            output,
             crate::window_height::calculate_window_heights,
         );
         if result.all_terminals_exited {
             compositor.running = false;
         }
 
-        // 3b. Handle clipboard operations (pending from keybindings)
+        // 5. Handle clipboard operations (pending from keybindings)
         if compositor.pending_copy {
             compositor.pending_copy = false;
             if let Some(ref mut clipboard) = compositor.clipboard {
@@ -472,34 +468,6 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-        }
-
-        // 4. Send frame callbacks to Wayland clients and their popups
-        for surface in compositor.xdg_shell_state.toplevel_surfaces() {
-            send_frames_surface_tree(
-                surface.wl_surface(),
-                output,
-                Duration::ZERO,
-                Some(Duration::ZERO),
-                |_, _| Some(output.clone()),
-            );
-
-            for (popup, _) in
-                smithay::desktop::PopupManager::popups_for_surface(surface.wl_surface())
-            {
-                send_frames_surface_tree(
-                    popup.wl_surface(),
-                    output,
-                    Duration::ZERO,
-                    Some(Duration::ZERO),
-                    |_, _| Some(output.clone()),
-                );
-            }
-        }
-
-        // 5. Flush clients
-        if let Err(e) = compositor.display_handle.flush_clients() {
-            tracing::warn!(error = ?e, "failed to flush Wayland clients");
         }
 
         // 6. Request redraw (throttled to avoid burning CPU)

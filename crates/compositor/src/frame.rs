@@ -2,8 +2,17 @@
 //!
 //! All backends call `process_frame()` once per iteration to run the shared
 //! compositor logic (spawn handling, terminal output, window lifecycle, layout).
-//! Backend-specific concerns (display dispatch, calloop dispatch, rendering,
-//! frame callbacks) remain in each backend.
+//!
+//! Higher-level helpers (`send_all_frame_callbacks`, `run_frame_body`) reduce
+//! duplication across backends for the common dispatch → process → callbacks →
+//! flush cycle.
+
+use std::time::Duration;
+
+use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::desktop::PopupManager;
+use smithay::output::Output;
+use smithay::reexports::wayland_server::Display;
 
 use crate::state::TermStack;
 use crate::terminal_manager::TerminalManager;
@@ -122,4 +131,57 @@ pub fn process_frame(
     FrameResult {
         all_terminals_exited,
     }
+}
+
+/// Send frame callbacks to all toplevel surfaces and their popups.
+///
+/// Each backend calls this after rendering (or on a timer for headless)
+/// so Wayland clients know they can draw another frame.
+pub fn send_all_frame_callbacks(compositor: &TermStack, output: &Output) {
+    for surface in compositor.xdg_shell_state.toplevel_surfaces() {
+        send_frames_surface_tree(
+            surface.wl_surface(),
+            output,
+            Duration::ZERO,
+            Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
+
+        for (popup, _) in PopupManager::popups_for_surface(surface.wl_surface()) {
+            send_frames_surface_tree(
+                popup.wl_surface(),
+                output,
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
+        }
+    }
+}
+
+/// Run the shared frame body: Wayland dispatch, frame processing,
+/// frame callbacks, and client flush.
+///
+/// Calloop dispatch is NOT included — backends need different timeouts
+/// and may dispatch calloop at a different point in their loop.
+pub fn run_frame_body(
+    compositor: &mut TermStack,
+    display: &mut Display<TermStack>,
+    terminal_manager: &mut TerminalManager,
+    output: &Output,
+    height_calculator: fn(&TermStack, &TerminalManager) -> Vec<i32>,
+) -> FrameResult {
+    display
+        .dispatch_clients(compositor)
+        .expect("failed to dispatch clients");
+
+    let result = process_frame(compositor, terminal_manager, height_calculator);
+
+    send_all_frame_callbacks(compositor, output);
+
+    if let Err(e) = compositor.display_handle.flush_clients() {
+        tracing::warn!(error = ?e, "failed to flush Wayland clients");
+    }
+
+    result
 }
