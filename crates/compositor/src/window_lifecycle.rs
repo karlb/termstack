@@ -353,9 +353,9 @@ pub fn cleanup_and_sync_focus(
         compositor.remove_terminal(*id);
     }
 
-    // Check if all cells are gone
-    let all_dead = !dead.is_empty() || !ttl_removed.is_empty();
-    if all_dead && compositor.layout_nodes.is_empty() {
+    // Check if all cells are gone (this handles both natural terminal exits
+    // and direct removal via close button)
+    if compositor.layout_nodes.is_empty() {
         tracing::info!("all cells removed, shutting down");
         return true;
     }

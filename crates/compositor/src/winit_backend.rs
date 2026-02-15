@@ -178,14 +178,13 @@ impl ApplicationHandler for App {
         tracing::info!("winit compositor initialized");
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
         let Some(compositor) = &mut self.compositor else { return };
         let Some(terminal_manager) = &mut self.terminal_manager else { return };
 
         match event {
             WindowEvent::CloseRequested => {
-                compositor.running = false;
-                event_loop.exit();
+                std::process::exit(0);
             }
 
             WindowEvent::ModifiersChanged(mods) => {
@@ -253,9 +252,7 @@ impl ApplicationHandler for App {
                     match &event.logical_key {
                         Key::Character(s) => match s.as_str() {
                             "q" | "Q" => {
-                                compositor.running = false;
-                                event_loop.exit();
-                                return;
+                                std::process::exit(0);
                             }
                             "j" | "J" => {
                                 compositor.focus_change_requested = 1;
@@ -530,7 +527,11 @@ impl ApplicationHandler for App {
         let Some(output) = &self.output else { return };
 
         if !compositor.running {
-            return;
+            // On macOS, event_loop.exit() may not reliably stop the
+            // NSApplication run loop. Use std::process::exit to ensure
+            // the process terminates. The OS closes all file descriptors
+            // (triggering SIGHUP to shell processes via PTY hangup).
+            std::process::exit(0);
         }
 
         // 1. Dispatch calloop events (IPC + Wayland socket) - non-blocking
