@@ -110,12 +110,16 @@ impl ApplicationHandler for App {
         let context = softbuffer::Context::new(window.clone()).expect("failed to create softbuffer context");
         let surface = Surface::new(&context, window.clone()).expect("failed to create softbuffer surface");
 
+        let scale_factor = window.scale_factor();
         let inner_size = window.inner_size();
         let output_width = inner_size.width;
         let output_height = inner_size.height;
 
         self.window = Some(window);
         self.surface = Some(surface);
+
+        // Scale font size for HiDPI displays (config font_size is in logical pixels)
+        self.config.font_size *= scale_factor as f32;
 
         // Create calloop event loop
         let calloop: EventLoop<TermStack> = EventLoop::try_new().expect("failed to create calloop event loop");
