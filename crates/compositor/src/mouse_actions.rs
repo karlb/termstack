@@ -236,156 +236,49 @@ pub fn handle_scroll(
 mod tests {
     use super::*;
 
+    // Standard test dimensions: output=800px wide, title_bar=24px, close_btn=30px
+    const W: i32 = 800;
+    const TB: i32 = 24;
+    const CB: i32 = 30;
+
+    /// Shorthand: check close button hit at (x, y) with window top at `top`.
+    fn hit(x: f64, y: f64, top: i32, ssd: bool) -> bool {
+        is_click_on_close_button(x, y, top, W, TB, CB, ssd)
+    }
+
+    /// X coordinate inside the close button region.
+    fn close_x() -> f64 { (W - CB) as f64 + 5.0 }
+
     #[test]
     fn close_button_click_inside_title_bar_on_button() {
-        let output_width = 800;
-        let title_bar_height = 24;
-        let close_button_width = 30;
-        let window_screen_top = 0; // First window starts at top
-
-        // Click in close button area within title bar
-        let close_button_x = (output_width - close_button_width) as f64 + 5.0;
-        let title_bar_y = 5.0; // Inside title bar
-
-        assert!(is_click_on_close_button(
-            close_button_x,
-            title_bar_y,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            true,
-        ));
+        assert!(hit(close_x(), 5.0, 0, true));
     }
 
     #[test]
     fn close_button_click_outside_title_bar() {
-        let output_width = 800;
-        let title_bar_height = 24;
-        let close_button_width = 30;
-        let window_screen_top = 0;
-
-        // Click below title bar (in content area)
-        let close_button_x = (output_width - close_button_width) as f64 + 5.0;
-        let below_title_bar = (title_bar_height + 10) as f64;
-
-        assert!(!is_click_on_close_button(
-            close_button_x,
-            below_title_bar,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            true,
-        ));
+        assert!(!hit(close_x(), (TB + 10) as f64, 0, true));
     }
 
     #[test]
     fn close_button_click_outside_button_x_range() {
-        let output_width = 800;
-        let title_bar_height = 24;
-        let close_button_width = 30;
-        let window_screen_top = 0;
-
-        // Click in title bar but not on close button
-        let left_of_button = 100.0;
-        let title_bar_y = 5.0;
-
-        assert!(!is_click_on_close_button(
-            left_of_button,
-            title_bar_y,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            true,
-        ));
+        assert!(!hit(100.0, 5.0, 0, true));
     }
 
     #[test]
     fn close_button_not_triggered_without_ssd() {
-        let output_width = 800;
-        let title_bar_height = 24;
-        let close_button_width = 30;
-        let window_screen_top = 0;
-
-        let close_button_x = (output_width - close_button_width) as f64 + 5.0;
-        let title_bar_y = 5.0;
-
-        assert!(!is_click_on_close_button(
-            close_button_x,
-            title_bar_y,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            false,
-        ));
+        assert!(!hit(close_x(), 5.0, 0, false));
     }
 
     #[test]
     fn close_button_with_scrolled_window() {
-        let output_width = 800;
-        let title_bar_height = 24;
-        let close_button_width = 30;
-        // Window scrolled so its top is at y=200
-        let window_screen_top = 200;
-
-        let close_button_x = (output_width - close_button_width) as f64 + 5.0;
-        let click_y = 210.0; // Inside title bar (200..224)
-
-        assert!(is_click_on_close_button(
-            close_button_x,
-            click_y,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            true,
-        ));
-
-        // Click above the window should NOT hit close button
-        let above_window = 195.0;
-        assert!(!is_click_on_close_button(
-            close_button_x,
-            above_window,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            true,
-        ));
+        assert!(hit(close_x(), 210.0, 200, true));  // inside title bar (200..224)
+        assert!(!hit(close_x(), 195.0, 200, true));  // above window
     }
 
     #[test]
     fn close_button_edge_at_boundary() {
-        let output_width = 800;
-        let title_bar_height = 24;
-        let close_button_width = 30;
-        let window_screen_top = 0;
-        let title_bar_y = 5.0;
-
-        // Exactly at left edge of close button
-        let close_button_left_edge = (output_width - close_button_width) as f64;
-        assert!(is_click_on_close_button(
-            close_button_left_edge,
-            title_bar_y,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            true,
-        ));
-
-        // One pixel left of close button
-        assert!(!is_click_on_close_button(
-            close_button_left_edge - 1.0,
-            title_bar_y,
-            window_screen_top,
-            output_width,
-            title_bar_height,
-            close_button_width,
-            true,
-        ));
+        let edge = (W - CB) as f64;
+        assert!(hit(edge, 5.0, 0, true));       // exactly at left edge
+        assert!(!hit(edge - 1.0, 5.0, 0, true)); // one pixel left
     }
 }

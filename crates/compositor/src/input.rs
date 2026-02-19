@@ -89,35 +89,6 @@ fn copy_to_primary_selection(text: &str) {
     });
 }
 
-/// Check if a click is on the close button in a title bar (render-coord wrapper).
-///
-/// Converts render coordinates to screen coordinates and delegates to the
-/// shared `mouse_actions::is_click_on_close_button`.
-fn is_click_on_close_button(
-    render_y: f64,
-    window_render_top: f64,
-    click_x: f64,
-    output_width: i32,
-    output_height: i32,
-    has_ssd: bool,
-    button: u32,
-) -> bool {
-    if button != BTN_LEFT {
-        return false;
-    }
-    let screen_y = output_height as f64 - render_y;
-    let window_screen_top = (output_height as f64 - window_render_top) as i32;
-    crate::mouse_actions::is_click_on_close_button(
-        click_x,
-        screen_y,
-        window_screen_top,
-        output_width,
-        TITLE_BAR_HEIGHT as i32,
-        CLOSE_BUTTON_WIDTH as i32,
-        has_ssd,
-    )
-}
-
 /// Convert render coordinates to terminal grid coordinates (col, row)
 ///
 /// - `render_x`, `render_y`: Position in render coordinates (Y=0 at bottom)
@@ -890,15 +861,13 @@ impl TermStack {
                 // Clicked on a cell - focus it
                 self.set_focus_by_index(index);
 
-                // Calculate cell's render position for close button detection
-                let window_render_top = {
-                    let screen_height = self.output_size.h as f64;
+                // Calculate window's screen-coord top for close button detection
+                let window_screen_top = {
                     let mut content_y = -self.scroll_offset;
                     for node in self.layout_nodes.iter().take(index) {
                         content_y += node.height as f64;
                     }
-                    // render_y is bottom of cell, render_top is top
-                    screen_height - content_y
+                    content_y as i32
                 };
 
                 // Extract cell info before doing mutable operations
@@ -948,14 +917,14 @@ impl TermStack {
                 match window_info {
                     CellClickInfo::External { surface, has_ssd } => {
                         // Check if click is on close button in title bar
-                        if is_click_on_close_button(
-                            render_y,
-                            window_render_top,
+                        if button == BTN_LEFT && crate::mouse_actions::is_click_on_close_button(
                             screen_x,
+                            screen_y.value(),
+                            window_screen_top,
                             self.output_size.w,
-                            self.output_size.h,
+                            TITLE_BAR_HEIGHT as i32,
+                            CLOSE_BUTTON_WIDTH as i32,
                             has_ssd,
-                            button,
                         ) {
                             tracing::debug!(index, "close button clicked, sending close");
                             surface.send_close();
@@ -965,8 +934,8 @@ impl TermStack {
                         // Start cross-window selection on left button press (title bar only for external)
                         if button == BTN_LEFT && has_ssd {
                             // Only start selection if clicking on title bar area
-                            let title_bar_bottom = window_render_top - TITLE_BAR_HEIGHT as f64;
-                            if render_y >= title_bar_bottom {
+                            let title_bar_bottom_screen = window_screen_top + TITLE_BAR_HEIGHT as i32;
+                            if (screen_y.value() as i32) < title_bar_bottom_screen {
                                 if let Some(terminals) = &mut terminals {
                                     selection::start_cross_selection(
                                         self,
@@ -983,14 +952,14 @@ impl TermStack {
                     }
                     CellClickInfo::Terminal { id, has_ssd } => {
                         // Check if click is on close button in title bar (for terminals with title bars)
-                        if is_click_on_close_button(
-                            render_y,
-                            window_render_top,
+                        if button == BTN_LEFT && crate::mouse_actions::is_click_on_close_button(
                             screen_x,
+                            screen_y.value(),
+                            window_screen_top,
                             self.output_size.w,
-                            self.output_size.h,
+                            TITLE_BAR_HEIGHT as i32,
+                            CLOSE_BUTTON_WIDTH as i32,
                             has_ssd,
-                            button,
                         ) {
                             // Check if this terminal is an output terminal for any active GUI window
                             // If so, detach it from the window so the GUI continues running without output visible
@@ -1403,131 +1372,7 @@ impl TermStack {
 mod tests {
     use super::*;
 
-    // ========== is_click_on_close_button tests ==========
-    //
-    // These test the render-coord wrapper that delegates to
-    // mouse_actions::is_click_on_close_button. Core screen-coord
-    // tests live in mouse_actions::tests.
-
-    const TEST_OUTPUT_HEIGHT: i32 = 1080;
-
-    #[test]
-    fn close_button_click_inside_title_bar_on_button() {
-        let output_width = 800;
-        let window_render_top = 600.0;
-        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
-        let title_bar_y = window_render_top - 5.0;
-
-        assert!(is_click_on_close_button(
-            title_bar_y,
-            window_render_top,
-            close_button_x,
-            output_width,
-            TEST_OUTPUT_HEIGHT,
-            true,
-            BTN_LEFT,
-        ));
-    }
-
-    #[test]
-    fn close_button_click_outside_title_bar() {
-        let output_width = 800;
-        let window_render_top = 600.0;
-        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
-        let below_title_bar = window_render_top - TITLE_BAR_HEIGHT as f64 - 10.0;
-
-        assert!(!is_click_on_close_button(
-            below_title_bar,
-            window_render_top,
-            close_button_x,
-            output_width,
-            TEST_OUTPUT_HEIGHT,
-            true,
-            BTN_LEFT,
-        ));
-    }
-
-    #[test]
-    fn close_button_click_outside_button_x_range() {
-        let output_width = 800;
-        let window_render_top = 600.0;
-        let left_of_button = 100.0;
-        let title_bar_y = window_render_top - 5.0;
-
-        assert!(!is_click_on_close_button(
-            title_bar_y,
-            window_render_top,
-            left_of_button,
-            output_width,
-            TEST_OUTPUT_HEIGHT,
-            true,
-            BTN_LEFT,
-        ));
-    }
-
-    #[test]
-    fn close_button_not_triggered_without_ssd() {
-        let output_width = 800;
-        let window_render_top = 600.0;
-        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
-        let title_bar_y = window_render_top - 5.0;
-
-        assert!(!is_click_on_close_button(
-            title_bar_y,
-            window_render_top,
-            close_button_x,
-            output_width,
-            TEST_OUTPUT_HEIGHT,
-            false,
-            BTN_LEFT,
-        ));
-    }
-
-    #[test]
-    fn close_button_not_triggered_by_right_click() {
-        let output_width = 800;
-        let window_render_top = 600.0;
-        let close_button_x = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64 + 5.0;
-        let title_bar_y = window_render_top - 5.0;
-
-        assert!(!is_click_on_close_button(
-            title_bar_y,
-            window_render_top,
-            close_button_x,
-            output_width,
-            TEST_OUTPUT_HEIGHT,
-            true,
-            0x111, // BTN_RIGHT
-        ));
-    }
-
-    #[test]
-    fn close_button_edge_at_boundary() {
-        let output_width = 800;
-        let window_render_top = 600.0;
-        let close_button_left_edge = (output_width - CLOSE_BUTTON_WIDTH as i32) as f64;
-        let title_bar_y = window_render_top - 5.0;
-
-        assert!(is_click_on_close_button(
-            title_bar_y,
-            window_render_top,
-            close_button_left_edge,
-            output_width,
-            TEST_OUTPUT_HEIGHT,
-            true,
-            BTN_LEFT,
-        ));
-
-        assert!(!is_click_on_close_button(
-            title_bar_y,
-            window_render_top,
-            close_button_left_edge - 1.0,
-            output_width,
-            TEST_OUTPUT_HEIGHT,
-            true,
-            BTN_LEFT,
-        ));
-    }
+    // Close button tests live in mouse_actions::tests.
 
     // ========== render_to_grid_coords tests ==========
 
